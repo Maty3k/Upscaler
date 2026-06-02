@@ -9,9 +9,13 @@ import tempfile
 import urllib.request
 from pathlib import Path
 
+from typing import Union
+
 from tqdm import tqdm
 
-from upscaler.models.registry import ModelSpec
+from upscaler.models.registry import DeblurSpec, ModelSpec
+
+WeightSpec = Union[ModelSpec, DeblurSpec]
 
 # Cache dir: env override, else alongside the package (gitignored).
 WEIGHTS_DIR = Path(
@@ -52,7 +56,7 @@ def _download(url: str, dest: Path) -> None:
                 tmp.unlink()
 
 
-def ensure_weights(spec: ModelSpec) -> Path:
+def ensure_weights(spec: WeightSpec) -> Path:
     """Return a local path to the weights for ``spec``, downloading if needed.
 
     If ``spec.sha256`` is set it is verified; a mismatch deletes the file and raises.

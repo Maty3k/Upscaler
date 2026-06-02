@@ -9,8 +9,9 @@ from pathlib import Path
 from PIL import Image
 from tqdm import tqdm
 
+from upscaler.deblur import Deblurrer
 from upscaler.engine import Upscaler
-from upscaler.models.registry import MODELS
+from upscaler.models.registry import DEBLUR_MODELS, DEFAULT_DEBLUR_MODEL, MODELS
 from upscaler.sharpen import unsharp_mask
 
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".webp", ".tif", ".tiff"}
@@ -51,6 +52,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Compute device (default: auto).",
     )
     p.add_argument(
+        "--deblur", action="store_true",
+        help="Deblur with NAFNet before upscaling (good for motion blur).",
+    )
+    p.add_argument(
+        "--deblur-model", choices=sorted(DEBLUR_MODELS),
+        help=f"NAFNet deblur model (default: {DEFAULT_DEBLUR_MODEL}).",
+    )
+    p.add_argument(
         "--sharpen", nargs="?", type=float, const=1.0, default=0.0,
         help="Apply unsharp mask after upscaling. Optional strength (default 1.0).",
     )
@@ -64,8 +73,12 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
     if args.list_models:
+        print("Upscale models:")
         for name, spec in sorted(MODELS.items()):
-            print(f"{name:24s} x{spec.scale}  {spec.notes}")
+            print(f"  {name:24s} x{spec.scale}  {spec.notes}")
+        print("Deblur models (--deblur-model):")
+        for name, spec in sorted(DEBLUR_MODELS.items()):
+            print(f"  {name:24s}      {spec.notes}")
         return 0
 
     if args.input is None:
@@ -80,14 +93,23 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: no images found in {args.input}", file=sys.stderr)
         return 2
 
+    deblurrer = (
+        Deblurrer(model=args.deblur_model, device=args.device) if args.deblur else None
+    )
     up = Upscaler(
         model=args.model, scale=args.scale, device=args.device,
         tile=args.tile, fp16=args.fp16,
     )
-    print(f"model={up.spec.name} scale=x{up.scale} device={up.device.type}", file=sys.stderr)
+    stages = (f"deblur={deblurrer.spec.name} " if deblurrer else "") + (
+        f"upscale={up.spec.name} x{up.scale}"
+    )
+    print(f"{stages} device={up.device.type}", file=sys.stderr)
 
     for src in tqdm(inputs, disable=len(inputs) == 1, desc="images"):
-        result = up.upscale(Image.open(src))
+        img = Image.open(src)
+        if deblurrer:
+            img = deblurrer.deblur(img)
+        result = up.upscale(img)
         if args.sharpen > 0:
             result = unsharp_mask(result, strength=args.sharpen)
         dst = _output_path(src, args.output, up.scale)

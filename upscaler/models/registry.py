@@ -10,7 +10,7 @@ https://github.com/xinntao/Real-ESRGAN
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 
@@ -77,3 +77,58 @@ def resolve_model(model: Optional[str] = None, scale: Optional[int] = None) -> M
             f"a supported scale: {sorted(_DEFAULT_FOR_SCALE)}."
         )
     return MODELS[_DEFAULT_FOR_SCALE[scale]]
+
+
+# --- Deblur models (NAFNet) ------------------------------------------------
+# Weights mirrored on Hugging Face (resolve/ gives a direct download); the
+# upstream originals live on the official NAFNet Google Drive. NAFNet is MIT.
+
+
+@dataclass(frozen=True)
+class DeblurSpec:
+    name: str
+    url: str
+    filename: str
+    width: int
+    middle_blk_num: int
+    enc_blk_nums: tuple
+    dec_blk_nums: tuple
+    sha256: Optional[str] = None
+    notes: str = ""
+
+
+_HF = "https://huggingface.co/nyanko7/nafnet-models/resolve/main"
+
+DEBLUR_MODELS: dict[str, DeblurSpec] = {
+    "nafnet-gopro-width64": DeblurSpec(
+        name="nafnet-gopro-width64",
+        url=f"{_HF}/NAFNet-GoPro-width64.pth",
+        filename="NAFNet-GoPro-width64.pth",
+        width=64,
+        middle_blk_num=1,
+        enc_blk_nums=(1, 1, 1, 28),
+        dec_blk_nums=(1, 1, 1, 1),
+        notes="Motion deblur (GoPro), full quality. ~272MB.",
+    ),
+    "nafnet-gopro-width32": DeblurSpec(
+        name="nafnet-gopro-width32",
+        url=f"{_HF}/NAFNet-GoPro-width32.pth",
+        filename="NAFNet-GoPro-width32.pth",
+        width=32,
+        middle_blk_num=1,
+        enc_blk_nums=(1, 1, 1, 28),
+        dec_blk_nums=(1, 1, 1, 1),
+        notes="Motion deblur (GoPro), lighter/faster. ~69MB.",
+    ),
+}
+
+DEFAULT_DEBLUR_MODEL = "nafnet-gopro-width64"
+
+
+def resolve_deblur_model(model: Optional[str] = None) -> DeblurSpec:
+    name = model or DEFAULT_DEBLUR_MODEL
+    if name not in DEBLUR_MODELS:
+        raise ValueError(
+            f"Unknown deblur model {name!r}. Available: {', '.join(sorted(DEBLUR_MODELS))}"
+        )
+    return DEBLUR_MODELS[name]

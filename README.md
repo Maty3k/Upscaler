@@ -27,6 +27,9 @@ upscaler photo.jpg -o photo_4x.png
 # 2x, and apply a sharpening pass afterwards
 upscaler photo.jpg --scale 2 --sharpen
 
+# deblur motion blur (NAFNet) before upscaling
+upscaler blurry.jpg --deblur --scale 4
+
 # stronger sharpen, explicit device
 upscaler photo.jpg --sharpen 1.5 --device mps
 
@@ -76,7 +79,11 @@ result.save("out.png")
   integrity-checked weight download.
 - `upscaler/engine.py` — device selection and **tiled inference** (large images
   are processed in padded tiles to bound memory and avoid seams).
-- `upscaler/pipeline.py` + `sharpen.py` — upscale, then optional unsharp mask.
+- `upscaler/models/nafnet.py` + `deblur.py` — vendored **NAFNet** and the deblur
+  stage. NAFNet's channel attention pools globally, so it runs on the whole image
+  (not tiled) and is applied at native resolution before upscaling.
+- `upscaler/pipeline.py` + `sharpen.py` — `enhance()`: optional deblur → upscale
+  → optional unsharp mask.
 
 ## Performance notes
 
@@ -95,7 +102,7 @@ pytest        # architecture + tiling tests; run on CPU, no weights download
 
 - [x] Phase 0 — scaffold, packaging, license
 - [x] Phase 1 — Real-ESRGAN upscaling (lib + CLI), tiling, lazy weights, unsharp sharpen
-- [ ] Phase 2 — model-based deblur stage (NAFNet) for genuinely blurry input
+- [x] Phase 2 — model-based deblur stage (NAFNet) for genuinely blurry input
 - [x] Phase 3 — Gradio drag-and-drop GUI (`app.py`)
 - [ ] Phase 4 — ONNX Runtime path for faster, PyTorch-free CPU inference
 
@@ -104,4 +111,7 @@ pytest        # architecture + tiling tests; run on CPU, no weights download
 This project is **Apache-2.0** (see `LICENSE`). The pretrained weights are from
 the official Real-ESRGAN releases and carry their own (BSD-3-Clause) terms; they
 are downloaded at runtime and never redistributed in this repo. Credit to
-Xintao Wang et al. for Real-ESRGAN and to BasicSR for the RRDBNet architecture.
+Xintao Wang et al. for Real-ESRGAN and to BasicSR for the RRDBNet architecture,
+and to Chen et al. / megvii-research for NAFNet (MIT). NAFNet deblur weights are
+mirrored on Hugging Face (`nyanko7/nafnet-models`); the upstream originals are on
+the official NAFNet Google Drive.

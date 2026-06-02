@@ -6,9 +6,9 @@ release, so users get supply-chain integrity on every download.
     python scripts/print_checksums.py
 """
 
-from upscaler.models.registry import MODELS
+from upscaler.models.registry import DEBLUR_MODELS, MODELS
 from upscaler.models.weights import _sha256, ensure_weights
 
-for name, spec in sorted(MODELS.items()):
+for name, spec in sorted({**MODELS, **DEBLUR_MODELS}.items()):
     path = ensure_weights(spec)
     print(f"{name}: {_sha256(path)}")
