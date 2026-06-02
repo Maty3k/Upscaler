@@ -42,6 +42,16 @@ upscaler --list-models
 Weights download automatically on first use and are cached under
 `upscaler/weights/` (override with `UPSCALER_WEIGHTS_DIR`).
 
+### GUI (drag-and-drop)
+
+```bash
+pip install -e ".[gui]"
+python app.py            # opens a local web UI at http://127.0.0.1:7860
+```
+
+Drag in an image, pick a model, optionally sharpen, and download the result.
+Runs entirely on your machine — nothing is uploaded anywhere.
+
 ### Library
 
 ```python
@@ -86,7 +96,7 @@ pytest        # architecture + tiling tests; run on CPU, no weights download
 - [x] Phase 0 — scaffold, packaging, license
 - [x] Phase 1 — Real-ESRGAN upscaling (lib + CLI), tiling, lazy weights, unsharp sharpen
 - [ ] Phase 2 — model-based deblur stage (NAFNet) for genuinely blurry input
-- [ ] Phase 3 — Gradio drag-and-drop GUI (`app.py`)
+- [x] Phase 3 — Gradio drag-and-drop GUI (`app.py`)
 - [ ] Phase 4 — ONNX Runtime path for faster, PyTorch-free CPU inference
 
 ## Licensing
