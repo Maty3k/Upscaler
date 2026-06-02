@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "upscaler"
+version = "0.1.0"
+description = "Local, open-source image upscaling + sharpening. Wraps pretrained Real-ESRGAN weights."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Upscaler contributors" }]
+keywords = ["super-resolution", "upscaling", "real-esrgan", "image-enhancement", "sharpening"]
+dependencies = [
+    "torch>=2.0",
+    "numpy>=1.23",
+    "Pillow>=9.0",
+    "tqdm>=4.64",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+gui = ["gradio>=4.0"]
+
+[project.scripts]
+upscaler = "upscaler.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["upscaler*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

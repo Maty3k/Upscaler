@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.eggs/
+
+# Model weights (downloaded at runtime, never commit — large + upstream-licensed)
+upscaler/weights/
+*.pth
+*.onnx
+
+# OS / IDE
+.DS_Store
+.idea/
+
+# Test/output artifacts
+out/
+*.out.png
+.pytest_cache/
