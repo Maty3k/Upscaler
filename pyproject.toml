@@ -19,8 +19,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=7.0"]
+dev = ["pytest>=7.0", "onnxruntime>=1.16", "onnx>=1.15", "onnxscript>=0.1"]
 gui = ["gradio>=4.0"]
+# onnxscript is only needed to *export* (torch's modern exporter); pure
+# inference needs just onnxruntime.
+onnx = ["onnxruntime>=1.16", "onnx>=1.15", "onnxscript>=0.1"]
 
 [project.scripts]
 upscaler = "upscaler.cli:main"

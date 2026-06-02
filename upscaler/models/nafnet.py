@@ -124,11 +124,10 @@ class NAFNet(nn.Module):
         pad_w = (self.padder_size - w % self.padder_size) % self.padder_size
         return F.pad(x, (0, pad_w, 0, pad_h))
 
-    def forward(self, inp: torch.Tensor) -> torch.Tensor:
-        _, _, h, w = inp.shape
-        x = self._check_image_size(inp)
-        padded = x
-
+    def body(self, x: torch.Tensor) -> torch.Tensor:
+        """Shape-preserving core; assumes spatial dims are multiples of
+        ``padder_size``. Fully convolutional, so it traces to a dynamic-shape
+        ONNX graph (no size arithmetic or slicing baked in)."""
         feat = self.intro(x)
         encs = []
         for encoder, down in zip(self.encoders, self.downs):
@@ -143,6 +142,9 @@ class NAFNet(nn.Module):
             feat = feat + skip
             feat = decoder(feat)
 
-        feat = self.ending(feat)
-        feat = feat + padded
-        return feat[:, :, :h, :w]
+        return self.ending(feat) + x
+
+    def forward(self, inp: torch.Tensor) -> torch.Tensor:
+        _, _, h, w = inp.shape
+        x = self._check_image_size(inp)
+        return self.body(x)[:, :, :h, :w]

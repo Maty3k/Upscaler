@@ -13,7 +13,7 @@ Python **3.9–3.12** recommended (PyTorch wheels).
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
-pip install -e .            # add ".[dev]" for tests, ".[gui]" for the planned GUI
+pip install -e .            # extras: ".[gui]" (GUI), ".[onnx]" (ONNX backend), ".[dev]" (tests)
 ```
 
 ## Usage
@@ -38,6 +38,10 @@ upscaler ./input_dir -o ./output_dir --scale 4
 
 # anime / illustration model
 upscaler art.png --model realesrgan-x4plus-anime
+
+# ONNX Runtime backend (exports once from the .pth, then torch-free + often
+# faster on CPU). Works with --deblur and batching too.
+upscaler photo.jpg --scale 4 --onnx
 
 upscaler --list-models
 ```
@@ -84,6 +88,10 @@ result.save("out.png")
   (not tiled) and is applied at native resolution before upscaling.
 - `upscaler/pipeline.py` + `sharpen.py` — `enhance()`: optional deblur → upscale
   → optional unsharp mask.
+- `upscaler/onnx_export.py` + `onnx_engine.py` — export each model to ONNX with
+  dynamic shapes (one-time, needs torch) and run it via ONNX Runtime. The engines
+  import only `onnxruntime`/`numpy`/`Pillow`, so cached `.onnx` files run
+  torch-free. Verified to match the torch output (≤1/255 per pixel).
 
 ## Performance notes
 
@@ -104,7 +112,7 @@ pytest        # architecture + tiling tests; run on CPU, no weights download
 - [x] Phase 1 — Real-ESRGAN upscaling (lib + CLI), tiling, lazy weights, unsharp sharpen
 - [x] Phase 2 — model-based deblur stage (NAFNet) for genuinely blurry input
 - [x] Phase 3 — Gradio drag-and-drop GUI (`app.py`)
-- [ ] Phase 4 — ONNX Runtime path for faster, PyTorch-free CPU inference
+- [x] Phase 4 — ONNX Runtime path for faster, PyTorch-free CPU inference (`--onnx`)
 
 ## Licensing
 

@@ -65,6 +65,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--tile", type=int, default=512, help="Tile size, 0 disables tiling.")
     p.add_argument("--fp16", action="store_true", help="Half precision (CUDA only).")
+    p.add_argument(
+        "--onnx", action="store_true",
+        help="Use the ONNX Runtime backend (exports once, then torch-free).",
+    )
     p.add_argument("--list-models", action="store_true", help="List models and exit.")
     return p
 
@@ -93,17 +97,31 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: no images found in {args.input}", file=sys.stderr)
         return 2
 
-    deblurrer = (
-        Deblurrer(model=args.deblur_model, device=args.device) if args.deblur else None
-    )
-    up = Upscaler(
-        model=args.model, scale=args.scale, device=args.device,
-        tile=args.tile, fp16=args.fp16,
-    )
+    if args.onnx:
+        from upscaler.onnx_engine import OnnxDeblurrer, OnnxUpscaler
+
+        deblurrer = (
+            OnnxDeblurrer(model=args.deblur_model, device=args.device)
+            if args.deblur else None
+        )
+        up = OnnxUpscaler(
+            model=args.model, scale=args.scale, device=args.device, tile=args.tile
+        )
+        backend = "onnx"
+    else:
+        deblurrer = (
+            Deblurrer(model=args.deblur_model, device=args.device) if args.deblur else None
+        )
+        up = Upscaler(
+            model=args.model, scale=args.scale, device=args.device,
+            tile=args.tile, fp16=args.fp16,
+        )
+        backend = up.device.type
+
     stages = (f"deblur={deblurrer.spec.name} " if deblurrer else "") + (
         f"upscale={up.spec.name} x{up.scale}"
     )
-    print(f"{stages} device={up.device.type}", file=sys.stderr)
+    print(f"{stages} backend={backend}", file=sys.stderr)
 
     for src in tqdm(inputs, disable=len(inputs) == 1, desc="images"):
         img = Image.open(src)
