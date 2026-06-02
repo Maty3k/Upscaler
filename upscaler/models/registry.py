@@ -38,6 +38,7 @@ MODELS: dict[str, ModelSpec] = {
         filename="RealESRGAN_x4plus.pth",
         scale=4,
         num_block=23,
+        sha256="4fa0d38905f75ac06eb49a7951b426670021be3018265fd191d2125df9d682f1",
         notes="General-purpose 4x. Good default.",
     ),
     "realesrgan-x2plus": ModelSpec(
@@ -46,6 +47,7 @@ MODELS: dict[str, ModelSpec] = {
         filename="RealESRGAN_x2plus.pth",
         scale=2,
         num_block=23,
+        sha256="49fafd45f8fd7aa8d31ab2a22d14d91b536c34494a5cfe31eb5d89c2fa266abb",
         notes="General-purpose 2x.",
     ),
     "realesrgan-x4plus-anime": ModelSpec(
@@ -54,6 +56,7 @@ MODELS: dict[str, ModelSpec] = {
         filename="RealESRGAN_x4plus_anime_6B.pth",
         scale=4,
         num_block=6,
+        sha256="f872d837d3c90ed2e05227bed711af5671a6fd1c9f7d7e91c911a61f155e99da",
         notes="Lighter 6-block model tuned for anime / illustration / line art.",
     ),
 }
@@ -108,6 +111,7 @@ DEBLUR_MODELS: dict[str, DeblurSpec] = {
         middle_blk_num=1,
         enc_blk_nums=(1, 1, 1, 28),
         dec_blk_nums=(1, 1, 1, 1),
+        sha256="329d3ab4077b8d6b7ff61de376e483714667960bf85be027bf4335cda701196f",
         notes="Motion deblur (GoPro), full quality. ~272MB.",
     ),
     "nafnet-gopro-width32": DeblurSpec(
@@ -118,6 +122,7 @@ DEBLUR_MODELS: dict[str, DeblurSpec] = {
         middle_blk_num=1,
         enc_blk_nums=(1, 1, 1, 28),
         dec_blk_nums=(1, 1, 1, 1),
+        sha256="19394e6155d12ef6371d1d57496f87f0ec88f92bdffa27c0792690722d5d1a5c",
         notes="Motion deblur (GoPro), lighter/faster. ~69MB.",
     ),
 }
