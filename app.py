@@ -2,13 +2,21 @@
 
 Everything runs on your machine — Gradio just serves a local web UI. No data
 leaves your computer.
+
+Two tools on one page:
+  • File Converter — fast, lossless-where-possible format conversion (no models).
+  • Upscale & Enhance — Real-ESRGAN upscaling, optional NAFNet deblur + sharpen.
 """
 
 from __future__ import annotations
 
+import os
+import tempfile
+
 import gradio as gr
 from PIL import Image
 
+from upscaler.convert import FORMATS, convert, extension_for
 from upscaler.deblur import Deblurrer
 from upscaler.engine import Upscaler, resolve_device
 from upscaler.models.registry import DEBLUR_MODELS, MODELS
@@ -37,9 +45,28 @@ def _get_deblurrer(model: str, device: str) -> Deblurrer:
     return db
 
 
+# -- File converter ----------------------------------------------------------
+
+def convert_image(image, fmt, quality, lossless):
+    if image is None:
+        raise gr.Error("Upload an image to convert first.")
+    img = image if isinstance(image, Image.Image) else Image.fromarray(image)
+    data = convert(img, fmt, quality=int(quality), lossless=bool(lossless))
+
+    fd, path = tempfile.mkstemp(suffix=f".{extension_for(fmt)}")
+    with os.fdopen(fd, "wb") as f:
+        f.write(data)
+
+    kb = len(data) / 1024
+    note = "lossless" if (lossless and fmt == "WebP") or not FORMATS[fmt][2] else f"q{int(quality)}"
+    return path, f"✅ Converted to **{fmt}** ({note}) · {kb:,.1f} KB · {img.width}×{img.height}px"
+
+
+# -- Upscale & enhance -------------------------------------------------------
+
 def enhance(image, model, device, deblur, deblur_model, sharpen, tile):
     if image is None:
-        raise gr.Error("Please upload an image first.")
+        raise gr.Error("Upload an image to enhance first.")
     src = image if isinstance(image, Image.Image) else Image.fromarray(image)
     stages = []
     if deblur:
@@ -52,7 +79,7 @@ def enhance(image, model, device, deblur, deblur_model, sharpen, tile):
         result = unsharp_mask(result, strength=float(sharpen))
         stages.append(f"sharpen {sharpen:g}")
     info = (
-        " → ".join(stages)
+        "✅ " + " → ".join(stages)
         + f" · device `{up.device.type}` · {result.width}×{result.height}px"
     )
     return result, info
@@ -62,41 +89,90 @@ _MODEL_CHOICES = [(f"{s.name}  (×{s.scale}) — {s.notes}", s.name) for s in MO
 _DEBLUR_CHOICES = [(f"{s.name} — {s.notes}", s.name) for s in DEBLUR_MODELS.values()]
 _DEVICES = ["auto", "cpu", "cuda", "mps"]
 
+_CSS = """
+.gradio-container { max-width: 1080px !important; margin: auto; }
+#hero h1 { margin-bottom: 0; }
+.section-card { border: 1px solid var(--border-color-primary);
+    border-radius: 12px; padding: 16px; }
+"""
+
 
 def build_demo() -> gr.Blocks:
-    with gr.Blocks(title="Upscaler") as demo:
-        gr.Markdown(
-            "# 🔍 Upscaler\n"
-            "Local, open-source image **upscaling + sharpening** "
-            f"(Real-ESRGAN). Auto-detected device: `{resolve_device('auto').type}`."
-        )
-        with gr.Row():
-            with gr.Column():
-                inp = gr.Image(label="Input", type="pil", sources=["upload", "clipboard"])
-                model = gr.Dropdown(
-                    _MODEL_CHOICES, value="realesrgan-x4plus", label="Upscale model"
-                )
-                deblur = gr.Checkbox(
-                    value=False, label="Deblur first (NAFNet) — for motion blur"
-                )
-                deblur_model = gr.Dropdown(
-                    _DEBLUR_CHOICES, value="nafnet-gopro-width64", label="Deblur model"
-                )
-                sharpen = gr.Slider(
-                    0.0, 3.0, value=0.0, step=0.1,
-                    label="Sharpen (unsharp mask) — 0 = off",
-                )
-                with gr.Accordion("Advanced", open=False):
-                    device = gr.Dropdown(_DEVICES, value="auto", label="Device")
-                    tile = gr.Slider(
-                        0, 1024, value=512, step=64,
-                        label="Tile size (0 = no tiling; lower if you run out of memory)",
-                    )
-                run = gr.Button("Enhance", variant="primary")
-            with gr.Column():
-                out = gr.Image(label="Result", type="pil", format="png")
-                info = gr.Markdown()
+    with gr.Blocks(title="Upscaler", css=_CSS) as demo:
+        with gr.Column(elem_id="hero"):
+            gr.Markdown(
+                "# 🖼️ Upscaler\n"
+                "Local, open-source image tools — nothing leaves your machine. "
+                f"Device: `{resolve_device('auto').type}`."
+            )
 
+        # ---- Section 1: File Converter ----
+        with gr.Group(elem_classes="section-card"):
+            gr.Markdown("## 📁 File Converter\nChange image format — fast, no AI models.")
+            with gr.Row():
+                with gr.Column(scale=1):
+                    conv_in = gr.Image(
+                        label="Image", type="pil", sources=["upload", "clipboard"],
+                        height=240,
+                    )
+                    with gr.Row():
+                        conv_fmt = gr.Dropdown(
+                            list(FORMATS), value="PNG", label="Convert to", scale=2
+                        )
+                        conv_quality = gr.Slider(
+                            1, 100, value=90, step=1, label="Quality (lossy)", scale=3
+                        )
+                    conv_lossless = gr.Checkbox(value=False, label="Lossless WebP")
+                    conv_btn = gr.Button("Convert", variant="primary")
+                with gr.Column(scale=1):
+                    conv_file = gr.File(label="Download converted file")
+                    conv_info = gr.Markdown()
+
+        gr.Markdown("---")
+
+        # ---- Section 2: Upscale & Enhance ----
+        with gr.Group(elem_classes="section-card"):
+            gr.Markdown(
+                "## 🔍 Upscale & Enhance\n"
+                "Real-ESRGAN super-resolution, with optional deblur and sharpening. "
+                "*Tip: for an already-decent photo, prefer the **×2** model — ×4 can "
+                "over-process clean images.*"
+            )
+            with gr.Row():
+                with gr.Column(scale=1):
+                    inp = gr.Image(
+                        label="Input", type="pil", sources=["upload", "clipboard"],
+                        height=240,
+                    )
+                    model = gr.Dropdown(
+                        _MODEL_CHOICES, value="realesrgan-x4plus", label="Upscale model"
+                    )
+                    sharpen = gr.Slider(
+                        0.0, 3.0, value=0.0, step=0.1,
+                        label="Sharpen (unsharp mask) — 0 = off",
+                    )
+                    with gr.Accordion("Deblur (motion blur)", open=False):
+                        deblur = gr.Checkbox(value=False, label="Deblur first (NAFNet)")
+                        deblur_model = gr.Dropdown(
+                            _DEBLUR_CHOICES, value="nafnet-gopro-width64",
+                            label="Deblur model",
+                        )
+                    with gr.Accordion("Advanced", open=False):
+                        device = gr.Dropdown(_DEVICES, value="auto", label="Device")
+                        tile = gr.Slider(
+                            0, 1024, value=512, step=64,
+                            label="Tile size (0 = off; lower if you run out of memory)",
+                        )
+                    run = gr.Button("Enhance", variant="primary")
+                with gr.Column(scale=1):
+                    out = gr.Image(label="Result", type="pil", format="png", height=240)
+                    info = gr.Markdown()
+
+        conv_btn.click(
+            convert_image,
+            [conv_in, conv_fmt, conv_quality, conv_lossless],
+            [conv_file, conv_info],
+        )
         run.click(
             enhance,
             [inp, model, device, deblur, deblur_model, sharpen, tile],
@@ -106,8 +182,6 @@ def build_demo() -> gr.Blocks:
 
 
 if __name__ == "__main__":
-    import os
-
     build_demo().launch(
         server_name="127.0.0.1",
         server_port=int(os.environ.get("UPSCALER_PORT", "7860")),
