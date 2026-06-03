@@ -10,6 +10,7 @@ from PIL import Image
 from tqdm import tqdm
 
 from upscaler.convert import FORMATS, convert_file, extension_for
+from upscaler.document import images_to_pdf, pdf_to_images
 from upscaler.deblur import Deblurrer
 from upscaler.engine import Upscaler
 from upscaler.models.registry import DEBLUR_MODELS, DEFAULT_DEBLUR_MODEL, MODELS
@@ -96,11 +97,72 @@ def run_convert(argv: list[str]) -> int:
     return 0
 
 
+def build_pdf_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="upscaler pdf", description="Image ⇄ PDF conversion."
+    )
+    sub = p.add_subparsers(dest="action", required=True)
+
+    b = sub.add_parser("build", help="Combine images into a (multi-page) PDF.")
+    b.add_argument(
+        "inputs", type=Path, nargs="+",
+        help="Image files (kept in the given order) and/or directories.",
+    )
+    b.add_argument("-o", "--output", type=Path, required=True, help="Output .pdf path.")
+
+    e = sub.add_parser("extract", help="Render a PDF's pages to PNGs.")
+    e.add_argument("input", type=Path, help="Input .pdf file.")
+    e.add_argument(
+        "-o", "--output", type=Path,
+        help="Output directory (default: <pdf-stem>_pages next to the PDF).",
+    )
+    e.add_argument("--dpi", type=int, default=150, help="Render DPI (default 150).")
+    return p
+
+
+def run_pdf(argv: list[str]) -> int:
+    args = build_pdf_parser().parse_args(argv)
+
+    if args.action == "build":
+        paths: list[Path] = []
+        for inp in args.inputs:
+            if not inp.exists():
+                print(f"error: input not found: {inp}", file=sys.stderr)
+                return 2
+            paths.extend(_gather_inputs(inp))
+        if not paths:
+            print("error: no images to combine", file=sys.stderr)
+            return 2
+        data = images_to_pdf([Image.open(p) for p in paths])
+        if args.output.parent != Path():
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_bytes(data)
+        print(f"→ {args.output} ({len(paths)} page(s))", file=sys.stderr)
+        return 0
+
+    # extract
+    if not args.input.exists():
+        print(f"error: input not found: {args.input}", file=sys.stderr)
+        return 2
+    try:
+        pages = pdf_to_images(str(args.input), dpi=args.dpi)
+    except ImportError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    out_dir = args.output or args.input.parent / f"{args.input.stem}_pages"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for i, im in enumerate(pages, 1):
+        im.save(out_dir / f"{args.input.stem}_p{i:03d}.png")
+    print(f"→ {out_dir} ({len(pages)} page(s))", file=sys.stderr)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="upscaler",
         description="Local image upscaling + sharpening (pretrained Real-ESRGAN).",
-        epilog="Subcommand: `upscaler convert <input> -o out.webp` — format conversion.",
+        epilog="Subcommands: `upscaler convert <input> -o out.webp` (format), "
+        "`upscaler pdf build *.png -o out.pdf` / `upscaler pdf extract in.pdf`.",
     )
     p.add_argument(
         "input", type=Path, nargs="?", help="Image file or a directory of images."
@@ -141,9 +203,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
-    # Optional `convert` subcommand; bare `upscaler <input>` stays the upscaler.
+    # Optional subcommands; bare `upscaler <input>` stays the upscaler.
     if argv and argv[0] == "convert":
         return run_convert(argv[1:])
+    if argv and argv[0] == "pdf":
+        return run_pdf(argv[1:])
 
     args = build_parser().parse_args(argv)
 
