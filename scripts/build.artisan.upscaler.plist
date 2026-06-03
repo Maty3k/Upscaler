@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  macOS LaunchAgent: auto-starts the Gradio GUI at login and keeps it running
+  (restarts on crash), so http://upscaler.test stays available across reboots.
+
+  Install (adjust the absolute paths to your checkout / username first):
+    cp scripts/build.artisan.upscaler.plist ~/Library/LaunchAgents/
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/build.artisan.upscaler.plist
+    launchctl enable  gui/$(id -u)/build.artisan.upscaler
+
+  Manage:
+    launchctl kickstart -k gui/$(id -u)/build.artisan.upscaler   # restart (after code changes)
+    launchctl print        gui/$(id -u)/build.artisan.upscaler   # status
+    launchctl bootout      gui/$(id -u)/build.artisan.upscaler   # stop + unload
+
+  Logs: ~/Library/Logs/upscaler-gui.log
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>build.artisan.upscaler</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/anamariaradulescu/Herd/Upscaler/.venv/bin/python</string>
+        <string>/Users/anamariaradulescu/Herd/Upscaler/app.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/anamariaradulescu/Herd/Upscaler</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>UPSCALER_PORT</key>
+        <string>7860</string>
+    </dict>
+
+    <!-- Start at login and keep it running (restart on crash). -->
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/anamariaradulescu/Library/Logs/upscaler-gui.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/anamariaradulescu/Library/Logs/upscaler-gui.log</string>
+</dict>
+</plist>

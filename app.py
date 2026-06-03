@@ -118,7 +118,7 @@ _CSS = """
 
 
 def build_demo() -> gr.Blocks:
-    with gr.Blocks(title="Upscaler", css=_CSS) as demo:
+    with gr.Blocks(title="Upscaler") as demo:
         with gr.Column(elem_id="hero"):
             gr.Markdown(
                 "# 🖼️ Upscaler\n"
@@ -211,4 +211,5 @@ if __name__ == "__main__":
         server_name="127.0.0.1",
         server_port=int(os.environ.get("UPSCALER_PORT", "7860")),
         theme=gr.themes.Soft(),
+        css=_CSS,
     )

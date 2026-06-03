@@ -124,8 +124,23 @@ herd proxy upscaler http://127.0.0.1:7860 --secure
 cd ~/Herd/Upscaler && UPSCALER_PORT=7860 .venv/bin/python app.py
 ```
 
-Then `https://upscaler.test` serves the GUI. **The link only works while the
-Gradio process is running**; the proxy itself stays configured.
+Then `https://upscaler.test` serves the GUI.
+
+### Auto-start across reboots (macOS LaunchAgent)
+
+A LaunchAgent runs the Gradio app at login and restarts it on crash, so the link
+survives reboots without manually relaunching. The agent lives at
+`~/Library/LaunchAgents/build.artisan.upscaler.plist`; a committed copy +
+install/manage instructions are in `scripts/build.artisan.upscaler.plist`.
+
+```bash
+launchctl kickstart -k gui/$(id -u)/build.artisan.upscaler   # restart after code changes
+launchctl print        gui/$(id -u)/build.artisan.upscaler   # status
+launchctl bootout      gui/$(id -u)/build.artisan.upscaler   # stop + unload
+```
+
+Logs: `~/Library/Logs/upscaler-gui.log`. After editing `app.py`, `kickstart -k`
+to pick up changes.
 
 ---
 
@@ -199,9 +214,9 @@ more time than it costs.
 
 - [ ] **x2 default for photos** — 4x is an aggressive default that degrades good photos.
 - [ ] **Face restoration** (GFPGAN/CodeFormer) option.
-- [ ] **GUI ONNX toggle** — app.py still uses the torch backend only.
+- [x] **GUI ONNX toggle** — backend selectable in the GUI's Advanced section.
 - [ ] **Re-host NAFNet weights** under our own account; re-pin checksums.
 - [ ] **CI** — GitHub Actions running `pytest` on the CPU path.
 - [ ] **Real speed benchmark** — ONNX vs torch on actual hardware (correctness verified, speed not).
 - [ ] **`train/` module** — degradation → dataset → RRDBNet → loss → loop, ROCm-ready (for the training plan above).
-- [ ] **Auto-start** the Gradio app so `upscaler.test` survives reboots.
+- [x] **Auto-start** the Gradio app so `upscaler.test` survives reboots (LaunchAgent).
