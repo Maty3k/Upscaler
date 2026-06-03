@@ -23,24 +23,43 @@ from upscaler.models.registry import DEBLUR_MODELS, MODELS
 from upscaler.sharpen import unsharp_mask
 
 # Cache loaded models so switching images doesn't reload weights every run.
-_UP_CACHE: dict[tuple[str, str], Upscaler] = {}
-_DB_CACHE: dict[tuple[str, str], Deblurrer] = {}
+# Keyed by (model, device, onnx) so torch and ONNX engines are cached separately.
+_UP_CACHE: dict[tuple, object] = {}
+_DB_CACHE: dict[tuple, object] = {}
 
 
-def _get_upscaler(model: str, device: str, tile: int) -> Upscaler:
-    key = (model, device)
+def _onnx_engines():
+    try:
+        from upscaler.onnx_engine import OnnxDeblurrer, OnnxUpscaler
+    except ImportError as e:
+        raise gr.Error(
+            'ONNX backend needs optional deps — install with: pip install -e ".[onnx]"'
+        ) from e
+    return OnnxUpscaler, OnnxDeblurrer
+
+
+def _get_upscaler(model: str, device: str, tile: int, onnx: bool):
+    key = (model, device, onnx)
     up = _UP_CACHE.get(key)
-    if up is None or up.tile != tile:
-        up = Upscaler(model=model, device=device, tile=tile)
+    if up is None or getattr(up, "tile", None) != tile:
+        if onnx:
+            OnnxUpscaler, _ = _onnx_engines()
+            up = OnnxUpscaler(model=model, device=device, tile=tile)
+        else:
+            up = Upscaler(model=model, device=device, tile=tile)
         _UP_CACHE[key] = up
     return up
 
 
-def _get_deblurrer(model: str, device: str) -> Deblurrer:
-    key = (model, device)
+def _get_deblurrer(model: str, device: str, onnx: bool):
+    key = (model, device, onnx)
     db = _DB_CACHE.get(key)
     if db is None:
-        db = Deblurrer(model=model, device=device)
+        if onnx:
+            _, OnnxDeblurrer = _onnx_engines()
+            db = OnnxDeblurrer(model=model, device=device)
+        else:
+            db = Deblurrer(model=model, device=device)
         _DB_CACHE[key] = db
     return db
 
@@ -64,23 +83,24 @@ def convert_image(image, fmt, quality, lossless):
 
 # -- Upscale & enhance -------------------------------------------------------
 
-def enhance(image, model, device, deblur, deblur_model, sharpen, tile):
+def enhance(image, model, device, deblur, deblur_model, sharpen, tile, onnx):
     if image is None:
         raise gr.Error("Upload an image to enhance first.")
     src = image if isinstance(image, Image.Image) else Image.fromarray(image)
     stages = []
     if deblur:
-        src = _get_deblurrer(deblur_model, device).deblur(src)
+        src = _get_deblurrer(deblur_model, device, onnx).deblur(src)
         stages.append(f"deblur `{deblur_model}`")
-    up = _get_upscaler(model, device, int(tile))
+    up = _get_upscaler(model, device, int(tile), onnx)
     result = up.upscale(src)
     stages.append(f"upscale ×{up.scale}")
     if sharpen > 0:
         result = unsharp_mask(result, strength=float(sharpen))
         stages.append(f"sharpen {sharpen:g}")
+    backend = "onnx" if onnx else getattr(up, "device", None) and up.device.type
     info = (
         "✅ " + " → ".join(stages)
-        + f" · device `{up.device.type}` · {result.width}×{result.height}px"
+        + f" · backend `{backend}` · {result.width}×{result.height}px"
     )
     return result, info
 
@@ -159,6 +179,11 @@ def build_demo() -> gr.Blocks:
                         )
                     with gr.Accordion("Advanced", open=False):
                         device = gr.Dropdown(_DEVICES, value="auto", label="Device")
+                        onnx = gr.Checkbox(
+                            value=False,
+                            label="ONNX Runtime backend (exports once; torch-free, "
+                            "often faster on CPU)",
+                        )
                         tile = gr.Slider(
                             0, 1024, value=512, step=64,
                             label="Tile size (0 = off; lower if you run out of memory)",
@@ -175,7 +200,7 @@ def build_demo() -> gr.Blocks:
         )
         run.click(
             enhance,
-            [inp, model, device, deblur, deblur_model, sharpen, tile],
+            [inp, model, device, deblur, deblur_model, sharpen, tile, onnx],
             [out, info],
         )
     return demo
