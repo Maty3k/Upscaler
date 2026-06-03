@@ -106,4 +106,10 @@ def build_demo() -> gr.Blocks:
 
 
 if __name__ == "__main__":
-    build_demo().launch(theme=gr.themes.Soft())
+    import os
+
+    build_demo().launch(
+        server_name="127.0.0.1",
+        server_port=int(os.environ.get("UPSCALER_PORT", "7860")),
+        theme=gr.themes.Soft(),
+    )

@@ -4,8 +4,10 @@ Local, open-source image **upscaling + sharpening**. Runs entirely on your
 machine (CPU, NVIDIA CUDA, or Apple-Silicon MPS) on top of pretrained
 [Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN) weights — no cloud, no API keys.
 
-> Status: **Phase 1** — core upscaling works end-to-end via library + CLI.
-> A model-based deblur stage and a drag-and-drop GUI are planned (see [Roadmap](#roadmap)).
+> Upscaling, deblur, a Gradio GUI, and an ONNX backend all work end-to-end.
+> See [`docs/PROJECT_NOTES.md`](docs/PROJECT_NOTES.md) for full planning, design
+> decisions, the "why it can make photos worse" lesson, and the
+> train-your-own-model playbook (incl. AMD/Windows/ROCm).
 
 ## Install
 
