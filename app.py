@@ -10,13 +10,16 @@ Two tools on one page:
 
 from __future__ import annotations
 
+import io
 import os
 import tempfile
+import zipfile
 
 import gradio as gr
 from PIL import Image
 
 from upscaler.convert import FORMATS, convert, extension_for
+from upscaler.document import images_to_pdf, pdf_to_images
 from upscaler.deblur import Deblurrer
 from upscaler.engine import Upscaler, resolve_device
 from upscaler.models.registry import DEBLUR_MODELS, MODELS
@@ -81,6 +84,36 @@ def convert_image(image, fmt, quality, lossless):
     return path, f"✅ Converted to **{fmt}** ({note}) · {kb:,.1f} KB · {img.width}×{img.height}px"
 
 
+# -- Image <-> PDF -----------------------------------------------------------
+
+def build_pdf(files):
+    if not files:
+        raise gr.Error("Add at least one image.")
+    images = [Image.open(f) for f in files]
+    data = images_to_pdf(images)
+    fd, path = tempfile.mkstemp(suffix=".pdf")
+    with os.fdopen(fd, "wb") as f:
+        f.write(data)
+    return path, f"✅ {len(images)} image(s) → PDF · {len(data) / 1024:,.1f} KB"
+
+
+def extract_pdf(pdf_file, dpi):
+    if pdf_file is None:
+        raise gr.Error("Upload a PDF first.")
+    try:
+        pages = pdf_to_images(pdf_file, dpi=int(dpi))
+    except ImportError as e:
+        raise gr.Error(str(e)) from e
+
+    fd, zpath = tempfile.mkstemp(suffix=".zip")
+    with os.fdopen(fd, "wb") as fh, zipfile.ZipFile(fh, "w") as z:
+        for i, im in enumerate(pages, 1):
+            buf = io.BytesIO()
+            im.save(buf, format="PNG")
+            z.writestr(f"page_{i:03d}.png", buf.getvalue())
+    return zpath, pages, f"✅ {len(pages)} page(s) → PNG · {int(dpi)} dpi (zip)"
+
+
 # -- Upscale & enhance -------------------------------------------------------
 
 def enhance(image, model, device, deblur, deblur_model, sharpen, tile, onnx):
@@ -110,7 +143,8 @@ _DEBLUR_CHOICES = [(f"{s.name} — {s.notes}", s.name) for s in DEBLUR_MODELS.va
 _DEVICES = ["auto", "cpu", "cuda", "mps"]
 
 _CSS = """
-.gradio-container { max-width: 1080px !important; margin: auto; }
+.gradio-container { max-width: 100% !important; padding-left: 24px !important;
+    padding-right: 24px !important; }
 #hero h1 { margin-bottom: 0; }
 .section-card { border: 1px solid var(--border-color-primary);
     border-radius: 12px; padding: 16px; }
@@ -150,7 +184,33 @@ def build_demo() -> gr.Blocks:
 
         gr.Markdown("---")
 
-        # ---- Section 2: Upscale & Enhance ----
+        # ---- Section 2: Image <-> PDF ----
+        with gr.Group(elem_classes="section-card"):
+            gr.Markdown(
+                "## 📄 Image ⇄ PDF\n"
+                "Combine images into a PDF, or extract a PDF's pages back to PNGs."
+            )
+            with gr.Row():
+                with gr.Column(scale=1):
+                    gr.Markdown("**Images → PDF** (multiple images = multi-page)")
+                    pdf_imgs_in = gr.File(
+                        label="Images", file_count="multiple", file_types=["image"]
+                    )
+                    pdf_build_btn = gr.Button("Build PDF", variant="primary")
+                    pdf_build_out = gr.File(label="Download PDF")
+                    pdf_build_info = gr.Markdown()
+                with gr.Column(scale=1):
+                    gr.Markdown("**PDF → Images**")
+                    pdf_in = gr.File(label="PDF", file_count="single", file_types=[".pdf"])
+                    pdf_dpi = gr.Slider(72, 300, value=150, step=1, label="Render DPI")
+                    pdf_extract_btn = gr.Button("Extract pages", variant="primary")
+                    pdf_extract_out = gr.File(label="Download pages (ZIP)")
+                    pdf_gallery = gr.Gallery(label="Pages", columns=4, height=220)
+                    pdf_extract_info = gr.Markdown()
+
+        gr.Markdown("---")
+
+        # ---- Section 3: Upscale & Enhance ----
         with gr.Group(elem_classes="section-card"):
             gr.Markdown(
                 "## 🔍 Upscale & Enhance\n"
@@ -197,6 +257,10 @@ def build_demo() -> gr.Blocks:
             convert_image,
             [conv_in, conv_fmt, conv_quality, conv_lossless],
             [conv_file, conv_info],
+        )
+        pdf_build_btn.click(build_pdf, [pdf_imgs_in], [pdf_build_out, pdf_build_info])
+        pdf_extract_btn.click(
+            extract_pdf, [pdf_in, pdf_dpi], [pdf_extract_out, pdf_gallery, pdf_extract_info]
         )
         run.click(
             enhance,

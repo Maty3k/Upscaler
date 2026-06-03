@@ -70,8 +70,11 @@ pip install -e ".[gui]"
 python app.py            # opens a local web UI at http://127.0.0.1:7860
 ```
 
-Drag in an image, pick a model, optionally sharpen, and download the result.
-Runs entirely on your machine — nothing is uploaded anywhere.
+A full-width local web app with three tools: **File Converter** (PNG/JPEG/WebP/
+BMP/TIFF), **Image ⇄ PDF** (combine images into a PDF, or extract a PDF's pages
+to PNGs), and **Upscale & Enhance**. Runs entirely on your machine — nothing is
+uploaded anywhere. (PDF support uses `pypdfium2`, included in the `.[gui]` extra
+or installable on its own via `.[pdf]`.)
 
 ### Library
 
