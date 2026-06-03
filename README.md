@@ -48,6 +48,18 @@ upscaler photo.jpg --scale 4 --onnx
 upscaler --list-models
 ```
 
+#### Convert formats (no AI)
+
+```bash
+upscaler convert photo.png -o photo.webp        # format from extension
+upscaler convert photo.png -f JPEG -q 80        # explicit format + quality
+upscaler convert photo.png -o out.webp --lossless
+upscaler convert ./folder -o ./out -f WebP      # batch a directory
+```
+
+Supports PNG / JPEG / WebP / BMP / TIFF. Alpha is flattened onto a white
+background for formats that can't store it (JPEG/BMP).
+
 Weights download automatically on first use and are cached under
 `upscaler/weights/` (override with `UPSCALER_WEIGHTS_DIR`).
 
