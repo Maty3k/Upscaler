@@ -201,6 +201,11 @@ tens of dollars; from-scratch is hundreds. The 9070 XT is fine for development
 and fine-tuning, but for long from-scratch runs the mature CUDA ecosystem saves
 more time than it costs.
 
+### Running it on the Windows/AMD box
+Full GPU-accelerated setup guide (WSL2 + ROCm for the RX 9070 XT, plus DirectML
+and CPU fallbacks): [`docs/SETUP-WINDOWS-AMD.md`](SETUP-WINDOWS-AMD.md). Expect
+~tens-of-times faster video upscaling there than on the Mac's MPS.
+
 ### Sources (training research)
 - ROCm compatibility matrix: https://rocm.docs.amd.com/en/latest/compatibility/compatibility-matrix.html
 - ROCm WSL2 support (Radeon): https://rocm.docs.amd.com/projects/radeon/en/latest/docs/compatibility/wsl/wsl_compatibility.html

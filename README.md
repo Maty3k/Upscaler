@@ -13,6 +13,10 @@ machine (CPU, NVIDIA CUDA, or Apple-Silicon MPS) on top of pretrained
 
 Python **3.9–3.12** recommended (PyTorch wheels).
 
+> **On a Windows PC with an AMD GPU?** See
+> [`docs/SETUP-WINDOWS-AMD.md`](docs/SETUP-WINDOWS-AMD.md) for a full
+> GPU-accelerated setup (WSL2 + ROCm) — dramatically faster than CPU/MPS for video.
+
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -e .            # extras: ".[gui]" (GUI), ".[onnx]" (ONNX backend), ".[dev]" (tests)
