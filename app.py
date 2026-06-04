@@ -506,7 +506,7 @@ def build_demo() -> gr.Blocks:
                         inp = gr.Image(
                             label="Input", type="pil",
                             sources=["upload", "clipboard"], height=300,
-                            elem_classes="drop",
+                            elem_classes="drop", buttons=["download", "fullscreen"],
                         )
                         model = gr.Dropdown(
                             _MODEL_CHOICES, value="realesrgan-x4plus",
@@ -556,11 +556,15 @@ def build_demo() -> gr.Blocks:
                                 info="Processes big images in tiles to save memory. "
                                 "Lower this if you hit out-of-memory errors.",
                             )
-                        run = gr.Button("Enhance", variant="primary", size="lg")
+                        with gr.Row():
+                            run = gr.Button(
+                                "Enhance", variant="primary", size="lg", scale=3
+                            )
+                            clear = gr.Button("↺ Clear", variant="secondary", scale=1)
                     with gr.Column(scale=1):
                         out = gr.ImageSlider(
                             label="Before / after — drag the divider to compare",
-                            type="pil", height=300,
+                            type="pil", height=300, buttons=["download", "fullscreen"],
                         )
                         info = gr.Markdown()
 
@@ -610,12 +614,16 @@ def build_demo() -> gr.Blocks:
                                 label="Tile size (0 = off)",
                                 info="Lower if you hit out-of-memory on big frames.",
                             )
-                        vid_btn = gr.Button("Upscale video", variant="primary", size="lg")
+                        with gr.Row():
+                            vid_btn = gr.Button(
+                                "Upscale video", variant="primary", size="lg", scale=3
+                            )
+                            vid_clear = gr.Button("↺ Clear", variant="secondary", scale=1)
                     with gr.Column(scale=1):
-                        vid_out = gr.Video(label="Result")
+                        vid_out = gr.Video(label="Result", buttons=["download"])
                         vid_compare = gr.ImageSlider(
                             label="First frame — before / after (drag to compare)",
-                            type="pil", height=220,
+                            type="pil", height=220, buttons=["download", "fullscreen"],
                         )
                         vid_info = gr.Markdown()
 
@@ -641,7 +649,7 @@ def build_demo() -> gr.Blocks:
                             conv_in = gr.Image(
                                 label="Image", type="pil",
                                 sources=["upload", "clipboard"], height=300,
-                                elem_classes="drop",
+                                elem_classes="drop", buttons=["download", "fullscreen"],
                             )
                             conv_fmt = gr.Dropdown(
                                 list(FORMATS), value="PNG", label="Convert to",
@@ -717,10 +725,15 @@ def build_demo() -> gr.Blocks:
             [inp, model, device, deblur, deblur_model, sharpen, tile, onnx, out_size],
             [out, info],
         )
+        clear.click(lambda: (None, None, None), None, [inp, out, info])
         vid_btn.click(
             upscale_video_ui,
             [vid_in, vid_model, vid_size, vid_sharpen, vid_smooth, vid_device, vid_tile],
             [vid_out, vid_compare, vid_info],
+        )
+        vid_clear.click(
+            lambda: (None, None, None, None), None,
+            [vid_in, vid_out, vid_compare, vid_info],
         )
     return demo
 
