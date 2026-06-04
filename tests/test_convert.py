@@ -19,8 +19,8 @@ def test_convert_roundtrips_each_format(fmt):
     data = convert(_img(), fmt, quality=85)
     out = Image.open(io.BytesIO(data))
     assert out.format == FORMATS[fmt][0]
-    # ICO is an icon container that rescales to standard sizes; others preserve.
-    if fmt != "ICO":
+    # ICO/ICNS are icon containers that rescale to standard sizes; others preserve.
+    if fmt not in ("ICO", "ICNS"):
         assert out.size == (24, 16)
 
 

@@ -12,22 +12,38 @@ from typing import Optional
 
 from PIL import Image
 
+# HEIC/HEIF (iPhone photos) via the optional pillow-heif plugin.
+try:
+    from pillow_heif import register_heif_opener
+
+    register_heif_opener()
+    _HEIF_OK = True
+except Exception:  # pragma: no cover - plugin missing
+    _HEIF_OK = False
+
 # Display name -> (Pillow format, file extension, lossy?)
 FORMATS: dict[str, tuple[str, str, bool]] = {
     "PNG": ("PNG", "png", False),
     "JPEG": ("JPEG", "jpg", True),
     "WebP": ("WEBP", "webp", True),
     "AVIF": ("AVIF", "avif", True),
+    "JPEG 2000": ("JPEG2000", "jp2", False),
     "TIFF": ("TIFF", "tiff", False),
     "GIF": ("GIF", "gif", False),
     "BMP": ("BMP", "bmp", False),
     "ICO": ("ICO", "ico", False),
+    "ICNS": ("ICNS", "icns", False),
     "TGA": ("TGA", "tga", False),
+    "PCX": ("PCX", "pcx", False),
+    "DIB": ("DIB", "dib", False),
+    "SGI": ("SGI", "sgi", False),
     "PPM": ("PPM", "ppm", False),
 }
+if _HEIF_OK:
+    FORMATS["HEIC"] = ("HEIF", "heic", True)
 
 # Formats that cannot store an alpha channel — alpha is flattened onto a bg.
-_NO_ALPHA = {"JPEG", "BMP", "PPM"}
+_NO_ALPHA = {"JPEG", "BMP", "PPM", "PCX"}
 
 
 def extension_for(fmt: str) -> str:
@@ -66,7 +82,7 @@ def convert(
     save_kwargs: dict = {}
     if pil_fmt == "JPEG":
         save_kwargs.update(quality=int(quality), optimize=True)
-    elif pil_fmt == "AVIF":
+    elif pil_fmt in ("AVIF", "HEIF"):
         save_kwargs.update(quality=int(quality))
     elif pil_fmt == "WEBP":
         if lossless:
