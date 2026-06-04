@@ -142,32 +142,97 @@ _MODEL_CHOICES = [(f"{s.name}  (×{s.scale}) — {s.notes}", s.name) for s in MO
 _DEBLUR_CHOICES = [(f"{s.name} — {s.notes}", s.name) for s in DEBLUR_MODELS.values()]
 _DEVICES = ["auto", "cpu", "cuda", "mps"]
 
+THEME = gr.themes.Base(
+    primary_hue=gr.themes.colors.neutral,
+    secondary_hue=gr.themes.colors.neutral,
+    neutral_hue=gr.themes.colors.stone,
+    font=[gr.themes.GoogleFont("Manrope"), "system-ui", "sans-serif"],
+    font_mono=[gr.themes.GoogleFont("JetBrains Mono"), "ui-monospace", "monospace"],
+    radius_size=gr.themes.sizes.radius_lg,
+    spacing_size=gr.themes.sizes.spacing_md,
+    text_size=gr.themes.sizes.text_md,
+).set(
+    body_background_fill="#FAFAF9",
+    body_text_color="#1C1917",
+    body_text_color_subdued="#78716C",
+    block_background_fill="#FFFFFF",
+    block_border_color="#EAE8E4",
+    block_border_width="1px",
+    block_radius="16px",
+    block_shadow="0 1px 2px rgba(28,25,23,0.04)",
+    block_label_text_weight="600",
+    block_label_text_color="#57534E",
+    input_background_fill="#FFFFFF",
+    input_border_color="#E7E5E4",
+    input_border_color_focus="#A8A29E",
+    button_primary_background_fill="#1C1917",
+    button_primary_background_fill_hover="#3F3B37",
+    button_primary_text_color="#FFFFFF",
+    button_primary_border_color="#1C1917",
+    button_secondary_background_fill="#FFFFFF",
+    button_secondary_border_color="#E7E5E4",
+    button_large_radius="12px",
+    button_small_radius="10px",
+)
+
 _CSS = """
-.gradio-container { max-width: 100% !important; padding-left: 24px !important;
-    padding-right: 24px !important; }
-#hero h1 { margin-bottom: 0; }
-.section-card { border: 1px solid var(--border-color-primary);
-    border-radius: 12px; padding: 16px; }
+@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap');
+
+.gradio-container { max-width: 100% !important; padding: 4px 40px 56px !important; }
+
+#hero { padding: 34px 2px 16px; }
+#hero .brand { font-size: 2.1rem; font-weight: 800; letter-spacing: -0.03em;
+    margin: 0; color: #1C1917; }
+#hero .sub { color: #78716C; margin: 8px 0 14px; font-size: 1.02rem; max-width: 64ch; }
+.pill { display: inline-flex; align-items: center; gap: 7px; padding: 5px 12px;
+    border: 1px solid #EAE8E4; border-radius: 999px; font-size: 0.8rem;
+    color: #57534E; background: #fff; font-weight: 500; }
+.pill .dot { width: 7px; height: 7px; border-radius: 999px; background: #22C55E; }
+
+.section-card { border-radius: 18px !important; padding: 24px !important; }
+.sec-head .eyebrow { font-size: 0.72rem; font-weight: 700; letter-spacing: 0.13em;
+    text-transform: uppercase; color: #A8A29E; }
+.sec-head h2 { font-size: 1.3rem; font-weight: 700; letter-spacing: -0.02em;
+    margin: 3px 0 5px; color: #1C1917; }
+.sec-head p { color: #78716C; margin: 0; font-size: 0.92rem; max-width: 72ch; }
+.col-label { font-weight: 600; color: #44403C; font-size: 0.92rem; }
+.spacer { height: 22px; }
+
+footer { display: none !important; }
 """
 
 
+def _section_head(eyebrow: str, title: str, desc: str) -> str:
+    return (
+        f'<div class="sec-head"><div class="eyebrow">{eyebrow}</div>'
+        f"<h2>{title}</h2><p>{desc}</p></div>"
+    )
+
+
 def build_demo() -> gr.Blocks:
+    device_name = resolve_device("auto").type
     with gr.Blocks(title="Upscaler") as demo:
-        with gr.Column(elem_id="hero"):
-            gr.Markdown(
-                "# 🖼️ Upscaler\n"
-                "Local, open-source image tools — nothing leaves your machine. "
-                f"Device: `{resolve_device('auto').type}`."
-            )
+        gr.HTML(
+            '<div id="hero">'
+            '<div class="brand">Upscaler</div>'
+            '<div class="sub">A quiet little toolbox for images — convert formats, '
+            "make and split PDFs, and upscale with AI. Everything runs locally; "
+            "nothing is uploaded.</div>"
+            f'<span class="pill"><span class="dot"></span>running locally · {device_name}</span>'
+            "</div>"
+        )
 
         # ---- Section 1: File Converter ----
         with gr.Group(elem_classes="section-card"):
-            gr.Markdown("## 📁 File Converter\nChange image format — fast, no AI models.")
+            gr.HTML(_section_head(
+                "Convert", "File Converter",
+                "Change image format — fast, no AI models.",
+            ))
             with gr.Row():
                 with gr.Column(scale=1):
                     conv_in = gr.Image(
                         label="Image", type="pil", sources=["upload", "clipboard"],
-                        height=240,
+                        height=260,
                     )
                     with gr.Row():
                         conv_fmt = gr.Dropdown(
@@ -177,52 +242,54 @@ def build_demo() -> gr.Blocks:
                             1, 100, value=90, step=1, label="Quality (lossy)", scale=3
                         )
                     conv_lossless = gr.Checkbox(value=False, label="Lossless WebP")
-                    conv_btn = gr.Button("Convert", variant="primary")
+                    conv_btn = gr.Button("Convert", variant="primary", size="lg")
                 with gr.Column(scale=1):
                     conv_file = gr.File(label="Download converted file")
                     conv_info = gr.Markdown()
 
-        gr.Markdown("---")
+        gr.HTML('<div class="spacer"></div>')
 
         # ---- Section 2: Image <-> PDF ----
         with gr.Group(elem_classes="section-card"):
-            gr.Markdown(
-                "## 📄 Image ⇄ PDF\n"
-                "Combine images into a PDF, or extract a PDF's pages back to PNGs."
-            )
+            gr.HTML(_section_head(
+                "Documents", "Image ⇄ PDF",
+                "Combine images into a PDF, or extract a PDF's pages back to PNGs.",
+            ))
             with gr.Row():
                 with gr.Column(scale=1):
-                    gr.Markdown("**Images → PDF** (multiple images = multi-page)")
+                    gr.HTML('<div class="col-label">Images → PDF '
+                            "<span style='color:#A8A29E;font-weight:400'>"
+                            "(multiple = multi-page)</span></div>")
                     pdf_imgs_in = gr.File(
                         label="Images", file_count="multiple", file_types=["image"]
                     )
-                    pdf_build_btn = gr.Button("Build PDF", variant="primary")
+                    pdf_build_btn = gr.Button("Build PDF", variant="primary", size="lg")
                     pdf_build_out = gr.File(label="Download PDF")
                     pdf_build_info = gr.Markdown()
                 with gr.Column(scale=1):
-                    gr.Markdown("**PDF → Images**")
+                    gr.HTML('<div class="col-label">PDF → Images</div>')
                     pdf_in = gr.File(label="PDF", file_count="single", file_types=[".pdf"])
                     pdf_dpi = gr.Slider(72, 300, value=150, step=1, label="Render DPI")
-                    pdf_extract_btn = gr.Button("Extract pages", variant="primary")
+                    pdf_extract_btn = gr.Button("Extract pages", variant="primary", size="lg")
                     pdf_extract_out = gr.File(label="Download pages (ZIP)")
                     pdf_gallery = gr.Gallery(label="Pages", columns=4, height=220)
                     pdf_extract_info = gr.Markdown()
 
-        gr.Markdown("---")
+        gr.HTML('<div class="spacer"></div>')
 
         # ---- Section 3: Upscale & Enhance ----
         with gr.Group(elem_classes="section-card"):
-            gr.Markdown(
-                "## 🔍 Upscale & Enhance\n"
+            gr.HTML(_section_head(
+                "AI", "Upscale & Enhance",
                 "Real-ESRGAN super-resolution, with optional deblur and sharpening. "
-                "*Tip: for an already-decent photo, prefer the **×2** model — ×4 can "
-                "over-process clean images.*"
-            )
+                "Tip: for an already-decent photo, prefer the ×2 model — ×4 can "
+                "over-process clean images.",
+            ))
             with gr.Row():
                 with gr.Column(scale=1):
                     inp = gr.Image(
                         label="Input", type="pil", sources=["upload", "clipboard"],
-                        height=240,
+                        height=260,
                     )
                     model = gr.Dropdown(
                         _MODEL_CHOICES, value="realesrgan-x4plus", label="Upscale model"
@@ -248,9 +315,9 @@ def build_demo() -> gr.Blocks:
                             0, 1024, value=512, step=64,
                             label="Tile size (0 = off; lower if you run out of memory)",
                         )
-                    run = gr.Button("Enhance", variant="primary")
+                    run = gr.Button("Enhance", variant="primary", size="lg")
                 with gr.Column(scale=1):
-                    out = gr.Image(label="Result", type="pil", format="png", height=240)
+                    out = gr.Image(label="Result", type="pil", format="png", height=260)
                     info = gr.Markdown()
 
         conv_btn.click(
@@ -274,6 +341,6 @@ if __name__ == "__main__":
     build_demo().launch(
         server_name="127.0.0.1",
         server_port=int(os.environ.get("UPSCALER_PORT", "7860")),
-        theme=gr.themes.Soft(),
+        theme=THEME,
         css=_CSS,
     )
