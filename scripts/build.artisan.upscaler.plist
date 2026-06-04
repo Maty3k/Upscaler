@@ -34,6 +34,10 @@
     <dict>
         <key>UPSCALER_PORT</key>
         <string>7860</string>
+        <!-- launch agents get a minimal PATH; add Homebrew + standard dirs so
+             ffmpeg/ffprobe (video tab) are found. -->
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     </dict>
 
     <!-- Start at login and keep it running (restart on crash). -->
