@@ -138,6 +138,29 @@ def enhance(image, model, device, deblur, deblur_model, sharpen, tile, onnx):
     return result, info
 
 
+# -- Video (frame-by-frame) --------------------------------------------------
+
+def upscale_video_ui(video_path, model, sharpen, device, tile, progress=gr.Progress()):
+    if not video_path:
+        raise gr.Error("Upload a video first.")
+    from upscaler.video import upscale_video
+
+    fd, out = tempfile.mkstemp(suffix=".mp4")
+    os.close(fd)
+
+    def cb(i, n):
+        progress(i / n, desc=f"Upscaling frame {i}/{n}")
+
+    try:
+        upscale_video(
+            video_path, out, model=model, device=device, tile=int(tile),
+            sharpen=float(sharpen), progress_cb=cb,
+        )
+    except (RuntimeError, FileNotFoundError) as e:
+        raise gr.Error(str(e)) from e
+    return out, "✅ Done — preview and download below."
+
+
 _CONVERT_METHODS = ["Change image format", "Images → PDF", "PDF → Images"]
 
 
@@ -478,7 +501,46 @@ def build_demo() -> gr.Blocks:
                         )
                         info = gr.Markdown()
 
-            # ---- Tab 2: Convert (all conversions, picked via dropdown) ----
+            # ---- Tab 2: Video (frame-by-frame) ----
+            with gr.Tab("Video"):
+                gr.HTML(_section_head(
+                    "AI · Video", "Video Upscaler",
+                    "Upscale a clip frame-by-frame (offline, audio kept). ×2 is "
+                    "faster and flickers less than ×4. Long clips take a while — "
+                    "needs ffmpeg installed.",
+                    icon=ICON_AI,
+                ))
+                with gr.Row(equal_height=True):
+                    with gr.Column(scale=1):
+                        vid_in = gr.Video(label="Input video", sources=["upload"])
+                        vid_model = gr.Dropdown(
+                            _MODEL_CHOICES, value="realesrgan-x2plus",
+                            label="Upscale model",
+                            info="×2 recommended for video — faster, less shimmer "
+                            "between frames.",
+                        )
+                        vid_sharpen = gr.Slider(
+                            0.0, 3.0, value=0.0, step=0.1,
+                            label="Sharpen per frame — 0 = off",
+                            info="Be gentle on video; sharpening can amplify "
+                            "frame-to-frame flicker.",
+                        )
+                        with gr.Accordion("Advanced", open=False):
+                            vid_device = gr.Dropdown(
+                                _DEVICES, value="auto", label="Device",
+                                info="auto picks a GPU if available, else CPU.",
+                            )
+                            vid_tile = gr.Slider(
+                                0, 1024, value=512, step=64,
+                                label="Tile size (0 = off)",
+                                info="Lower if you hit out-of-memory on big frames.",
+                            )
+                        vid_btn = gr.Button("Upscale video", variant="primary", size="lg")
+                    with gr.Column(scale=1):
+                        vid_out = gr.Video(label="Result")
+                        vid_info = gr.Markdown()
+
+            # ---- Tab 3: Convert (all conversions, picked via dropdown) ----
             with gr.Tab("Convert"):
                 gr.HTML(_section_head(
                     "Convert", "Convert & Documents",
@@ -575,6 +637,11 @@ def build_demo() -> gr.Blocks:
             enhance,
             [inp, model, device, deblur, deblur_model, sharpen, tile, onnx],
             [out, info],
+        )
+        vid_btn.click(
+            upscale_video_ui,
+            [vid_in, vid_model, vid_sharpen, vid_device, vid_tile],
+            [vid_out, vid_info],
         )
     return demo
 

@@ -19,12 +19,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=7.0", "onnxruntime>=1.16", "onnx>=1.15", "onnxscript>=0.1", "pypdfium2>=4", "pillow-heif>=0.13"]
+dev = ["pytest>=7.0", "onnxruntime>=1.16", "onnx>=1.15", "onnxscript>=0.1", "pypdfium2>=4", "pillow-heif>=0.13", "imageio-ffmpeg>=0.4"]
 gui = ["gradio>=4.0", "pypdfium2>=4", "pillow-heif>=0.13"]
 pdf = ["pypdfium2>=4"]
 # onnxscript is only needed to *export* (torch's modern exporter); pure
 # inference needs just onnxruntime.
 onnx = ["onnxruntime>=1.16", "onnx>=1.15", "onnxscript>=0.1"]
+# Video needs an ffmpeg binary: a system install, or this bundled fallback.
+video = ["imageio-ffmpeg>=0.4"]
 
 [project.scripts]
 upscaler = "upscaler.cli:main"

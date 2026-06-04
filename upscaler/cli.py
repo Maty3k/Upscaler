@@ -11,6 +11,7 @@ from tqdm import tqdm
 
 from upscaler.convert import FORMATS, convert_file, extension_for
 from upscaler.document import images_to_pdf, pdf_to_images
+from upscaler.video import upscale_video
 from upscaler.deblur import Deblurrer
 from upscaler.engine import Upscaler
 from upscaler.models.registry import DEBLUR_MODELS, DEFAULT_DEBLUR_MODEL, MODELS
@@ -157,12 +158,66 @@ def run_pdf(argv: list[str]) -> int:
     return 0
 
 
+def build_video_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="upscaler video",
+        description="Upscale a video frame-by-frame (offline; keeps audio). "
+        "Needs ffmpeg.",
+    )
+    p.add_argument("input", type=Path, help="Input video file.")
+    p.add_argument("-o", "--output", type=Path, required=True, help="Output .mp4 path.")
+    p.add_argument(
+        "-s", "--scale", type=int, default=2, choices=(2, 4),
+        help="Upscale factor (default: 2 — gentler/faster, less flicker).",
+    )
+    p.add_argument("-m", "--model", choices=sorted(MODELS), help="Explicit model.")
+    p.add_argument(
+        "--sharpen", nargs="?", type=float, const=1.0, default=0.0,
+        help="Unsharp strength per frame (default off).",
+    )
+    p.add_argument(
+        "--device", default="auto", choices=("auto", "cpu", "cuda", "mps"),
+        help="Compute device (default: auto).",
+    )
+    p.add_argument("--tile", type=int, default=512, help="Tile size, 0 disables tiling.")
+    p.add_argument("--crf", type=int, default=18, help="x264 quality, lower=better (18).")
+    return p
+
+
+def run_video(argv: list[str]) -> int:
+    args = build_video_parser().parse_args(argv)
+    if not args.input.exists():
+        print(f"error: input not found: {args.input}", file=sys.stderr)
+        return 2
+
+    last = [0]
+
+    def cb(i: int, total: int) -> None:
+        if i != last[0]:
+            last[0] = i
+            print(f"\r  frame {i}/{total}", end="", file=sys.stderr, flush=True)
+
+    print(f"upscaling video ×{args.scale} (this can take a while)…", file=sys.stderr)
+    try:
+        upscale_video(
+            args.input, args.output, model=args.model, scale=args.scale,
+            device=args.device, tile=args.tile, sharpen=args.sharpen,
+            crf=args.crf, progress_cb=cb,
+        )
+    except (RuntimeError, FileNotFoundError) as e:
+        print(f"\nerror: {e}", file=sys.stderr)
+        return 1
+    print(f"\n→ {args.output}", file=sys.stderr)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="upscaler",
         description="Local image upscaling + sharpening (pretrained Real-ESRGAN).",
         epilog="Subcommands: `upscaler convert <input> -o out.webp` (format), "
-        "`upscaler pdf build *.png -o out.pdf` / `upscaler pdf extract in.pdf`.",
+        "`upscaler pdf build *.png -o out.pdf` / `upscaler pdf extract in.pdf`, "
+        "`upscaler video in.mp4 -o out.mp4`.",
     )
     p.add_argument(
         "input", type=Path, nargs="?", help="Image file or a directory of images."
@@ -208,6 +263,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_convert(argv[1:])
     if argv and argv[0] == "pdf":
         return run_pdf(argv[1:])
+    if argv and argv[0] == "video":
+        return run_video(argv[1:])
 
     args = build_parser().parse_args(argv)
 

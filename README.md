@@ -41,6 +41,9 @@ upscaler ./input_dir -o ./output_dir --scale 4
 # anime / illustration model
 upscaler art.png --model realesrgan-x4plus-anime
 
+# upscale a video frame-by-frame (offline, keeps audio; needs ffmpeg)
+upscaler video clip.mp4 -o clip_2x.mp4 --scale 2
+
 # ONNX Runtime backend (exports once from the .pth, then torch-free + often
 # faster on CPU). Works with --deblur and batching too.
 upscaler photo.jpg --scale 4 --onnx
@@ -59,6 +62,18 @@ upscaler convert ./folder -o ./out -f WebP      # batch a directory
 
 Supports PNG / JPEG / WebP / AVIF / TIFF / GIF / BMP / ICO / TGA / PPM. Alpha is
 flattened onto a white background for formats that can't store it (JPEG/BMP/PPM).
+
+### Video (frame-by-frame)
+
+```bash
+upscaler video clip.mp4 -o clip_2x.mp4 --scale 2     # keeps audio
+```
+
+Offline frame-by-frame upscaling (split → upscale each frame → re-encode + mux
+audio). Needs **ffmpeg** (system install, or `pip install -e ".[video]"` for a
+bundled binary). It's a render-and-wait feature — minutes per minute of footage —
+and since frames are upscaled independently, very fine detail can shimmer slightly
+between frames (a temporal model would be needed to fully remove that).
 
 #### Image ⇄ PDF
 
