@@ -173,61 +173,87 @@ THEME = gr.themes.Base(
     button_secondary_border_color="#E7E5E4",
     button_large_radius="12px",
     button_small_radius="10px",
-    # Dark-mode fallbacks mirror the light values, so even before the
-    # force-light pin applies there's no dark flash / low-contrast text.
-    body_background_fill_dark="#FAFAF9",
-    body_text_color_dark="#1C1917",
-    body_text_color_subdued_dark="#78716C",
-    block_background_fill_dark="#FFFFFF",
-    block_border_color_dark="#EAE8E4",
-    block_label_text_color_dark="#57534E",
-    input_background_fill_dark="#FFFFFF",
-    input_border_color_dark="#E7E5E4",
-    button_primary_background_fill_dark="#1C1917",
-    button_primary_text_color_dark="#FFFFFF",
+    # A genuine dark palette (warm stone), so the dark toggle looks intentional.
+    body_background_fill_dark="#0C0A09",
+    body_text_color_dark="#F5F5F4",
+    body_text_color_subdued_dark="#A8A29E",
+    block_background_fill_dark="#1C1917",
+    block_border_color_dark="#292524",
+    block_label_text_color_dark="#D6D3D1",
+    input_background_fill_dark="#1C1917",
+    input_border_color_dark="#292524",
+    input_border_color_focus_dark="#57534E",
+    button_primary_background_fill_dark="#FAFAF9",
+    button_primary_background_fill_hover_dark="#E7E5E4",
+    button_primary_text_color_dark="#1C1917",
+    button_secondary_background_fill_dark="#1C1917",
+    button_secondary_border_color_dark="#292524",
 )
 
-# Pin the app to light mode regardless of the OS/browser preference (the design
-# is light); reload once into ?__theme=light if not already there.
-_FORCE_LIGHT_JS = """
+# Apply the saved light/dark preference on load (default light), and a toggle
+# that flips it. Both go through Gradio's own ?__theme mechanism (one reload).
+_APPLY_THEME_JS = """
 () => {
   const u = new URL(window.location.href);
-  if (u.searchParams.get('__theme') !== 'light') {
-    u.searchParams.set('__theme', 'light');
+  const saved = localStorage.getItem('upscaler-theme') || 'light';
+  if (u.searchParams.get('__theme') !== saved) {
+    u.searchParams.set('__theme', saved);
     window.location.replace(u.toString());
   }
+}
+"""
+
+_TOGGLE_THEME_JS = """
+() => {
+  const u = new URL(window.location.href);
+  const cur = u.searchParams.get('__theme')
+              || localStorage.getItem('upscaler-theme') || 'light';
+  const next = cur === 'dark' ? 'light' : 'dark';
+  localStorage.setItem('upscaler-theme', next);
+  u.searchParams.set('__theme', next);
+  window.location.replace(u.toString());
 }
 """
 
 _CSS = """
 @import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap');
 
-.gradio-container { max-width: 100% !important; padding: 4px 40px 56px !important; }
+/* Custom CSS uses Gradio theme vars (--body-text-color etc.) so it adapts to
+   both light and dark automatically. */
+.gradio-container { max-width: 100% !important; padding: 4px 40px 56px !important;
+    position: relative; }
 
 #hero { padding: 34px 2px 16px; }
 #hero .brand { font-size: 2.1rem; font-weight: 800; letter-spacing: -0.03em;
-    margin: 0; color: #1C1917; }
-#hero .sub { color: #78716C; margin: 8px 0 14px; font-size: 1.02rem; max-width: 64ch; }
+    margin: 0; color: var(--body-text-color); }
+#hero .sub { color: var(--body-text-color-subdued); margin: 8px 0 14px;
+    font-size: 1.02rem; max-width: 64ch; }
 .pill { display: inline-flex; align-items: center; gap: 7px; padding: 5px 12px;
-    border: 1px solid #EAE8E4; border-radius: 999px; font-size: 0.8rem;
-    color: #57534E; background: #fff; font-weight: 500; }
+    border: 1px solid var(--border-color-primary); border-radius: 999px;
+    font-size: 0.8rem; color: var(--body-text-color-subdued);
+    background: var(--block-background-fill); font-weight: 500; }
 .pill .dot { width: 7px; height: 7px; border-radius: 999px; background: #22C55E; }
+
+/* theme toggle, floated top-right */
+#theme-toggle { position: absolute; top: 20px; right: 40px; z-index: 50;
+    width: auto !important; min-width: 0 !important; flex: none !important; }
 
 .section-card { border-radius: 18px !important; padding: 24px !important; }
 .sec-head .eyebrow { font-size: 0.72rem; font-weight: 700; letter-spacing: 0.13em;
-    text-transform: uppercase; color: #A8A29E; }
+    text-transform: uppercase; color: var(--body-text-color-subdued); opacity: .8; }
 .sec-head h2 { font-size: 1.3rem; font-weight: 700; letter-spacing: -0.02em;
-    margin: 3px 0 5px; color: #1C1917; }
-.sec-head p { color: #78716C; margin: 0; font-size: 0.92rem; max-width: 72ch; }
-.col-label { font-weight: 600; color: #44403C; font-size: 0.92rem; }
+    margin: 3px 0 5px; color: var(--body-text-color); }
+.sec-head p { color: var(--body-text-color-subdued); margin: 0; font-size: 0.92rem;
+    max-width: 72ch; }
+.col-label { font-weight: 600; color: var(--body-text-color); font-size: 0.92rem; }
 .spacer { height: 22px; }
 
 /* clean, friendly drop zones for image/file inputs */
-.drop { border: 1.5px dashed #D6D3D1 !important; background: #FCFCFB !important;
+.drop { border: 1.5px dashed var(--border-color-primary) !important;
+    background: var(--block-background-fill) !important;
     border-radius: 14px !important; box-shadow: none !important;
-    transition: border-color .15s ease, background .15s ease; }
-.drop:hover { border-color: #A8A29E !important; background: #FAFAF9 !important; }
-.drop .wrap, .drop .icon-wrap svg { color: #A8A29E !important; }
+    transition: border-color .15s ease; }
+.drop:hover { border-color: var(--body-text-color-subdued) !important; }
 
 footer { display: none !important; }
 """
@@ -252,6 +278,10 @@ def build_demo() -> gr.Blocks:
             f'<span class="pill"><span class="dot"></span>running locally · {device_name}</span>'
             "</div>"
         )
+        theme_btn = gr.Button(
+            "◐ Light / Dark", elem_id="theme-toggle", size="sm", variant="secondary"
+        )
+        theme_btn.click(None, js=_TOGGLE_THEME_JS)
 
         # ---- Section 1: File Converter ----
         with gr.Group(elem_classes="section-card"):
@@ -376,5 +406,5 @@ if __name__ == "__main__":
         server_port=int(os.environ.get("UPSCALER_PORT", "7860")),
         theme=THEME,
         css=_CSS,
-        js=_FORCE_LIGHT_JS,
+        js=_APPLY_THEME_JS,
     )
