@@ -771,6 +771,7 @@ def build_demo() -> gr.Blocks:
             enhance,
             [inp, model, device, deblur, deblur_model, sharpen, tile, onnx, out_size],
             [out, info],
+            show_progress_on=[out],
         )
         clear.click(lambda: (None, None, None), None, [inp, out, info])
         vid_btn.click(
@@ -778,6 +779,7 @@ def build_demo() -> gr.Blocks:
             [vid_in, vid_model, vid_size, vid_sharpen, vid_smooth, vid_start,
              vid_end, vid_device, vid_tile],
             [vid_out, vid_compare, vid_info],
+            show_progress_on=[vid_out],
         )
         vid_clear.click(
             lambda: (None, None, None, None), None,
