@@ -138,6 +138,18 @@ def enhance(image, model, device, deblur, deblur_model, sharpen, tile, onnx):
     return result, info
 
 
+_CONVERT_METHODS = ["Change image format", "Images → PDF", "PDF → Images"]
+
+
+def _switch_method(choice):
+    """Show only the group for the selected conversion method."""
+    return (
+        gr.update(visible=choice == _CONVERT_METHODS[0]),
+        gr.update(visible=choice == _CONVERT_METHODS[1]),
+        gr.update(visible=choice == _CONVERT_METHODS[2]),
+    )
+
+
 _MODEL_CHOICES = [(f"{s.name}  (×{s.scale}) — {s.notes}", s.name) for s in MODELS.values()]
 _DEBLUR_CHOICES = [(f"{s.name} — {s.notes}", s.name) for s in DEBLUR_MODELS.values()]
 _DEVICES = ["auto", "cpu", "cuda", "mps"]
@@ -434,66 +446,83 @@ def build_demo() -> gr.Blocks:
                         )
                         info = gr.Markdown()
 
-            # ---- Tab 2: File Converter ----
+            # ---- Tab 2: Convert (all conversions, picked via dropdown) ----
             with gr.Tab("Convert"):
                 gr.HTML(_section_head(
-                    "Convert", "File Converter",
-                    "Change image format — fast, no AI models.",
+                    "Convert", "Convert & Documents",
+                    "Pick what you want to do — change image format, build a PDF "
+                    "from images, or split a PDF back into images.",
                     icon=ICON_CONVERT,
                 ))
-                with gr.Row(equal_height=True):
-                    with gr.Column(scale=1):
-                        conv_in = gr.Image(
-                            label="Image", type="pil",
-                            sources=["upload", "clipboard"], height=300,
-                            elem_classes="drop",
-                        )
-                        with gr.Row():
-                            conv_fmt = gr.Dropdown(
-                                list(FORMATS), value="PNG", label="Convert to", scale=2
-                            )
-                            conv_quality = gr.Slider(
-                                1, 100, value=90, step=1,
-                                label="Quality (lossy)", scale=3,
-                            )
-                        conv_lossless = gr.Checkbox(value=False, label="Lossless WebP")
-                        conv_btn = gr.Button("Convert", variant="primary", size="lg")
-                    with gr.Column(scale=1):
-                        conv_file = gr.File(label="Download converted file")
-                        conv_info = gr.Markdown()
+                method = gr.Dropdown(
+                    _CONVERT_METHODS, value=_CONVERT_METHODS[0],
+                    label="What do you want to do?",
+                )
 
-            # ---- Tab 3: Image <-> PDF ----
-            with gr.Tab("Image ⇄ PDF"):
-                gr.HTML(_section_head(
-                    "Documents", "Image ⇄ PDF",
-                    "Combine images into a PDF, or extract a PDF's pages to PNGs.",
-                    icon=ICON_PDF,
-                ))
-                with gr.Row():
-                    with gr.Column(scale=1):
-                        gr.HTML('<div class="col-label">Images → PDF '
-                                "<span style='opacity:.6;font-weight:400'>"
-                                "(multiple = multi-page)</span></div>")
-                        pdf_imgs_in = gr.File(
-                            label="Images", file_count="multiple",
-                            file_types=["image"], elem_classes="drop",
-                        )
-                        pdf_build_btn = gr.Button("Build PDF", variant="primary", size="lg")
-                        pdf_build_out = gr.File(label="Download PDF")
-                        pdf_build_info = gr.Markdown()
-                    with gr.Column(scale=1):
-                        gr.HTML('<div class="col-label">PDF → Images</div>')
-                        pdf_in = gr.File(
-                            label="PDF", file_count="single",
-                            file_types=[".pdf"], elem_classes="drop",
-                        )
-                        pdf_dpi = gr.Slider(72, 300, value=150, step=1, label="Render DPI")
-                        pdf_extract_btn = gr.Button(
-                            "Extract pages", variant="primary", size="lg"
-                        )
-                        pdf_extract_out = gr.File(label="Download pages (ZIP)")
-                        pdf_gallery = gr.Gallery(label="Pages", columns=4, height=220)
-                        pdf_extract_info = gr.Markdown()
+                # -- Method A: change image format --
+                with gr.Group(visible=True) as grp_format:
+                    with gr.Row(equal_height=True):
+                        with gr.Column(scale=1):
+                            conv_in = gr.Image(
+                                label="Image", type="pil",
+                                sources=["upload", "clipboard"], height=300,
+                                elem_classes="drop",
+                            )
+                            with gr.Row():
+                                conv_fmt = gr.Dropdown(
+                                    list(FORMATS), value="PNG",
+                                    label="Convert to", scale=2,
+                                )
+                                conv_quality = gr.Slider(
+                                    1, 100, value=90, step=1,
+                                    label="Quality (lossy)", scale=3,
+                                )
+                            conv_lossless = gr.Checkbox(
+                                value=False, label="Lossless WebP"
+                            )
+                            conv_btn = gr.Button("Convert", variant="primary", size="lg")
+                        with gr.Column(scale=1):
+                            conv_file = gr.File(label="Download converted file")
+                            conv_info = gr.Markdown()
+
+                # -- Method B: images -> PDF --
+                with gr.Group(visible=False) as grp_topdf:
+                    with gr.Row(equal_height=True):
+                        with gr.Column(scale=1):
+                            pdf_imgs_in = gr.File(
+                                label="Images (multiple = multi-page, in order)",
+                                file_count="multiple", file_types=["image"],
+                                elem_classes="drop",
+                            )
+                            pdf_build_btn = gr.Button(
+                                "Build PDF", variant="primary", size="lg"
+                            )
+                        with gr.Column(scale=1):
+                            pdf_build_out = gr.File(label="Download PDF")
+                            pdf_build_info = gr.Markdown()
+
+                # -- Method C: PDF -> images --
+                with gr.Group(visible=False) as grp_frompdf:
+                    with gr.Row(equal_height=True):
+                        with gr.Column(scale=1):
+                            pdf_in = gr.File(
+                                label="PDF", file_count="single",
+                                file_types=[".pdf"], elem_classes="drop",
+                            )
+                            pdf_dpi = gr.Slider(
+                                72, 300, value=150, step=1, label="Render DPI"
+                            )
+                            pdf_extract_btn = gr.Button(
+                                "Extract pages", variant="primary", size="lg"
+                            )
+                        with gr.Column(scale=1):
+                            pdf_extract_out = gr.File(label="Download pages (ZIP)")
+                            pdf_gallery = gr.Gallery(label="Pages", columns=4, height=220)
+                            pdf_extract_info = gr.Markdown()
+
+                method.change(
+                    _switch_method, method, [grp_format, grp_topdf, grp_frompdf]
+                )
 
         conv_btn.click(
             convert_image,

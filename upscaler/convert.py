@@ -17,12 +17,17 @@ FORMATS: dict[str, tuple[str, str, bool]] = {
     "PNG": ("PNG", "png", False),
     "JPEG": ("JPEG", "jpg", True),
     "WebP": ("WEBP", "webp", True),
-    "BMP": ("BMP", "bmp", False),
+    "AVIF": ("AVIF", "avif", True),
     "TIFF": ("TIFF", "tiff", False),
+    "GIF": ("GIF", "gif", False),
+    "BMP": ("BMP", "bmp", False),
+    "ICO": ("ICO", "ico", False),
+    "TGA": ("TGA", "tga", False),
+    "PPM": ("PPM", "ppm", False),
 }
 
 # Formats that cannot store an alpha channel — alpha is flattened onto a bg.
-_NO_ALPHA = {"JPEG", "BMP"}
+_NO_ALPHA = {"JPEG", "BMP", "PPM"}
 
 
 def extension_for(fmt: str) -> str:
@@ -61,6 +66,8 @@ def convert(
     save_kwargs: dict = {}
     if pil_fmt == "JPEG":
         save_kwargs.update(quality=int(quality), optimize=True)
+    elif pil_fmt == "AVIF":
+        save_kwargs.update(quality=int(quality))
     elif pil_fmt == "WEBP":
         if lossless:
             save_kwargs.update(lossless=True)

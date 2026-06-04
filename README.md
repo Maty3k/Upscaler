@@ -57,8 +57,8 @@ upscaler convert photo.png -o out.webp --lossless
 upscaler convert ./folder -o ./out -f WebP      # batch a directory
 ```
 
-Supports PNG / JPEG / WebP / BMP / TIFF. Alpha is flattened onto a white
-background for formats that can't store it (JPEG/BMP).
+Supports PNG / JPEG / WebP / AVIF / TIFF / GIF / BMP / ICO / TGA / PPM. Alpha is
+flattened onto a white background for formats that can't store it (JPEG/BMP/PPM).
 
 #### Image ⇄ PDF
 
