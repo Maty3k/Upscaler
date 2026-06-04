@@ -415,29 +415,43 @@ def build_demo() -> gr.Blocks:
                         model = gr.Dropdown(
                             _MODEL_CHOICES, value="realesrgan-x4plus",
                             label="Upscale model",
+                            info="×2 is gentler for already-good photos · ×4 adds "
+                            "the most detail but can over-process · anime model is "
+                            "for illustrations & line art.",
                         )
                         sharpen = gr.Slider(
                             0.0, 3.0, value=0.0, step=0.1,
                             label="Sharpen (unsharp mask) — 0 = off",
+                            info="Crispens edges after upscaling. Keep it low — too "
+                            "high adds halos around edges.",
                         )
                         with gr.Accordion("Deblur (motion blur)", open=False):
                             deblur = gr.Checkbox(
-                                value=False, label="Deblur first (NAFNet)"
+                                value=False, label="Deblur first (NAFNet)",
+                                info="Only for genuinely motion-blurred shots — it "
+                                "softens images that are already sharp.",
                             )
                             deblur_model = gr.Dropdown(
                                 _DEBLUR_CHOICES, value="nafnet-gopro-width64",
                                 label="Deblur model",
+                                info="width64 = best quality · width32 = faster.",
                             )
                         with gr.Accordion("Advanced", open=False):
-                            device = gr.Dropdown(_DEVICES, value="auto", label="Device")
+                            device = gr.Dropdown(
+                                _DEVICES, value="auto", label="Device",
+                                info="auto picks a GPU if available (CUDA / Apple "
+                                "MPS), otherwise CPU.",
+                            )
                             onnx = gr.Checkbox(
-                                value=False,
-                                label="ONNX Runtime backend (exports once; "
-                                "torch-free, often faster on CPU)",
+                                value=False, label="ONNX Runtime backend",
+                                info="Exports the model to ONNX once, then runs "
+                                "without PyTorch — often faster on CPU.",
                             )
                             tile = gr.Slider(
                                 0, 1024, value=512, step=64,
-                                label="Tile size (0 = off; lower if low on memory)",
+                                label="Tile size (0 = off)",
+                                info="Processes big images in tiles to save memory. "
+                                "Lower this if you hit out-of-memory errors.",
                             )
                         run = gr.Button("Enhance", variant="primary", size="lg")
                     with gr.Column(scale=1):
@@ -457,6 +471,8 @@ def build_demo() -> gr.Blocks:
                 method = gr.Dropdown(
                     _CONVERT_METHODS, value=_CONVERT_METHODS[0],
                     label="What do you want to do?",
+                    info="Switch between converting an image's format, building a "
+                    "PDF from images, or splitting a PDF back into images.",
                 )
 
                 # -- Method A: change image format --
@@ -472,13 +488,18 @@ def build_demo() -> gr.Blocks:
                                 conv_fmt = gr.Dropdown(
                                     list(FORMATS), value="PNG",
                                     label="Convert to", scale=2,
+                                    info="PNG / TIFF keep full quality · JPEG, "
+                                    "WebP, AVIF, HEIC are smaller but lossy.",
                                 )
                                 conv_quality = gr.Slider(
                                     1, 100, value=90, step=1,
                                     label="Quality (lossy)", scale=3,
+                                    info="Only affects lossy formats. Higher = "
+                                    "better looking but larger file.",
                                 )
                             conv_lossless = gr.Checkbox(
-                                value=False, label="Lossless WebP"
+                                value=False, label="Lossless WebP",
+                                info="Encode WebP with no quality loss (bigger file).",
                             )
                             conv_btn = gr.Button("Convert", variant="primary", size="lg")
                         with gr.Column(scale=1):
@@ -510,7 +531,9 @@ def build_demo() -> gr.Blocks:
                                 file_types=[".pdf"], elem_classes="drop",
                             )
                             pdf_dpi = gr.Slider(
-                                72, 300, value=150, step=1, label="Render DPI"
+                                72, 300, value=150, step=1, label="Render DPI",
+                                info="Higher = sharper, larger PNGs. 150 is a good "
+                                "default; 300 for print quality.",
                             )
                             pdf_extract_btn = gr.Button(
                                 "Extract pages", variant="primary", size="lg"
