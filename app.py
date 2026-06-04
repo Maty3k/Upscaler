@@ -149,19 +149,19 @@ THEME = gr.themes.Base(
     font=[gr.themes.GoogleFont("Manrope"), "system-ui", "sans-serif"],
     font_mono=[gr.themes.GoogleFont("JetBrains Mono"), "ui-monospace", "monospace"],
     radius_size=gr.themes.sizes.radius_lg,
-    spacing_size=gr.themes.sizes.spacing_md,
+    spacing_size=gr.themes.sizes.spacing_lg,
     text_size=gr.themes.sizes.text_md,
 ).set(
-    body_background_fill="#EDEBE6",
+    body_background_fill="#E7E3DB",
     background_fill_primary="#FFFFFF",
-    background_fill_secondary="#F3F1EC",
-    body_text_color="#1C1917",
-    body_text_color_subdued="#78716C",
+    background_fill_secondary="#F1EEE8",
+    body_text_color="#1A1714",
+    body_text_color_subdued="#6E675E",
     block_background_fill="#FFFFFF",
-    block_border_color="#DED9D1",
+    block_border_color="#D5CEC2",
     block_border_width="1px",
-    block_radius="14px",
-    block_shadow="0 1px 2px rgba(28,25,23,0.05), 0 4px 12px rgba(28,25,23,0.04)",
+    block_radius="16px",
+    block_shadow="0 1px 2px rgba(28,25,23,0.05), 0 8px 24px rgba(28,25,23,0.06)",
     block_label_text_weight="600",
     block_label_text_color="#57534E",
     block_label_background_fill="#FFFFFF",
@@ -182,21 +182,21 @@ THEME = gr.themes.Base(
     button_small_radius="10px",
     # Warm, softer dark palette with layered surfaces (not near-black), so the
     # dark toggle has depth instead of feeling like a void.
-    body_background_fill_dark="#1A1714",
-    background_fill_primary_dark="#2B2723",
+    body_background_fill_dark="#161311",
+    background_fill_primary_dark="#322C27",
     background_fill_secondary_dark="#211D1A",
-    body_text_color_dark="#F5F2EE",
-    body_text_color_subdued_dark="#B3A99E",
-    block_background_fill_dark="#2B2723",
-    block_border_color_dark="#3B342D",
-    block_label_text_color_dark="#E7E1DA",
-    block_label_background_fill_dark="#2E2A26",
-    block_label_border_color_dark="#3B342D",
-    block_title_text_color_dark="#EDE8E2",
-    block_info_text_color_dark="#B3A99E",
-    panel_background_fill_dark="#262320",
-    input_background_fill_dark="#221E1B",
-    input_border_color_dark="#3B342D",
+    body_text_color_dark="#FAF7F3",
+    body_text_color_subdued_dark="#BCB2A7",
+    block_background_fill_dark="#322C27",
+    block_border_color_dark="#473F37",
+    block_label_text_color_dark="#EFE9E2",
+    block_label_background_fill_dark="#3A332D",
+    block_label_border_color_dark="#473F37",
+    block_title_text_color_dark="#F1ECE6",
+    block_info_text_color_dark="#BCB2A7",
+    panel_background_fill_dark="#322C27",
+    input_background_fill_dark="#262119",
+    input_border_color_dark="#473F37",
     input_border_color_focus_dark="#2DD4BF",
     button_primary_background_fill_dark="#14B8A6",
     button_primary_background_fill_hover_dark="#2DD4BF",
@@ -239,11 +239,43 @@ _CSS = """
 .dark .gradio-container, .dark { --ac: #2DD4BF; --ac-weak: rgba(45,212,191,.13); }
 
 /* gradio-app carries the .dark scope, so fill the viewport with IT (html/body
-   sit outside the scope and would otherwise show a light strip in dark mode). */
+   sit outside the scope and would otherwise show a strip behind the app). The
+   html/body fallback covers light mode; gradio-app (100vh) covers dark. */
+html, body { background: var(--body-background-fill) !important; }
 gradio-app { display: block; min-height: 100vh;
     background: var(--body-background-fill) !important; }
-.gradio-container { max-width: 100% !important; padding: 4px 40px 56px !important;
-    position: relative; background: var(--body-background-fill) !important; }
+/* The container has --ac-weak + --body-background-fill in scope, so the warm
+   accent glow goes here (not on gradio-app, where those vars are undefined). */
+.gradio-container { max-width: 100% !important; padding: 6px 44px 64px !important;
+    position: relative;
+    background:
+      radial-gradient(1100px 460px at 18% -8%, var(--ac-weak), transparent 62%),
+      var(--body-background-fill) !important; }
+
+/* smooth, subtle transitions everywhere interactive */
+button, .tab-nav button, .drop, input, select, textarea, summary,
+.gradio-container .block { transition: background-color .18s ease,
+    border-color .18s ease, color .18s ease, box-shadow .22s ease,
+    transform .14s ease; }
+
+/* primary buttons: gentle lift on hover, press down on click */
+.gradio-container button.primary:hover { transform: translateY(-1px);
+    box-shadow: 0 6px 18px rgba(13,148,136,.28); }
+.gradio-container button.primary:active { transform: translateY(0); box-shadow: none; }
+.tab-nav button:hover { color: var(--body-text-color) !important; }
+
+/* gentle entrance animations */
+@keyframes fadeUp { from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: none; } }
+/* Entrance only on non-critical chrome (hero/section heads) — never on the tab
+   content itself, so a tool can never get stuck invisible if motion is blocked. */
+#hero { animation: fadeUp .5s cubic-bezier(.22,.61,.36,1) both; }
+.sec-head { animation: fadeUp .5s cubic-bezier(.22,.61,.36,1) .04s both; }
+@media (prefers-reduced-motion: reduce) {
+    #hero, .sec-head { animation: none; } }
+@keyframes livepulse { 0% { box-shadow: 0 0 0 0 rgba(34,197,94,.45); }
+    70% { box-shadow: 0 0 0 7px rgba(34,197,94,0); }
+    100% { box-shadow: 0 0 0 0 rgba(34,197,94,0); } }
 
 #hero { padding: 32px 2px 18px; margin-bottom: 8px;
     border-bottom: 1px solid var(--border-color-primary); }
@@ -258,14 +290,14 @@ gradio-app { display: block; min-height: 100vh;
     font-size: 0.8rem; color: var(--body-text-color-subdued);
     background: var(--block-background-fill); font-weight: 500; }
 .pill .dot { width: 7px; height: 7px; border-radius: 999px; background: #22C55E;
-    box-shadow: 0 0 0 3px rgba(34,197,94,.18); }
+    animation: livepulse 2.4s ease-out infinite; }
 
 /* theme toggle, floated top-right */
 #theme-toggle { position: absolute; top: 20px; right: 40px; z-index: 50;
     width: auto !important; min-width: 0 !important; flex: none !important; }
 
 /* tab bar: accent the selected tab */
-.tabitem { padding-top: 24px !important; }
+.tabitem { padding-top: 28px !important; }
 .tab-nav { gap: 2px; }
 .tab-nav button { font-weight: 600 !important; font-size: 0.98rem !important;
     color: var(--body-text-color-subdued) !important; border: none !important;
