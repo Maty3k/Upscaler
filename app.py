@@ -155,6 +155,32 @@ def enhance(image, model, device, deblur, deblur_model, sharpen, tile, onnx, out
 
 # -- Video (frame-by-frame) --------------------------------------------------
 
+def _video_duration(path):
+    """Clip length in seconds (0 if unknown)."""
+    import shutil
+    import subprocess
+
+    fp = shutil.which("ffprobe")
+    if not fp or not path:
+        return 0
+    out = subprocess.run(
+        [fp, "-v", "error", "-show_entries", "format=duration", "-of",
+         "csv=p=0", str(path)],
+        capture_output=True, text=True,
+    ).stdout.strip()
+    try:
+        return round(float(out), 1)
+    except ValueError:
+        return 0
+
+
+def _on_video_change(path):
+    """When a clip is loaded, reset Start to 0 and End to the full duration so
+    'trim a section' just means lowering End / raising Start."""
+    dur = _video_duration(path)
+    return gr.update(value=0), gr.update(value=dur, maximum=dur or None)
+
+
 def _first_frame(video_path):
     """Grab the first frame of a video as a PIL image (for the comparison)."""
     import subprocess
@@ -611,16 +637,16 @@ def build_demo() -> gr.Blocks:
                         with gr.Accordion("Trim (process only part of the clip)", open=False):
                             gr.Markdown(
                                 "Render just a slice — great for testing settings "
-                                "on a few seconds before the full clip. Leave at 0 "
-                                "to use the whole video."
+                                "before the full clip. **End auto-fills to the clip "
+                                "length on upload**; for a section, lower **End** "
+                                "and/or raise **Start**."
                             )
                             with gr.Row():
                                 vid_start = gr.Number(
                                     value=0, label="Start (seconds)", minimum=0,
                                 )
                                 vid_end = gr.Number(
-                                    value=0, label="End (seconds, 0 = to end)",
-                                    minimum=0,
+                                    value=0, label="End (seconds)", minimum=0,
                                 )
                         with gr.Accordion("Advanced", open=False):
                             vid_device = gr.Dropdown(
@@ -757,6 +783,7 @@ def build_demo() -> gr.Blocks:
             lambda: (None, None, None, None), None,
             [vid_in, vid_out, vid_compare, vid_info],
         )
+        vid_in.change(_on_video_change, vid_in, [vid_start, vid_end])
     return demo
 
 
