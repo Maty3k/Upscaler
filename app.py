@@ -267,37 +267,38 @@ gradio-app { display: block; min-height: 100vh;
       radial-gradient(var(--tex) 1px, transparent 1.4px) 0 0 / 22px 22px,
       var(--body-background-fill) !important; }
 
-/* smooth, subtle transitions everywhere interactive */
-button, .tab-nav button, .drop, input, select, textarea, summary,
-.gradio-container .block { transition: background-color .18s ease,
-    border-color .18s ease, color .18s ease, box-shadow .22s ease,
-    transform .14s ease; }
-
-/* primary buttons: gentle lift on hover, press down on click */
+/* Cheap transitions on interactive controls ONLY — color/border, no box-shadow
+   or transform on every .block (that caused heavy repaints / ~20fps jank). */
+button, .tab-nav button, .drop, .item, .dropdown-arrow {
+    transition: background-color .18s ease, border-color .18s ease, color .18s ease; }
+/* transform/box-shadow only on the single button being hovered (cheap). */
+.gradio-container button.primary {
+    transition: background-color .18s ease, transform .12s ease, box-shadow .2s ease; }
 .gradio-container button.primary:hover { transform: translateY(-1px);
     box-shadow: 0 6px 18px rgba(13,148,136,.28); }
 .gradio-container button.primary:active { transform: translateY(0); box-shadow: none; }
 .tab-nav button:hover { color: var(--body-text-color) !important; }
 
-/* gentle entrance animations */
-@keyframes fadeUp { from { opacity: 0; transform: translateY(10px); }
+/* Entrance fades — only opacity + a tiny transform, GPU-composited (will-change)
+   so they stay smooth. Hero/section heads fill `both` (load-time); tab/accordion
+   bodies use no fill (default opacity 1) so they can't get stuck invisible. */
+@keyframes fadeUp { from { opacity: 0; transform: translateY(6px); }
     to { opacity: 1; transform: none; } }
-/* Entrance fades. The hero/section heads use `both` fill (load-time only). Tab
-   content and accordion bodies animate WITHOUT a fill mode (default opacity 1),
-   so they re-run each time they're shown but can never get stuck invisible. */
-#hero { animation: fadeUp .5s cubic-bezier(.22,.61,.36,1) both; }
-.sec-head { animation: fadeUp .5s cubic-bezier(.22,.61,.36,1) .04s both; }
-.tabitem { animation: fadeUp .4s cubic-bezier(.22,.61,.36,1); }
-[data-testid="accordion-content"] { animation: fadeUp .32s cubic-bezier(.22,.61,.36,1); }
-.label-wrap .icon { transition: transform .22s ease !important; }
+#hero, .sec-head, .tabitem, [data-testid="accordion-content"], ul.options, .options {
+    will-change: opacity, transform; }
+#hero { animation: fadeUp .55s cubic-bezier(.22,.61,.36,1) both; }
+.sec-head { animation: fadeUp .55s cubic-bezier(.22,.61,.36,1) .05s both; }
+.tabitem { animation: fadeUp .45s cubic-bezier(.22,.61,.36,1); }
+[data-testid="accordion-content"] { animation: fadeUp .4s cubic-bezier(.22,.61,.36,1); }
+.label-wrap .icon { transition: transform .25s cubic-bezier(.22,.61,.36,1) !important; }
 
 /* dropdown list: smooth open (was an abrupt instant pop) */
-@keyframes ddOpen { from { opacity: 0; transform: translateY(-6px) scale(.985); }
+@keyframes ddOpen { from { opacity: 0; transform: translateY(-5px) scale(.99); }
     to { opacity: 1; transform: none; } }
-ul.options, .options { animation: ddOpen .22s cubic-bezier(.22,.61,.36,1);
+ul.options, .options { animation: ddOpen .2s cubic-bezier(.22,.61,.36,1);
     transform-origin: top center; }
 ul.options .item, .options .item { transition: background-color .12s ease; }
-.dropdown-arrow { transition: transform .22s ease; }
+.dropdown-arrow { transition: transform .25s cubic-bezier(.22,.61,.36,1); }
 
 @media (prefers-reduced-motion: reduce) {
     #hero, .sec-head, .tabitem, [data-testid="accordion-content"],
@@ -493,7 +494,7 @@ def build_demo() -> gr.Blocks:
                 )
 
                 # -- Method A: change image format --
-                with gr.Group(visible=True) as grp_format:
+                with gr.Column(visible=True) as grp_format:
                     with gr.Row(equal_height=True):
                         with gr.Column(scale=1):
                             conv_in = gr.Image(
@@ -521,7 +522,7 @@ def build_demo() -> gr.Blocks:
                             conv_info = gr.Markdown()
 
                 # -- Method B: images -> PDF --
-                with gr.Group(visible=False) as grp_topdf:
+                with gr.Column(visible=False) as grp_topdf:
                     with gr.Row(equal_height=True):
                         with gr.Column(scale=1):
                             pdf_imgs_in = gr.File(
@@ -537,7 +538,7 @@ def build_demo() -> gr.Blocks:
                             pdf_build_info = gr.Markdown()
 
                 # -- Method C: PDF -> images --
-                with gr.Group(visible=False) as grp_frompdf:
+                with gr.Column(visible=False) as grp_frompdf:
                     with gr.Row(equal_height=True):
                         with gr.Column(scale=1):
                             pdf_in = gr.File(
