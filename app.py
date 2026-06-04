@@ -173,7 +173,31 @@ THEME = gr.themes.Base(
     button_secondary_border_color="#E7E5E4",
     button_large_radius="12px",
     button_small_radius="10px",
+    # Dark-mode fallbacks mirror the light values, so even before the
+    # force-light pin applies there's no dark flash / low-contrast text.
+    body_background_fill_dark="#FAFAF9",
+    body_text_color_dark="#1C1917",
+    body_text_color_subdued_dark="#78716C",
+    block_background_fill_dark="#FFFFFF",
+    block_border_color_dark="#EAE8E4",
+    block_label_text_color_dark="#57534E",
+    input_background_fill_dark="#FFFFFF",
+    input_border_color_dark="#E7E5E4",
+    button_primary_background_fill_dark="#1C1917",
+    button_primary_text_color_dark="#FFFFFF",
 )
+
+# Pin the app to light mode regardless of the OS/browser preference (the design
+# is light); reload once into ?__theme=light if not already there.
+_FORCE_LIGHT_JS = """
+() => {
+  const u = new URL(window.location.href);
+  if (u.searchParams.get('__theme') !== 'light') {
+    u.searchParams.set('__theme', 'light');
+    window.location.replace(u.toString());
+  }
+}
+"""
 
 _CSS = """
 @import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap');
@@ -197,6 +221,13 @@ _CSS = """
 .sec-head p { color: #78716C; margin: 0; font-size: 0.92rem; max-width: 72ch; }
 .col-label { font-weight: 600; color: #44403C; font-size: 0.92rem; }
 .spacer { height: 22px; }
+
+/* clean, friendly drop zones for image/file inputs */
+.drop { border: 1.5px dashed #D6D3D1 !important; background: #FCFCFB !important;
+    border-radius: 14px !important; box-shadow: none !important;
+    transition: border-color .15s ease, background .15s ease; }
+.drop:hover { border-color: #A8A29E !important; background: #FAFAF9 !important; }
+.drop .wrap, .drop .icon-wrap svg { color: #A8A29E !important; }
 
 footer { display: none !important; }
 """
@@ -232,7 +263,7 @@ def build_demo() -> gr.Blocks:
                 with gr.Column(scale=1):
                     conv_in = gr.Image(
                         label="Image", type="pil", sources=["upload", "clipboard"],
-                        height=260,
+                        height=260, elem_classes="drop",
                     )
                     with gr.Row():
                         conv_fmt = gr.Dropdown(
@@ -261,14 +292,16 @@ def build_demo() -> gr.Blocks:
                             "<span style='color:#A8A29E;font-weight:400'>"
                             "(multiple = multi-page)</span></div>")
                     pdf_imgs_in = gr.File(
-                        label="Images", file_count="multiple", file_types=["image"]
+                        label="Images", file_count="multiple", file_types=["image"],
+                        elem_classes="drop",
                     )
                     pdf_build_btn = gr.Button("Build PDF", variant="primary", size="lg")
                     pdf_build_out = gr.File(label="Download PDF")
                     pdf_build_info = gr.Markdown()
                 with gr.Column(scale=1):
                     gr.HTML('<div class="col-label">PDF → Images</div>')
-                    pdf_in = gr.File(label="PDF", file_count="single", file_types=[".pdf"])
+                    pdf_in = gr.File(label="PDF", file_count="single", file_types=[".pdf"],
+                                     elem_classes="drop")
                     pdf_dpi = gr.Slider(72, 300, value=150, step=1, label="Render DPI")
                     pdf_extract_btn = gr.Button("Extract pages", variant="primary", size="lg")
                     pdf_extract_out = gr.File(label="Download pages (ZIP)")
@@ -289,7 +322,7 @@ def build_demo() -> gr.Blocks:
                 with gr.Column(scale=1):
                     inp = gr.Image(
                         label="Input", type="pil", sources=["upload", "clipboard"],
-                        height=260,
+                        height=260, elem_classes="drop",
                     )
                     model = gr.Dropdown(
                         _MODEL_CHOICES, value="realesrgan-x4plus", label="Upscale model"
@@ -343,4 +376,5 @@ if __name__ == "__main__":
         server_port=int(os.environ.get("UPSCALER_PORT", "7860")),
         theme=THEME,
         css=_CSS,
+        js=_FORCE_LIGHT_JS,
     )
