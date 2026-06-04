@@ -290,8 +290,18 @@ button, .tab-nav button, .drop, input, select, textarea, summary,
 .tabitem { animation: fadeUp .4s cubic-bezier(.22,.61,.36,1); }
 [data-testid="accordion-content"] { animation: fadeUp .32s cubic-bezier(.22,.61,.36,1); }
 .label-wrap .icon { transition: transform .22s ease !important; }
+
+/* dropdown list: smooth open (was an abrupt instant pop) */
+@keyframes ddOpen { from { opacity: 0; transform: translateY(-6px) scale(.985); }
+    to { opacity: 1; transform: none; } }
+ul.options, .options { animation: ddOpen .22s cubic-bezier(.22,.61,.36,1);
+    transform-origin: top center; }
+ul.options .item, .options .item { transition: background-color .12s ease; }
+.dropdown-arrow { transition: transform .22s ease; }
+
 @media (prefers-reduced-motion: reduce) {
-    #hero, .sec-head, .tabitem, [data-testid="accordion-content"] { animation: none; } }
+    #hero, .sec-head, .tabitem, [data-testid="accordion-content"],
+    ul.options, .options { animation: none; } }
 @keyframes livepulse { 0% { box-shadow: 0 0 0 0 rgba(34,197,94,.45); }
     70% { box-shadow: 0 0 0 7px rgba(34,197,94,0); }
     100% { box-shadow: 0 0 0 0 rgba(34,197,94,0); } }
