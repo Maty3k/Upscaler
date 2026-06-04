@@ -116,10 +116,11 @@ def extract_pdf(pdf_file, dpi):
 
 # -- Upscale & enhance -------------------------------------------------------
 
-def enhance(image, model, device, deblur, deblur_model, sharpen, tile, onnx):
+def enhance(image, model, device, deblur, deblur_model, sharpen, tile, onnx, out_size):
     if image is None:
         raise gr.Error("Upload an image to enhance first.")
-    src = image if isinstance(image, Image.Image) else Image.fromarray(image)
+    original = image if isinstance(image, Image.Image) else Image.fromarray(image)
+    src = original
     stages = []
     if deblur:
         src = _get_deblurrer(deblur_model, device, onnx).deblur(src)
@@ -130,12 +131,26 @@ def enhance(image, model, device, deblur, deblur_model, sharpen, tile, onnx):
     if sharpen > 0:
         result = unsharp_mask(result, strength=float(sharpen))
         stages.append(f"sharpen {sharpen:g}")
+
+    # Fit to a target resolution preset (longest edge), if chosen.
+    target = _SIZE_PRESETS.get(out_size)
+    if target:
+        w, h = result.size
+        longest = max(w, h)
+        if longest != target:
+            r = target / longest
+            result = result.resize(
+                (max(1, round(w * r)), max(1, round(h * r))), Image.LANCZOS
+            )
+            stages.append(f"→ {target}px")
+
     backend = "onnx" if onnx else getattr(up, "device", None) and up.device.type
     info = (
         "✅ " + " → ".join(stages)
         + f" · backend `{backend}` · {result.width}×{result.height}px"
     )
-    return result, info
+    # (before, after) for the comparison slider
+    return (original, result), info
 
 
 # -- Video (frame-by-frame) --------------------------------------------------
@@ -165,6 +180,17 @@ def upscale_video_ui(video_path, model, sharpen, smooth, device, tile,
 
 
 _CONVERT_METHODS = ["Change image format", "Images → PDF", "PDF → Images"]
+
+# Output-size presets for upscaling: AI-upscale with the model, then fit the
+# longest edge to this many pixels (None = leave at the model's native scale).
+_SIZE_PRESETS: dict[str, int | None] = {
+    "Model default (×2/×4)": None,
+    "HD · 1280px": 1280,
+    "Full HD 1080p · 1920px": 1920,
+    "QHD 1440p · 2560px": 2560,
+    "4K UHD · 3840px": 3840,
+    "8K · 7680px": 7680,
+}
 
 
 def _switch_method(choice):
@@ -463,6 +489,13 @@ def build_demo() -> gr.Blocks:
                             "the most detail but can over-process · anime model is "
                             "for illustrations & line art.",
                         )
+                        out_size = gr.Dropdown(
+                            list(_SIZE_PRESETS), value="Model default (×2/×4)",
+                            label="Output size",
+                            info="After AI upscaling, fit the longest edge to this "
+                            "size. 4K = 3840px. Pick the AI model that overshoots "
+                            "your target, then it's resized down to stay crisp.",
+                        )
                         sharpen = gr.Slider(
                             0.0, 3.0, value=0.0, step=0.1,
                             label="Sharpen (unsharp mask) — 0 = off",
@@ -499,8 +532,9 @@ def build_demo() -> gr.Blocks:
                             )
                         run = gr.Button("Enhance", variant="primary", size="lg")
                     with gr.Column(scale=1):
-                        out = gr.Image(
-                            label="Result", type="pil", format="png", height=300
+                        out = gr.ImageSlider(
+                            label="Before / after — drag the divider to compare",
+                            type="pil", height=300,
                         )
                         info = gr.Markdown()
 
@@ -644,7 +678,7 @@ def build_demo() -> gr.Blocks:
         )
         run.click(
             enhance,
-            [inp, model, device, deblur, deblur_model, sharpen, tile, onnx],
+            [inp, model, device, deblur, deblur_model, sharpen, tile, onnx, out_size],
             [out, info],
         )
         vid_btn.click(
