@@ -247,8 +247,10 @@ _CSS = """
 
 /* Custom CSS uses Gradio theme vars (--body-text-color etc.) so it adapts to
    both light and dark automatically. --ac is the accent (teal), brighter in dark. */
-.gradio-container { --ac: #0F766E; --ac-weak: rgba(13,148,136,.10); }
-.dark .gradio-container, .dark { --ac: #2DD4BF; --ac-weak: rgba(45,212,191,.13); }
+.gradio-container { --ac: #0F766E; --ac-weak: rgba(13,148,136,.10);
+    --tex: rgba(28,25,23,.07); }
+.dark .gradio-container, .dark { --ac: #2DD4BF; --ac-weak: rgba(45,212,191,.13);
+    --tex: rgba(255,255,255,.06); }
 
 /* gradio-app carries the .dark scope, so fill the viewport with IT (html/body
    sit outside the scope and would otherwise show a strip behind the app). The
@@ -256,12 +258,13 @@ _CSS = """
 html, body { background: var(--body-background-fill) !important; }
 gradio-app { display: block; min-height: 100vh;
     background: var(--body-background-fill) !important; }
-/* The container has --ac-weak + --body-background-fill in scope, so the warm
-   accent glow goes here (not on gradio-app, where those vars are undefined). */
+/* The container has the accent + texture vars in scope, so the warm glow and a
+   faint dot texture go here (not on gradio-app, where those vars are undefined). */
 .gradio-container { max-width: 100% !important; padding: 6px 44px 64px !important;
     position: relative;
     background:
       radial-gradient(1100px 460px at 18% -8%, var(--ac-weak), transparent 62%),
+      radial-gradient(var(--tex) 1px, transparent 1.4px) 0 0 / 22px 22px,
       var(--body-background-fill) !important; }
 
 /* smooth, subtle transitions everywhere interactive */
@@ -279,12 +282,16 @@ button, .tab-nav button, .drop, input, select, textarea, summary,
 /* gentle entrance animations */
 @keyframes fadeUp { from { opacity: 0; transform: translateY(10px); }
     to { opacity: 1; transform: none; } }
-/* Entrance only on non-critical chrome (hero/section heads) — never on the tab
-   content itself, so a tool can never get stuck invisible if motion is blocked. */
+/* Entrance fades. The hero/section heads use `both` fill (load-time only). Tab
+   content and accordion bodies animate WITHOUT a fill mode (default opacity 1),
+   so they re-run each time they're shown but can never get stuck invisible. */
 #hero { animation: fadeUp .5s cubic-bezier(.22,.61,.36,1) both; }
 .sec-head { animation: fadeUp .5s cubic-bezier(.22,.61,.36,1) .04s both; }
+.tabitem { animation: fadeUp .4s cubic-bezier(.22,.61,.36,1); }
+[data-testid="accordion-content"] { animation: fadeUp .32s cubic-bezier(.22,.61,.36,1); }
+.label-wrap .icon { transition: transform .22s ease !important; }
 @media (prefers-reduced-motion: reduce) {
-    #hero, .sec-head { animation: none; } }
+    #hero, .sec-head, .tabitem, [data-testid="accordion-content"] { animation: none; } }
 @keyframes livepulse { 0% { box-shadow: 0 0 0 0 rgba(34,197,94,.45); }
     70% { box-shadow: 0 0 0 7px rgba(34,197,94,0); }
     100% { box-shadow: 0 0 0 0 rgba(34,197,94,0); } }
@@ -484,19 +491,16 @@ def build_demo() -> gr.Blocks:
                                 sources=["upload", "clipboard"], height=300,
                                 elem_classes="drop",
                             )
-                            with gr.Row():
-                                conv_fmt = gr.Dropdown(
-                                    list(FORMATS), value="PNG",
-                                    label="Convert to", scale=2,
-                                    info="PNG / TIFF keep full quality · JPEG, "
-                                    "WebP, AVIF, HEIC are smaller but lossy.",
-                                )
-                                conv_quality = gr.Slider(
-                                    1, 100, value=90, step=1,
-                                    label="Quality (lossy)", scale=3,
-                                    info="Only affects lossy formats. Higher = "
-                                    "better looking but larger file.",
-                                )
+                            conv_fmt = gr.Dropdown(
+                                list(FORMATS), value="PNG", label="Convert to",
+                                info="PNG / TIFF keep full quality · JPEG, WebP, "
+                                "AVIF, HEIC are smaller but lossy.",
+                            )
+                            conv_quality = gr.Slider(
+                                1, 100, value=90, step=1, label="Quality (lossy)",
+                                info="Only affects lossy formats. Higher = better "
+                                "looking but larger file.",
+                            )
                             conv_lossless = gr.Checkbox(
                                 value=False, label="Lossless WebP",
                                 info="Encode WebP with no quality loss (bigger file).",
