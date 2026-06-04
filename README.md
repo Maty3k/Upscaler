@@ -68,6 +68,7 @@ flattened onto a white background for formats that can't store it (JPEG/BMP/PPM)
 ```bash
 upscaler video clip.mp4 -o clip_2x.mp4 --scale 2          # keeps audio
 upscaler video clip.mp4 -o clip_2x_60.mp4 --scale 2 --fps 60   # + smooth to 60fps
+upscaler video ./clips -o ./out --scale 2                 # batch a whole folder
 ```
 
 Offline frame-by-frame upscaling (split → upscale each frame → re-encode + mux

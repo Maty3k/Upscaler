@@ -18,6 +18,7 @@ from upscaler.models.registry import DEBLUR_MODELS, DEFAULT_DEBLUR_MODEL, MODELS
 from upscaler.sharpen import unsharp_mask
 
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".webp", ".tif", ".tiff"}
+_VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v", ".flv", ".wmv"}
 
 
 def _gather_inputs(path: Path) -> list[Path]:
@@ -164,8 +165,13 @@ def build_video_parser() -> argparse.ArgumentParser:
         description="Upscale a video frame-by-frame (offline; keeps audio). "
         "Needs ffmpeg.",
     )
-    p.add_argument("input", type=Path, help="Input video file.")
-    p.add_argument("-o", "--output", type=Path, required=True, help="Output .mp4 path.")
+    p.add_argument(
+        "input", type=Path, help="Input video file, or a directory of videos."
+    )
+    p.add_argument(
+        "-o", "--output", type=Path, required=True,
+        help="Output .mp4 file, or a directory (required for a folder of videos).",
+    )
     p.add_argument(
         "-s", "--scale", type=int, default=2, choices=(2, 4),
         help="Upscale factor (default: 2 — gentler/faster, less flicker).",
@@ -188,31 +194,61 @@ def build_video_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _video_output_path(src: Path, out: Path, scale: int) -> Path:
+    if out.suffix:  # explicit file target
+        return out
+    out.mkdir(parents=True, exist_ok=True)
+    return out / f"{src.stem}_x{scale}.mp4"
+
+
 def run_video(argv: list[str]) -> int:
     args = build_video_parser().parse_args(argv)
     if not args.input.exists():
         print(f"error: input not found: {args.input}", file=sys.stderr)
         return 2
 
-    last = [0]
+    if args.input.is_dir():
+        inputs = sorted(p for p in args.input.iterdir() if p.suffix.lower() in _VIDEO_EXTS)
+        if not inputs:
+            print(f"error: no videos found in {args.input}", file=sys.stderr)
+            return 2
+    else:
+        inputs = [args.input]
 
-    def cb(i: int, total: int) -> None:
-        if i != last[0]:
-            last[0] = i
-            print(f"\r  frame {i}/{total}", end="", file=sys.stderr, flush=True)
+    if len(inputs) > 1 and args.output.suffix:
+        print("error: --output must be a directory when processing a folder",
+              file=sys.stderr)
+        return 2
 
-    print(f"upscaling video ×{args.scale} (this can take a while)…", file=sys.stderr)
-    try:
-        upscale_video(
-            args.input, args.output, model=args.model, scale=args.scale,
-            device=args.device, tile=args.tile, sharpen=args.sharpen,
-            crf=args.crf, interpolate_fps=args.fps, progress_cb=cb,
-        )
-    except (RuntimeError, FileNotFoundError) as e:
-        print(f"\nerror: {e}", file=sys.stderr)
-        return 1
-    print(f"\n→ {args.output}", file=sys.stderr)
-    return 0
+    # Build the model once and reuse it across every clip.
+    up = Upscaler(
+        model=args.model, scale=args.scale, device=args.device, tile=args.tile
+    )
+    print(f"upscaling {len(inputs)} clip(s) ×{up.scale} on {up.device.type} "
+          "(this can take a while)…", file=sys.stderr)
+
+    failures = 0
+    for idx, src in enumerate(inputs, 1):
+        dst = _video_output_path(src, args.output, up.scale)
+        last = [0]
+
+        def cb(i: int, total: int, _idx=idx, _src=src) -> None:
+            if i != last[0]:
+                last[0] = i
+                tag = f"[{_idx}/{len(inputs)}] " if len(inputs) > 1 else ""
+                print(f"\r  {tag}{_src.name}: frame {i}/{total}",
+                      end="", file=sys.stderr, flush=True)
+
+        try:
+            upscale_video(
+                src, dst, upscaler=up, sharpen=args.sharpen, crf=args.crf,
+                interpolate_fps=args.fps, progress_cb=cb,
+            )
+            print(f"\n→ {dst}", file=sys.stderr)
+        except (RuntimeError, FileNotFoundError) as e:
+            print(f"\nerror on {src.name}: {e}", file=sys.stderr)
+            failures += 1
+    return 1 if failures else 0
 
 
 def build_parser() -> argparse.ArgumentParser:

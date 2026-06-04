@@ -70,6 +70,28 @@ def test_interpolation_boosts_fps(tiny_video, tmp_path):
     assert _probe_wh(dst) == (80, 64)      # still ×2 upscaled
 
 
+def test_cli_batch_folder(tmp_path):
+    """`upscaler video <dir> -o <dir>` upscales every clip in the folder."""
+    from upscaler.cli import main
+
+    src_dir = tmp_path / "clips"
+    src_dir.mkdir()
+    for name in ("a", "b"):
+        subprocess.run(
+            [ffmpeg, "-y", "-f", "lavfi", "-i",
+             f"testsrc=size=40x32:rate=8:duration=0.4", "-pix_fmt", "yuv420p",
+             str(src_dir / f"{name}.mp4")],
+            capture_output=True, check=True,
+        )
+    out_dir = tmp_path / "out"
+    rc = main(["video", str(src_dir), "-o", str(out_dir),
+               "--scale", "2", "--device", "cpu", "--tile", "0"])
+    assert rc == 0
+    outs = sorted(p.name for p in out_dir.glob("*.mp4"))
+    assert outs == ["a_x2.mp4", "b_x2.mp4"]
+    assert _probe_wh(out_dir / "a_x2.mp4") == (80, 64)
+
+
 def test_missing_input_raises(tmp_path):
     from upscaler.video import upscale_video
 
