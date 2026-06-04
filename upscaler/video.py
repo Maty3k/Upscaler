@@ -83,6 +83,8 @@ def upscale_video(
     crf: int = 18,
     interpolate_fps: Optional[int] = None,
     target_long_edge: Optional[int] = None,
+    trim_start: Optional[float] = None,
+    trim_end: Optional[float] = None,
     progress_cb: ProgressCb = None,
 ) -> Path:
     """Upscale every frame of ``src`` and write the result to ``dst`` (keeps audio).
@@ -91,6 +93,8 @@ def upscale_video(
     is called after each frame. ``interpolate_fps`` (e.g. 60) adds motion-
     interpolated frames (ffmpeg minterpolate; slow). ``target_long_edge`` (e.g.
     3840 for 4K) fits the longest side to that many pixels after AI upscaling.
+    ``trim_start``/``trim_end`` (seconds) process only that slice of the clip —
+    great for testing settings on a few seconds before the full render.
     Returns the output path.
     """
     src, dst = Path(src), Path(dst)
@@ -106,8 +110,15 @@ def upscale_video(
         in_dir.mkdir()
         out_dir.mkdir()
 
-        # 1. extract frames
-        _run([ff, "-y", "-i", str(src), str(in_dir / "f_%06d.png")])
+        # optional trim window (seconds): -ss seeks the start, -t limits duration
+        start = float(trim_start) if trim_start and trim_start > 0 else 0.0
+        seek = ["-ss", str(start)] if start > 0 else []
+        dur = []
+        if trim_end and float(trim_end) > start:
+            dur = ["-t", str(float(trim_end) - start)]
+
+        # 1. extract frames (within the trim window if given)
+        _run([ff, "-y", *seek, "-i", str(src), *dur, str(in_dir / "f_%06d.png")])
         frames = sorted(in_dir.glob("f_*.png"))
         if not frames:
             raise RuntimeError("No frames could be extracted from the video.")
@@ -124,7 +135,8 @@ def upscale_video(
         # 3. re-encode at the original fps, muxing the source audio back in
         cmd = [ff, "-y", "-framerate", fps, "-i", str(out_dir / "f_%06d.png")]
         if has_audio:
-            cmd += ["-i", str(src), "-map", "0:v:0", "-map", "1:a:0?",
+            # seek the audio to the same start; -shortest trims it to the frames
+            cmd += [*seek, "-i", str(src), "-map", "0:v:0", "-map", "1:a:0?",
                     "-c:a", "aac", "-shortest"]
         vf = []
         if target_long_edge:

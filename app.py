@@ -170,8 +170,8 @@ def _first_frame(video_path):
     return Image.open(p)
 
 
-def upscale_video_ui(video_path, model, out_size, sharpen, smooth, device, tile,
-                     progress=gr.Progress()):
+def upscale_video_ui(video_path, model, out_size, sharpen, smooth, trim_start,
+                     trim_end, device, tile, progress=gr.Progress()):
     if not video_path:
         raise gr.Error("Upload a video first.")
     from upscaler.video import upscale_video
@@ -180,6 +180,8 @@ def upscale_video_ui(video_path, model, out_size, sharpen, smooth, device, tile,
     os.close(fd)
     fps = None if smooth in (None, "Off") else int(smooth)
     target = _SIZE_PRESETS.get(out_size)
+    start = float(trim_start) if trim_start and trim_start > 0 else None
+    end = float(trim_end) if trim_end and trim_end > 0 else None
 
     def cb(i, n):
         progress(i / n, desc=f"Upscaling frame {i}/{n}")
@@ -188,7 +190,7 @@ def upscale_video_ui(video_path, model, out_size, sharpen, smooth, device, tile,
         upscale_video(
             video_path, out, model=model, device=device, tile=int(tile),
             sharpen=float(sharpen), interpolate_fps=fps, target_long_edge=target,
-            progress_cb=cb,
+            trim_start=start, trim_end=end, progress_cb=cb,
         )
     except (RuntimeError, FileNotFoundError) as e:
         raise gr.Error(str(e)) from e
@@ -198,6 +200,8 @@ def upscale_video_ui(video_path, model, out_size, sharpen, smooth, device, tile,
     except Exception:
         compare = None
     extra = (f" · {target}px" if target else "") + (f" · {fps} fps" if fps else "")
+    if start or end:
+        extra += f" · trim {start or 0:g}–{end if end else 'end'}s"
     return out, compare, f"✅ Done — preview and download below.{extra}"
 
 
@@ -604,6 +608,20 @@ def build_demo() -> gr.Blocks:
                             info="Adds motion-interpolated frames for smoother "
                             "playback. Higher = smoother but much slower.",
                         )
+                        with gr.Accordion("Trim (process only part of the clip)", open=False):
+                            gr.Markdown(
+                                "Render just a slice — great for testing settings "
+                                "on a few seconds before the full clip. Leave at 0 "
+                                "to use the whole video."
+                            )
+                            with gr.Row():
+                                vid_start = gr.Number(
+                                    value=0, label="Start (seconds)", minimum=0,
+                                )
+                                vid_end = gr.Number(
+                                    value=0, label="End (seconds, 0 = to end)",
+                                    minimum=0,
+                                )
                         with gr.Accordion("Advanced", open=False):
                             vid_device = gr.Dropdown(
                                 _DEVICES, value="auto", label="Device",
@@ -731,7 +749,8 @@ def build_demo() -> gr.Blocks:
         clear.click(lambda: (None, None, None), None, [inp, out, info])
         vid_btn.click(
             upscale_video_ui,
-            [vid_in, vid_model, vid_size, vid_sharpen, vid_smooth, vid_device, vid_tile],
+            [vid_in, vid_model, vid_size, vid_sharpen, vid_smooth, vid_start,
+             vid_end, vid_device, vid_tile],
             [vid_out, vid_compare, vid_info],
         )
         vid_clear.click(

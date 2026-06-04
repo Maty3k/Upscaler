@@ -82,6 +82,31 @@ def test_target_long_edge_resizes(tiny_video, tmp_path):
     assert h % 2 == 0  # even for yuv420p
 
 
+def _count_frames(path):
+    return int(subprocess.run(
+        ["ffprobe", "-v", "error", "-count_frames", "-select_streams", "v:0",
+         "-show_entries", "stream=nb_read_frames", "-of", "csv=p=0", str(path)],
+        capture_output=True, text=True,
+    ).stdout.strip())
+
+
+def test_trim_processes_only_window(tmp_path):
+    """A 1s @8fps clip trimmed to 0.5s yields ~half the frames."""
+    src = tmp_path / "in.mp4"
+    subprocess.run(
+        [ffmpeg, "-y", "-f", "lavfi", "-i", "testsrc=size=40x32:rate=8:duration=1",
+         "-pix_fmt", "yuv420p", str(src)],
+        capture_output=True, check=True,
+    )
+    from upscaler.video import upscale_video
+
+    dst = tmp_path / "trim.mp4"
+    upscale_video(src, dst, model="realesrgan-x2plus", device="cpu", tile=0,
+                  trim_end=0.5)
+    assert _count_frames(src) == 8
+    assert _count_frames(dst) == 4
+
+
 def test_cli_batch_folder(tmp_path):
     """`upscaler video <dir> -o <dir>` upscales every clip in the folder."""
     from upscaler.cli import main

@@ -69,6 +69,7 @@ flattened onto a white background for formats that can't store it (JPEG/BMP/PPM)
 upscaler video clip.mp4 -o clip_2x.mp4 --scale 2          # keeps audio
 upscaler video clip.mp4 -o clip_2x_60.mp4 --scale 2 --fps 60   # + smooth to 60fps
 upscaler video clip.mp4 -o clip_4k.mp4 --scale 4 --size 3840    # fit longest edge to 4K
+upscaler video clip.mp4 -o test.mp4 --scale 2 --start 0 --end 5  # trim: first 5s only
 upscaler video ./clips -o ./out --scale 2                 # batch a whole folder
 ```
 
