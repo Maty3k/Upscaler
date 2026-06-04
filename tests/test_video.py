@@ -70,6 +70,18 @@ def test_interpolation_boosts_fps(tiny_video, tmp_path):
     assert _probe_wh(dst) == (80, 64)      # still ×2 upscaled
 
 
+def test_target_long_edge_resizes(tiny_video, tmp_path):
+    from upscaler.video import upscale_video
+
+    dst = tmp_path / "sized.mp4"
+    # 40x32 -> x2 = 80x64; fit longest edge to 120
+    upscale_video(tiny_video, dst, model="realesrgan-x2plus", device="cpu",
+                  tile=0, target_long_edge=120)
+    w, h = _probe_wh(dst)
+    assert max(w, h) == 120
+    assert h % 2 == 0  # even for yuv420p
+
+
 def test_cli_batch_folder(tmp_path):
     """`upscaler video <dir> -o <dir>` upscales every clip in the folder."""
     from upscaler.cli import main

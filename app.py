@@ -155,7 +155,7 @@ def enhance(image, model, device, deblur, deblur_model, sharpen, tile, onnx, out
 
 # -- Video (frame-by-frame) --------------------------------------------------
 
-def upscale_video_ui(video_path, model, sharpen, smooth, device, tile,
+def upscale_video_ui(video_path, model, out_size, sharpen, smooth, device, tile,
                      progress=gr.Progress()):
     if not video_path:
         raise gr.Error("Upload a video first.")
@@ -164,6 +164,7 @@ def upscale_video_ui(video_path, model, sharpen, smooth, device, tile,
     fd, out = tempfile.mkstemp(suffix=".mp4")
     os.close(fd)
     fps = None if smooth in (None, "Off") else int(smooth)
+    target = _SIZE_PRESETS.get(out_size)
 
     def cb(i, n):
         progress(i / n, desc=f"Upscaling frame {i}/{n}")
@@ -171,11 +172,12 @@ def upscale_video_ui(video_path, model, sharpen, smooth, device, tile,
     try:
         upscale_video(
             video_path, out, model=model, device=device, tile=int(tile),
-            sharpen=float(sharpen), interpolate_fps=fps, progress_cb=cb,
+            sharpen=float(sharpen), interpolate_fps=fps, target_long_edge=target,
+            progress_cb=cb,
         )
     except (RuntimeError, FileNotFoundError) as e:
         raise gr.Error(str(e)) from e
-    extra = f" · interpolated to {fps} fps" if fps else ""
+    extra = (f" · {target}px" if target else "") + (f" · {fps} fps" if fps else "")
     return out, f"✅ Done — preview and download below.{extra}"
 
 
@@ -556,6 +558,12 @@ def build_demo() -> gr.Blocks:
                             info="×2 recommended for video — faster, less shimmer "
                             "between frames.",
                         )
+                        vid_size = gr.Dropdown(
+                            list(_SIZE_PRESETS), value="Model default (×2/×4)",
+                            label="Output size",
+                            info="Fit the longest edge to this size after upscaling "
+                            "(e.g. 4K = 3840px). Resizes every frame.",
+                        )
                         vid_sharpen = gr.Slider(
                             0.0, 3.0, value=0.0, step=0.1,
                             label="Sharpen per frame — 0 = off",
@@ -683,7 +691,7 @@ def build_demo() -> gr.Blocks:
         )
         vid_btn.click(
             upscale_video_ui,
-            [vid_in, vid_model, vid_sharpen, vid_smooth, vid_device, vid_tile],
+            [vid_in, vid_model, vid_size, vid_sharpen, vid_smooth, vid_device, vid_tile],
             [vid_out, vid_info],
         )
     return demo

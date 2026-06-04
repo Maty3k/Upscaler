@@ -82,14 +82,16 @@ def upscale_video(
     sharpen: float = 0.0,
     crf: int = 18,
     interpolate_fps: Optional[int] = None,
+    target_long_edge: Optional[int] = None,
     progress_cb: ProgressCb = None,
 ) -> Path:
     """Upscale every frame of ``src`` and write the result to ``dst`` (keeps audio).
 
     Pass a prebuilt ``upscaler`` to reuse a loaded model. ``progress_cb(i, total)``
     is called after each frame. ``interpolate_fps`` (e.g. 60) adds motion-
-    interpolated frames to boost smoothness (ffmpeg minterpolate; slow). Returns
-    the output path.
+    interpolated frames (ffmpeg minterpolate; slow). ``target_long_edge`` (e.g.
+    3840 for 4K) fits the longest side to that many pixels after AI upscaling.
+    Returns the output path.
     """
     src, dst = Path(src), Path(dst)
     if not src.exists():
@@ -124,11 +126,22 @@ def upscale_video(
         if has_audio:
             cmd += ["-i", str(src), "-map", "0:v:0", "-map", "1:a:0?",
                     "-c:a", "aac", "-shortest"]
+        vf = []
+        if target_long_edge:
+            # fit the longest edge to T px (keep aspect; -2 keeps the other side
+            # even for yuv420p). Scale before interpolation to keep it cheaper.
+            t = int(target_long_edge)
+            vf.append(
+                f"scale=w='if(gte(iw,ih),{t},-2)':h='if(gte(iw,ih),-2,{t})':"
+                "flags=lanczos"
+            )
         if interpolate_fps:
             # motion-compensated interpolation to a higher fps (duration unchanged,
             # so audio stays in sync). Heavy but built into ffmpeg.
-            cmd += ["-vf", f"minterpolate=fps={int(interpolate_fps)}:mi_mode=mci:"
-                    "mc_mode=aobmc:me_mode=bidir:vsbmc=1"]
+            vf.append(f"minterpolate=fps={int(interpolate_fps)}:mi_mode=mci:"
+                      "mc_mode=aobmc:me_mode=bidir:vsbmc=1")
+        if vf:
+            cmd += ["-vf", ",".join(vf)]
         cmd += ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", str(crf),
                 "-movflags", "+faststart", str(dst)]
         _run(cmd)

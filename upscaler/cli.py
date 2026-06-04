@@ -191,6 +191,10 @@ def build_video_parser() -> argparse.ArgumentParser:
         "--fps", type=int, default=None,
         help="Motion-interpolate to this fps for smoother motion (e.g. 60). Slow.",
     )
+    p.add_argument(
+        "--size", type=int, default=None, metavar="PX",
+        help="Fit the longest edge to PX after upscaling (e.g. 3840 for 4K).",
+    )
     return p
 
 
@@ -242,7 +246,7 @@ def run_video(argv: list[str]) -> int:
         try:
             upscale_video(
                 src, dst, upscaler=up, sharpen=args.sharpen, crf=args.crf,
-                interpolate_fps=args.fps, progress_cb=cb,
+                interpolate_fps=args.fps, target_long_edge=args.size, progress_cb=cb,
             )
             print(f"\n→ {dst}", file=sys.stderr)
         except (RuntimeError, FileNotFoundError) as e:
