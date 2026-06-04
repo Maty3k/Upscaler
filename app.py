@@ -140,13 +140,15 @@ def enhance(image, model, device, deblur, deblur_model, sharpen, tile, onnx):
 
 # -- Video (frame-by-frame) --------------------------------------------------
 
-def upscale_video_ui(video_path, model, sharpen, device, tile, progress=gr.Progress()):
+def upscale_video_ui(video_path, model, sharpen, smooth, device, tile,
+                     progress=gr.Progress()):
     if not video_path:
         raise gr.Error("Upload a video first.")
     from upscaler.video import upscale_video
 
     fd, out = tempfile.mkstemp(suffix=".mp4")
     os.close(fd)
+    fps = None if smooth in (None, "Off") else int(smooth)
 
     def cb(i, n):
         progress(i / n, desc=f"Upscaling frame {i}/{n}")
@@ -154,11 +156,12 @@ def upscale_video_ui(video_path, model, sharpen, device, tile, progress=gr.Progr
     try:
         upscale_video(
             video_path, out, model=model, device=device, tile=int(tile),
-            sharpen=float(sharpen), progress_cb=cb,
+            sharpen=float(sharpen), interpolate_fps=fps, progress_cb=cb,
         )
     except (RuntimeError, FileNotFoundError) as e:
         raise gr.Error(str(e)) from e
-    return out, "✅ Done — preview and download below."
+    extra = f" · interpolated to {fps} fps" if fps else ""
+    return out, f"✅ Done — preview and download below.{extra}"
 
 
 _CONVERT_METHODS = ["Change image format", "Images → PDF", "PDF → Images"]
@@ -525,6 +528,12 @@ def build_demo() -> gr.Blocks:
                             info="Be gentle on video; sharpening can amplify "
                             "frame-to-frame flicker.",
                         )
+                        vid_smooth = gr.Dropdown(
+                            ["Off", "30", "48", "60", "120"], value="Off",
+                            label="Smooth motion (interpolate to fps)",
+                            info="Adds motion-interpolated frames for smoother "
+                            "playback. Higher = smoother but much slower.",
+                        )
                         with gr.Accordion("Advanced", open=False):
                             vid_device = gr.Dropdown(
                                 _DEVICES, value="auto", label="Device",
@@ -640,7 +649,7 @@ def build_demo() -> gr.Blocks:
         )
         vid_btn.click(
             upscale_video_ui,
-            [vid_in, vid_model, vid_sharpen, vid_device, vid_tile],
+            [vid_in, vid_model, vid_sharpen, vid_smooth, vid_device, vid_tile],
             [vid_out, vid_info],
         )
     return demo

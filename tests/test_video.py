@@ -50,6 +50,26 @@ def test_progress_callback_fires(tiny_video, tmp_path):
     assert seen and seen[-1][0] == seen[-1][1] and seen[-1][1] >= 1
 
 
+def _probe_fps(path):
+    out = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+         "stream=r_frame_rate", "-of", "csv=p=0", str(path)],
+        capture_output=True, text=True,
+    ).stdout.strip()
+    num, den = out.split("/")
+    return round(int(num) / int(den))
+
+
+def test_interpolation_boosts_fps(tiny_video, tmp_path):
+    from upscaler.video import upscale_video
+
+    dst = tmp_path / "smooth.mp4"
+    upscale_video(tiny_video, dst, model="realesrgan-x2plus", device="cpu",
+                  tile=0, interpolate_fps=30)
+    assert _probe_fps(dst) == 30           # was 8 fps
+    assert _probe_wh(dst) == (80, 64)      # still ×2 upscaled
+
+
 def test_missing_input_raises(tmp_path):
     from upscaler.video import upscale_video
 

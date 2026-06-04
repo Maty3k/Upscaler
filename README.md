@@ -66,12 +66,14 @@ flattened onto a white background for formats that can't store it (JPEG/BMP/PPM)
 ### Video (frame-by-frame)
 
 ```bash
-upscaler video clip.mp4 -o clip_2x.mp4 --scale 2     # keeps audio
+upscaler video clip.mp4 -o clip_2x.mp4 --scale 2          # keeps audio
+upscaler video clip.mp4 -o clip_2x_60.mp4 --scale 2 --fps 60   # + smooth to 60fps
 ```
 
 Offline frame-by-frame upscaling (split → upscale each frame → re-encode + mux
-audio). Needs **ffmpeg** (system install, or `pip install -e ".[video]"` for a
-bundled binary). It's a render-and-wait feature — minutes per minute of footage —
+audio). `--fps` adds motion-interpolated frames (ffmpeg `minterpolate`) for
+smoother motion — duration unchanged, audio stays in sync, but it's slow. Needs
+**ffmpeg** (system install, or `pip install -e ".[video]"` for a bundled binary). It's a render-and-wait feature — minutes per minute of footage —
 and since frames are upscaled independently, very fine detail can shimmer slightly
 between frames (a temporal model would be needed to fully remove that).
 

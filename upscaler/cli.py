@@ -181,6 +181,10 @@ def build_video_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--tile", type=int, default=512, help="Tile size, 0 disables tiling.")
     p.add_argument("--crf", type=int, default=18, help="x264 quality, lower=better (18).")
+    p.add_argument(
+        "--fps", type=int, default=None,
+        help="Motion-interpolate to this fps for smoother motion (e.g. 60). Slow.",
+    )
     return p
 
 
@@ -202,7 +206,7 @@ def run_video(argv: list[str]) -> int:
         upscale_video(
             args.input, args.output, model=args.model, scale=args.scale,
             device=args.device, tile=args.tile, sharpen=args.sharpen,
-            crf=args.crf, progress_cb=cb,
+            crf=args.crf, interpolate_fps=args.fps, progress_cb=cb,
         )
     except (RuntimeError, FileNotFoundError) as e:
         print(f"\nerror: {e}", file=sys.stderr)

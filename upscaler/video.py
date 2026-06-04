@@ -81,12 +81,15 @@ def upscale_video(
     tile: int = 512,
     sharpen: float = 0.0,
     crf: int = 18,
+    interpolate_fps: Optional[int] = None,
     progress_cb: ProgressCb = None,
 ) -> Path:
     """Upscale every frame of ``src`` and write the result to ``dst`` (keeps audio).
 
     Pass a prebuilt ``upscaler`` to reuse a loaded model. ``progress_cb(i, total)``
-    is called after each frame. Returns the output path.
+    is called after each frame. ``interpolate_fps`` (e.g. 60) adds motion-
+    interpolated frames to boost smoothness (ffmpeg minterpolate; slow). Returns
+    the output path.
     """
     src, dst = Path(src), Path(dst)
     if not src.exists():
@@ -121,6 +124,11 @@ def upscale_video(
         if has_audio:
             cmd += ["-i", str(src), "-map", "0:v:0", "-map", "1:a:0?",
                     "-c:a", "aac", "-shortest"]
+        if interpolate_fps:
+            # motion-compensated interpolation to a higher fps (duration unchanged,
+            # so audio stays in sync). Heavy but built into ffmpeg.
+            cmd += ["-vf", f"minterpolate=fps={int(interpolate_fps)}:mi_mode=mci:"
+                    "mc_mode=aobmc:me_mode=bidir:vsbmc=1"]
         cmd += ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", str(crf),
                 "-movflags", "+faststart", str(dst)]
         _run(cmd)
