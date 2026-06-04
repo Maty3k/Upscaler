@@ -704,7 +704,10 @@ def build_demo() -> gr.Blocks:
                             )
                         with gr.Column(scale=1):
                             pdf_extract_out = gr.File(label="Download pages (ZIP)")
-                            pdf_gallery = gr.Gallery(label="Pages", columns=4, height=220)
+                            pdf_gallery = gr.Gallery(
+                            label="Pages", columns=4, height=220,
+                            buttons=["download", "fullscreen"],
+                        )
                             pdf_extract_info = gr.Markdown()
 
                 method.change(
