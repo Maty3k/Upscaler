@@ -155,6 +155,21 @@ def enhance(image, model, device, deblur, deblur_model, sharpen, tile, onnx, out
 
 # -- Video (frame-by-frame) --------------------------------------------------
 
+def _first_frame(video_path):
+    """Grab the first frame of a video as a PIL image (for the comparison)."""
+    import subprocess
+
+    from upscaler.video import _ffmpeg
+
+    fd, p = tempfile.mkstemp(suffix=".png")
+    os.close(fd)
+    subprocess.run(
+        [_ffmpeg(), "-y", "-i", str(video_path), "-frames:v", "1", p],
+        capture_output=True,
+    )
+    return Image.open(p)
+
+
 def upscale_video_ui(video_path, model, out_size, sharpen, smooth, device, tile,
                      progress=gr.Progress()):
     if not video_path:
@@ -177,8 +192,13 @@ def upscale_video_ui(video_path, model, out_size, sharpen, smooth, device, tile,
         )
     except (RuntimeError, FileNotFoundError) as e:
         raise gr.Error(str(e)) from e
+
+    try:
+        compare = (_first_frame(video_path), _first_frame(out))
+    except Exception:
+        compare = None
     extra = (f" · {target}px" if target else "") + (f" · {fps} fps" if fps else "")
-    return out, f"✅ Done — preview and download below.{extra}"
+    return out, compare, f"✅ Done — preview and download below.{extra}"
 
 
 _CONVERT_METHODS = ["Change image format", "Images → PDF", "PDF → Images"]
@@ -338,7 +358,7 @@ button, .tab-nav button, .drop, .item, .dropdown-arrow {
    bodies use no fill (default opacity 1) so they can't get stuck invisible. */
 @keyframes fadeUp { from { opacity: 0; transform: translateY(6px); }
     to { opacity: 1; transform: none; } }
-#hero, .sec-head, .tabitem, [data-testid="accordion-content"], ul.options, .options {
+#hero, .sec-head, .tabitem, [data-testid="accordion-content"] {
     will-change: opacity, transform; }
 #hero { animation: fadeUp .55s cubic-bezier(.22,.61,.36,1) both; }
 .sec-head { animation: fadeUp .55s cubic-bezier(.22,.61,.36,1) .05s both; }
@@ -349,8 +369,12 @@ button, .tab-nav button, .drop, .item, .dropdown-arrow {
 /* dropdown list: smooth open (was an abrupt instant pop) */
 @keyframes ddOpen { from { opacity: 0; transform: translateY(-5px) scale(.99); }
     to { opacity: 1; transform: none; } }
+/* z-index so an open list sits ABOVE other controls instead of overlapping
+   them; box-shadow + solid bg so it reads as a floating popover. */
 ul.options, .options { animation: ddOpen .2s cubic-bezier(.22,.61,.36,1);
-    transform-origin: top center; }
+    transform-origin: top center; z-index: 200 !important;
+    box-shadow: 0 8px 28px rgba(28,25,23,.16) !important;
+    background: var(--block-background-fill) !important; }
 ul.options .item, .options .item { transition: background-color .12s ease; }
 .dropdown-arrow { transition: transform .25s cubic-bezier(.22,.61,.36,1); }
 
@@ -589,6 +613,10 @@ def build_demo() -> gr.Blocks:
                         vid_btn = gr.Button("Upscale video", variant="primary", size="lg")
                     with gr.Column(scale=1):
                         vid_out = gr.Video(label="Result")
+                        vid_compare = gr.ImageSlider(
+                            label="First frame — before / after (drag to compare)",
+                            type="pil", height=220,
+                        )
                         vid_info = gr.Markdown()
 
             # ---- Tab 3: Convert (all conversions, picked via dropdown) ----
@@ -692,7 +720,7 @@ def build_demo() -> gr.Blocks:
         vid_btn.click(
             upscale_video_ui,
             [vid_in, vid_model, vid_size, vid_sharpen, vid_smooth, vid_device, vid_tile],
-            [vid_out, vid_info],
+            [vid_out, vid_compare, vid_info],
         )
     return demo
 
