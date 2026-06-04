@@ -143,8 +143,8 @@ _DEBLUR_CHOICES = [(f"{s.name} — {s.notes}", s.name) for s in DEBLUR_MODELS.va
 _DEVICES = ["auto", "cpu", "cuda", "mps"]
 
 THEME = gr.themes.Base(
-    primary_hue=gr.themes.colors.neutral,
-    secondary_hue=gr.themes.colors.neutral,
+    primary_hue=gr.themes.colors.teal,
+    secondary_hue=gr.themes.colors.teal,
     neutral_hue=gr.themes.colors.stone,
     font=[gr.themes.GoogleFont("Manrope"), "system-ui", "sans-serif"],
     font_mono=[gr.themes.GoogleFont("JetBrains Mono"), "ui-monospace", "monospace"],
@@ -152,56 +152,57 @@ THEME = gr.themes.Base(
     spacing_size=gr.themes.sizes.spacing_md,
     text_size=gr.themes.sizes.text_md,
 ).set(
-    body_background_fill="#F4F3F1",
+    body_background_fill="#EDEBE6",
     background_fill_primary="#FFFFFF",
-    background_fill_secondary="#F4F3F1",
+    background_fill_secondary="#F3F1EC",
     body_text_color="#1C1917",
     body_text_color_subdued="#78716C",
     block_background_fill="#FFFFFF",
-    block_border_color="#EAE8E4",
+    block_border_color="#DED9D1",
     block_border_width="1px",
     block_radius="14px",
-    block_shadow="0 1px 2px rgba(28,25,23,0.04)",
+    block_shadow="0 1px 2px rgba(28,25,23,0.05), 0 4px 12px rgba(28,25,23,0.04)",
     block_label_text_weight="600",
     block_label_text_color="#57534E",
     block_label_background_fill="#FFFFFF",
-    block_label_border_color="#EAE8E4",
+    block_label_border_color="#E2DED7",
     block_title_text_color="#3F3B37",
     block_info_text_color="#78716C",
     panel_background_fill="#FFFFFF",
     input_background_fill="#FFFFFF",
-    input_border_color="#E7E5E4",
-    input_border_color_focus="#A8A29E",
-    button_primary_background_fill="#1C1917",
-    button_primary_background_fill_hover="#3F3B37",
+    input_border_color="#DED9D1",
+    input_border_color_focus="#0D9488",
+    button_primary_background_fill="#0D9488",
+    button_primary_background_fill_hover="#0F766E",
     button_primary_text_color="#FFFFFF",
-    button_primary_border_color="#1C1917",
+    button_primary_border_color="#0D9488",
     button_secondary_background_fill="#FFFFFF",
     button_secondary_border_color="#E7E5E4",
     button_large_radius="12px",
     button_small_radius="10px",
-    # A genuine dark palette (warm stone), so the dark toggle looks intentional.
-    body_background_fill_dark="#0C0A09",
-    background_fill_primary_dark="#1C1917",
-    background_fill_secondary_dark="#0C0A09",
-    body_text_color_dark="#F5F5F4",
-    body_text_color_subdued_dark="#A8A29E",
-    block_background_fill_dark="#1C1917",
-    block_border_color_dark="#292524",
-    block_label_text_color_dark="#D6D3D1",
-    block_label_background_fill_dark="#1C1917",
-    block_label_border_color_dark="#292524",
-    block_title_text_color_dark="#E7E5E4",
-    block_info_text_color_dark="#A8A29E",
-    panel_background_fill_dark="#1C1917",
-    input_background_fill_dark="#1C1917",
-    input_border_color_dark="#292524",
-    input_border_color_focus_dark="#57534E",
-    button_primary_background_fill_dark="#FAFAF9",
-    button_primary_background_fill_hover_dark="#E7E5E4",
-    button_primary_text_color_dark="#1C1917",
-    button_secondary_background_fill_dark="#1C1917",
-    button_secondary_border_color_dark="#292524",
+    # Warm, softer dark palette with layered surfaces (not near-black), so the
+    # dark toggle has depth instead of feeling like a void.
+    body_background_fill_dark="#1A1714",
+    background_fill_primary_dark="#2B2723",
+    background_fill_secondary_dark="#211D1A",
+    body_text_color_dark="#F5F2EE",
+    body_text_color_subdued_dark="#B3A99E",
+    block_background_fill_dark="#2B2723",
+    block_border_color_dark="#3B342D",
+    block_label_text_color_dark="#E7E1DA",
+    block_label_background_fill_dark="#2E2A26",
+    block_label_border_color_dark="#3B342D",
+    block_title_text_color_dark="#EDE8E2",
+    block_info_text_color_dark="#B3A99E",
+    panel_background_fill_dark="#262320",
+    input_background_fill_dark="#221E1B",
+    input_border_color_dark="#3B342D",
+    input_border_color_focus_dark="#2DD4BF",
+    button_primary_background_fill_dark="#14B8A6",
+    button_primary_background_fill_hover_dark="#2DD4BF",
+    button_primary_text_color_dark="#06231F",
+    button_secondary_background_fill_dark="#2E2A26",
+    button_secondary_border_color_dark="#3B342D",
 )
 
 # Apply the saved light/dark preference on load (default light), and a toggle
@@ -233,52 +234,101 @@ _CSS = """
 @import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap');
 
 /* Custom CSS uses Gradio theme vars (--body-text-color etc.) so it adapts to
-   both light and dark automatically. */
-html, body, gradio-app { background: var(--body-background-fill) !important; }
+   both light and dark automatically. --ac is the accent (teal), brighter in dark. */
+.gradio-container { --ac: #0F766E; --ac-weak: rgba(13,148,136,.10); }
+.dark .gradio-container, .dark { --ac: #2DD4BF; --ac-weak: rgba(45,212,191,.13); }
+
+/* gradio-app carries the .dark scope, so fill the viewport with IT (html/body
+   sit outside the scope and would otherwise show a light strip in dark mode). */
+gradio-app { display: block; min-height: 100vh;
+    background: var(--body-background-fill) !important; }
 .gradio-container { max-width: 100% !important; padding: 4px 40px 56px !important;
     position: relative; background: var(--body-background-fill) !important; }
 
-#hero { padding: 34px 2px 16px; }
-#hero .brand { font-size: 2.1rem; font-weight: 800; letter-spacing: -0.03em;
+#hero { padding: 32px 2px 18px; margin-bottom: 8px;
+    border-bottom: 1px solid var(--border-color-primary); }
+#hero .brandrow { display: flex; align-items: center; gap: 11px; }
+#hero .logo { color: var(--ac); display: inline-flex; }
+#hero .brand { font-size: 2.05rem; font-weight: 800; letter-spacing: -0.03em;
     margin: 0; color: var(--body-text-color); }
-#hero .sub { color: var(--body-text-color-subdued); margin: 8px 0 14px;
+#hero .sub { color: var(--body-text-color-subdued); margin: 9px 0 14px;
     font-size: 1.02rem; max-width: 64ch; }
 .pill { display: inline-flex; align-items: center; gap: 7px; padding: 5px 12px;
     border: 1px solid var(--border-color-primary); border-radius: 999px;
     font-size: 0.8rem; color: var(--body-text-color-subdued);
     background: var(--block-background-fill); font-weight: 500; }
-.pill .dot { width: 7px; height: 7px; border-radius: 999px; background: #22C55E; }
+.pill .dot { width: 7px; height: 7px; border-radius: 999px; background: #22C55E;
+    box-shadow: 0 0 0 3px rgba(34,197,94,.18); }
 
 /* theme toggle, floated top-right */
 #theme-toggle { position: absolute; top: 20px; right: 40px; z-index: 50;
     width: auto !important; min-width: 0 !important; flex: none !important; }
 
-.tabitem { padding-top: 22px !important; }
-.tab-nav button { font-weight: 600 !important; font-size: 0.98rem !important; }
-.sec-head { margin-bottom: 6px; }
-.sec-head .eyebrow { font-size: 0.72rem; font-weight: 700; letter-spacing: 0.13em;
-    text-transform: uppercase; color: var(--body-text-color-subdued); opacity: .8; }
-.sec-head h2 { font-size: 1.3rem; font-weight: 700; letter-spacing: -0.02em;
-    margin: 3px 0 5px; color: var(--body-text-color); }
+/* tab bar: accent the selected tab */
+.tabitem { padding-top: 24px !important; }
+.tab-nav { gap: 2px; }
+.tab-nav button { font-weight: 600 !important; font-size: 0.98rem !important;
+    color: var(--body-text-color-subdued) !important; border: none !important;
+    border-bottom: 2px solid transparent !important; border-radius: 0 !important; }
+.tab-nav button.selected { color: var(--ac) !important;
+    border-bottom: 2px solid var(--ac) !important; }
+
+/* section heads: accent eyebrow w/ icon + underlined title */
+.sec-head { margin-bottom: 8px; }
+.sec-head .eyebrow { display: inline-flex; align-items: center; gap: 6px;
+    font-size: 0.72rem; font-weight: 700; letter-spacing: 0.13em;
+    text-transform: uppercase; color: var(--ac); }
+.sec-head .eyebrow .ic { display: inline-flex; align-items: center; }
+.sec-head h2 { position: relative; display: inline-block; font-size: 1.32rem;
+    font-weight: 700; letter-spacing: -0.02em; margin: 5px 0 9px;
+    padding-bottom: 8px; color: var(--body-text-color); }
+.sec-head h2::after { content: ""; position: absolute; left: 0; bottom: 0;
+    width: 40px; height: 2px; border-radius: 2px; background: var(--ac); }
 .sec-head p { color: var(--body-text-color-subdued); margin: 0; font-size: 0.92rem;
-    max-width: 72ch; }
-.col-label { font-weight: 600; color: var(--body-text-color); font-size: 0.92rem; }
+    max-width: 72ch; line-height: 1.55; }
+.col-label { font-weight: 600; color: var(--body-text-color); font-size: 0.92rem;
+    border-left: 3px solid var(--ac); padding-left: 9px; }
 .spacer { height: 22px; }
 
 /* clean, friendly drop zones for image/file inputs */
 .drop { border: 1.5px dashed var(--border-color-primary) !important;
     background: var(--block-background-fill) !important;
     border-radius: 14px !important; box-shadow: none !important;
-    transition: border-color .15s ease; }
-.drop:hover { border-color: var(--body-text-color-subdued) !important; }
+    transition: border-color .15s ease, background .15s ease; }
+.drop:hover { border-color: var(--ac) !important; background: var(--ac-weak) !important; }
 
 footer { display: none !important; }
 """
 
 
-def _section_head(eyebrow: str, title: str, desc: str) -> str:
+def _svg(paths: str) -> str:
     return (
-        f'<div class="sec-head"><div class="eyebrow">{eyebrow}</div>'
+        '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" '
+        'stroke="currentColor" stroke-width="2" stroke-linecap="round" '
+        f'stroke-linejoin="round">{paths}</svg>'
+    )
+
+
+# Section / brand icons (stroke = currentColor, so they pick up the accent).
+ICON_AI = _svg('<path d="M12 3l1.9 4.6L18.5 9.5 13.9 11.4 12 16l-1.9-4.6L5.5 9.5'
+               'l4.6-1.9z"/><path d="M19 14l.6 1.6 1.6.6-1.6.6L19 19l-.6-1.6'
+               '-1.6-.6 1.6-.6z"/>')
+ICON_CONVERT = _svg('<path d="M7 4 3 8l4 4"/><path d="M3 8h14"/>'
+                    '<path d="m17 20 4-4-4-4"/><path d="M21 16H7"/>')
+ICON_PDF = _svg('<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 '
+                '2-2V8z"/><path d="M14 3v5h5"/>')
+ICON_LOGO = (
+    '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" '
+    'stroke="currentColor" stroke-width="2.1" stroke-linecap="round" '
+    'stroke-linejoin="round"><path d="m12 3 9 5-9 5-9-5 9-5z"/>'
+    '<path d="m3 13 9 5 9-5"/></svg>'
+)
+
+
+def _section_head(eyebrow: str, title: str, desc: str, icon: str = "") -> str:
+    return (
+        '<div class="sec-head">'
+        f'<div class="eyebrow"><span class="ic">{icon}</span>{eyebrow}</div>'
         f"<h2>{title}</h2><p>{desc}</p></div>"
     )
 
@@ -288,7 +338,8 @@ def build_demo() -> gr.Blocks:
     with gr.Blocks(title="Upscaler") as demo:
         gr.HTML(
             '<div id="hero">'
-            '<div class="brand">Upscaler</div>'
+            f'<div class="brandrow"><span class="logo">{ICON_LOGO}</span>'
+            '<span class="brand">Upscaler</span></div>'
             '<div class="sub">A quiet little toolbox for images — convert formats, '
             "make and split PDFs, and upscale with AI. Everything runs locally; "
             "nothing is uploaded.</div>"
@@ -308,6 +359,7 @@ def build_demo() -> gr.Blocks:
                     "Real-ESRGAN super-resolution, with optional deblur and "
                     "sharpening. Tip: for an already-decent photo, prefer the ×2 "
                     "model — ×4 can over-process clean images.",
+                    icon=ICON_AI,
                 ))
                 with gr.Row(equal_height=True):
                     with gr.Column(scale=1):
@@ -355,6 +407,7 @@ def build_demo() -> gr.Blocks:
                 gr.HTML(_section_head(
                     "Convert", "File Converter",
                     "Change image format — fast, no AI models.",
+                    icon=ICON_CONVERT,
                 ))
                 with gr.Row(equal_height=True):
                     with gr.Column(scale=1):
@@ -382,6 +435,7 @@ def build_demo() -> gr.Blocks:
                 gr.HTML(_section_head(
                     "Documents", "Image ⇄ PDF",
                     "Combine images into a PDF, or extract a PDF's pages to PNGs.",
+                    icon=ICON_PDF,
                 ))
                 with gr.Row():
                     with gr.Column(scale=1):
