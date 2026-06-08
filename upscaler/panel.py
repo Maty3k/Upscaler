@@ -17,6 +17,7 @@ import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass
+from functools import lru_cache
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
@@ -181,15 +182,20 @@ def _paste_pos(dw: int, dh: int, cw: int, ch: int, p: PanelParams) -> tuple[int,
 
 
 # ── Compositing ───────────────────────────────────────────────────────────────
-def compose_frame(src: Image.Image, p: PanelParams) -> Image.Image:
-    """Composite a single source frame onto the exact panel canvas."""
+def compose_frame(src: Image.Image, p: PanelParams, fast: bool = False) -> Image.Image:
+    """Composite a single source frame onto the exact panel canvas.
+
+    `fast=True` uses bilinear resampling for the live preview (cheaper, still
+    crisp on screen); exports leave it False for export-grade LANCZOS.
+    """
     cw, ch = canvas_size(p.orientation)
     canvas = _background(cw, ch, p).convert("RGB")
+    resample = Image.BILINEAR if fast else Image.LANCZOS
 
     if src is not None:
         src = src.convert("RGBA")
         dw, dh = _drawn_size(src.width, src.height, cw, ch, p.fit, p.zoom)
-        resized = src.resize((dw, dh), Image.LANCZOS)
+        resized = src.resize((dw, dh), resample)
         px, py = _paste_pos(dw, dh, cw, ch, p)
         canvas.paste(resized, (px, py), resized)
 
@@ -218,8 +224,6 @@ def preview(src_path: str | None, p: PanelParams, frame: Image.Image | None = No
     cw, ch = canvas_size(p.orientation)
     src = frame if frame is not None else _first_image(src_path)
 
-    comp = compose_frame(src, p)  # the exact result
-
     # Display geometry: frame scaled to a sane size, with margin around it.
     disp_fw = 1000 if cw >= ch else 320
     ds = disp_fw / cw
@@ -228,17 +232,21 @@ def preview(src_path: str | None, p: PanelParams, frame: Image.Image | None = No
     pad_y = round(disp_fh * 0.16) if cw >= ch else round(disp_fw * 0.16)
     pw, ph = disp_fw + 2 * pad_x, disp_fh + 2 * pad_y
 
+    # Composite the bright frame directly at display resolution (fast resample,
+    # no full-1920 intermediate) — the preview never needs export resolution.
+    comp = compose_frame(src, p, fast=True).resize((disp_fw, disp_fh), Image.BILINEAR)
+
     prev = Image.new("RGB", (pw, ph), (22, 22, 26))
 
     if src is not None:
         dw, dh = _drawn_size(src.width, src.height, cw, ch, p.fit, p.zoom)
         px, py = _paste_pos(dw, dh, cw, ch, p)
-        rs = src.convert("RGBA").resize((max(1, round(dw * ds)), max(1, round(dh * ds))), Image.LANCZOS)
+        rs = src.convert("RGBA").resize((max(1, round(dw * ds)), max(1, round(dh * ds))), Image.BILINEAR)
         prev.paste(rs, (round(pad_x + px * ds), round(pad_y + py * ds)), rs)
         # dim everything, then punch the bright frame back in
         prev = Image.blend(prev, Image.new("RGB", (pw, ph), (22, 22, 26)), 0.5)
 
-    prev.paste(comp.resize((disp_fw, disp_fh), Image.LANCZOS), (pad_x, pad_y))
+    prev.paste(comp, (pad_x, pad_y))
 
     d = ImageDraw.Draw(prev)
     d.rectangle([pad_x, pad_y, pad_x + disp_fw - 1, pad_y + disp_fh - 1], outline=(255, 255, 255), width=2)
@@ -250,10 +258,11 @@ def preview(src_path: str | None, p: PanelParams, frame: Image.Image | None = No
     return prev
 
 
-def _first_image(path: str | None) -> Image.Image | None:
-    """First frame of whatever was uploaded, as a PIL image."""
-    if not path:
-        return None
+@lru_cache(maxsize=8)
+def _decode_first_frame(path: str, _mtime: float) -> Image.Image | None:
+    """Decode the first frame of a source file. Cached by (path, mtime) so the
+    live preview doesn't re-read/decode the file (or re-run ffmpeg) on every
+    control change — that decode was the lag you saw while editing."""
     kind = media_kind(path)
     if kind == "image":
         try:
@@ -269,18 +278,34 @@ def _first_image(path: str | None) -> Image.Image | None:
                 return im.convert("RGB")
             except Exception:
                 return None
-        # video: pull the first frame with ffmpeg
+        # video: pull the first frame with ffmpeg (only once per file, cached)
         fd, tmp = tempfile.mkstemp(suffix=".png")
         os.close(fd)
-        subprocess.run(
-            [_ffmpeg(), "-y", "-i", str(path), "-frames:v", "1", tmp],
-            capture_output=True,
-        )
         try:
+            subprocess.run(
+                [_ffmpeg(), "-y", "-i", str(path), "-frames:v", "1", tmp],
+                capture_output=True,
+            )
             return Image.open(tmp).convert("RGB")
+        except Exception:
+            return None
         finally:
-            pass
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
     return None
+
+
+def _first_image(path: str | None) -> Image.Image | None:
+    """First frame of whatever was uploaded, as a PIL image (cached)."""
+    if not path:
+        return None
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        mtime = 0.0
+    return _decode_first_frame(path, mtime)
 
 
 # ── Export ────────────────────────────────────────────────────────────────────

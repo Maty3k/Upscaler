@@ -955,7 +955,13 @@ def build_demo() -> gr.Blocks:
             pn_toffy, pn_tstroke, pn_tstrokew,
         ]
         for _c in _pn_preview_inputs:
-            _c.change(panel_preview_ui, _pn_preview_inputs, pn_preview)
+            # show_progress="hidden" removes the loading flash on every slider
+            # tick; the source frame is cached and the preview composites at
+            # display resolution, so the re-render is ~25 ms.
+            _c.change(
+                panel_preview_ui, _pn_preview_inputs, pn_preview,
+                show_progress="hidden",
+            )
         pn_media.change(
             panel_on_media, pn_media, [pn_end, pn_anim_group, pn_info]
         )
