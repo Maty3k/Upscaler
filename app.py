@@ -511,6 +511,22 @@ UPSCALE_PRESETS: dict[str, dict] = {
         model="realesrgan-x2plus", sharpen=0.5, restore=True, strength=0.5,
         hint="Gentle ×2 + light denoise so skin stays natural (no plastic look).",
     ),
+    "💧 Soft skin": dict(
+        model="realesrgan-x2plus", sharpen=0.0, restore=True, strength=0.7,
+        hint="Smoother, softer look — more denoise, no sharpening. Good for portraits.",
+    ),
+    "📱 Phone snap": dict(
+        model="realesrgan-x2plus", sharpen=0.4, restore=True, strength=0.4,
+        hint="Cleans the mild noise/compression in everyday phone photos, then ×2.",
+    ),
+    "🕰️ Old / vintage": dict(
+        model="realesrgan-x2plus", sharpen=0.4, restore=True, strength=0.8,
+        hint="Strong denoise to clean grain in old/faded photos, gentle ×2.",
+    ),
+    "🌙 Low-light / noisy": dict(
+        model="realesrgan-x2plus", sharpen=0.2, restore=True, strength=1.0,
+        hint="Strong denoise first, gentle ×2, low sharpen so grain isn't amplified.",
+    ),
     "🎨 Anime / Art": dict(
         model="realesrgan-x4plus-anime", sharpen=0.0, restore=False, strength=1.0,
         hint="Anime model at ×4, no sharpen (line art needs none).",
@@ -519,18 +535,19 @@ UPSCALE_PRESETS: dict[str, dict] = {
         model="realesrgan-x4plus", sharpen=0.7, restore=False, strength=1.0,
         hint="×4 for maximum texture/detail in foliage & landscapes, crisper edges.",
     ),
-    "🌙 Low-light / noisy": dict(
-        model="realesrgan-x2plus", sharpen=0.2, restore=True, strength=1.0,
-        hint="Strong denoise first, gentle ×2, low sharpen so grain isn't amplified.",
+    "🏙️ Max detail": dict(
+        model="realesrgan-x4plus", sharpen=1.1, restore=False, strength=1.0,
+        hint="×4 + strong sharpening for hard edges (architecture, products). Clean sources only.",
     ),
 }
 
 
 def apply_preset(name):
-    """Return component updates for the chosen preset (restore model is always
-    the safe SIDD denoiser)."""
+    """Return component updates for the chosen preset, plus button-variant
+    updates so the active preset is highlighted. Restoration is always the safe
+    SIDD denoiser."""
     p = UPSCALE_PRESETS[name]
-    return (
+    controls = (
         gr.update(value=p["model"]),                 # model
         gr.update(value=p["sharpen"]),               # sharpen
         gr.update(value=p["restore"]),               # deblur (Restore first)
@@ -538,6 +555,12 @@ def apply_preset(name):
         gr.update(value=p["strength"]),              # restore_strength
         f"**{name}** — {p['hint']}",                 # preset_info
     )
+    # highlight the clicked preset (primary) and un-highlight the rest
+    variants = tuple(
+        gr.update(variant="primary" if pn == name else "secondary")
+        for pn in UPSCALE_PRESETS
+    )
+    return controls + variants
 
 THEME = gr.themes.Base(
     primary_hue=gr.themes.colors.teal,
@@ -822,12 +845,14 @@ def build_demo() -> gr.Blocks:
                             elem_classes="drop", buttons=["download", "fullscreen"],
                         )
                         gr.Markdown("**Quick presets** — a starting point; tweak anything after.")
+                        _preset_names = list(UPSCALE_PRESETS)
                         _preset_buttons = []
-                        with gr.Row():
-                            for _pname in UPSCALE_PRESETS:
-                                _preset_buttons.append(
-                                    gr.Button(_pname, size="sm", variant="secondary")
-                                )
+                        for _i in range(0, len(_preset_names), 3):
+                            with gr.Row():
+                                for _pname in _preset_names[_i:_i + 3]:
+                                    _preset_buttons.append(
+                                        gr.Button(_pname, size="sm", variant="secondary")
+                                    )
                         preset_info = gr.Markdown()
                         model = gr.Dropdown(
                             _MODEL_CHOICES, value="realesrgan-x4plus",
@@ -1283,12 +1308,11 @@ def build_demo() -> gr.Blocks:
             [out, info],
             show_progress_on=[out],
         )
+        _preset_outputs = [
+            model, sharpen, deblur, deblur_model, restore_strength, preset_info,
+        ] + _preset_buttons
         for _btn, _name in zip(_preset_buttons, UPSCALE_PRESETS):
-            _btn.click(
-                lambda n=_name: apply_preset(n),
-                None,
-                [model, sharpen, deblur, deblur_model, restore_strength, preset_info],
-            )
+            _btn.click(lambda n=_name: apply_preset(n), None, _preset_outputs)
         clear.click(lambda: (None, None, None), None, [inp, out, info])
         vid_btn.click(
             upscale_video_ui,
