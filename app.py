@@ -182,6 +182,23 @@ def enhance(image, model, device, deblur, deblur_model, sharpen, tile, onnx, out
     return (original, result), info
 
 
+def restore_only(image, deblur_model, sharpen, device, onnx):
+    """Run just the NAFNet restoration pass (deblur or denoise) — no upscaling."""
+    if image is None:
+        raise gr.Error("Upload an image to restore first.")
+    original = image if isinstance(image, Image.Image) else Image.fromarray(image)
+    result = _get_deblurrer(deblur_model, device, onnx).deblur(original)
+    stages = [f"restore `{deblur_model}`"]
+    if sharpen > 0:
+        result = unsharp_mask(result, strength=float(sharpen))
+        stages.append(f"sharpen {sharpen:g}")
+    info = (
+        "✅ " + " → ".join(stages)
+        + f" · {result.width}×{result.height}px (no upscale)"
+    )
+    return (original, result), info
+
+
 # -- Video (frame-by-frame) --------------------------------------------------
 
 def _video_duration(path):
@@ -737,18 +754,22 @@ def build_demo() -> gr.Blocks:
                             info="Crispens edges after upscaling. Keep it low — too "
                             "high adds halos around edges.",
                         )
-                        with gr.Accordion("Restore: deblur / denoise (NAFNet)", open=False):
+                        with gr.Accordion("Restore: deblur / denoise (NAFNet)", open=True):
                             deblur = gr.Checkbox(
-                                value=False, label="Restore first (NAFNet)",
-                                info="Run a NAFNet restoration pass before upscaling. "
-                                "Pick the GoPro model for motion blur, or the SIDD "
-                                "model to remove sensor noise / grain.",
+                                value=False, label="Restore first (when upscaling)",
+                                info="Tick to run the restoration pass before "
+                                "upscaling when you click Enhance. To ONLY restore "
+                                "(no upscale), use the button below instead.",
                             )
                             deblur_model = gr.Dropdown(
                                 _DEBLUR_CHOICES, value="nafnet-gopro-width64",
                                 label="Restoration model",
                                 info="GoPro = motion deblur (width64 best, width32 "
                                 "faster) · SIDD = denoise grain/noise.",
+                            )
+                            restore_btn = gr.Button(
+                                "✨ Restore only (deblur / denoise · no upscale)",
+                                variant="secondary",
                             )
                         with gr.Accordion("Advanced", open=False):
                             device = gr.Dropdown(
@@ -1151,6 +1172,12 @@ def build_demo() -> gr.Blocks:
         run.click(
             enhance,
             [inp, model, device, deblur, deblur_model, sharpen, tile, onnx, out_size],
+            [out, info],
+            show_progress_on=[out],
+        )
+        restore_btn.click(
+            restore_only,
+            [inp, deblur_model, sharpen, device, onnx],
             [out, info],
             show_progress_on=[out],
         )
