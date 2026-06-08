@@ -650,8 +650,54 @@ _TOGGLE_THEME_JS = """
 }
 """
 
+# Hover-magnifier (loupe) over result images. A document-level mousemove draws a
+# zoomed circular lens; only active while body has `loupe-on` (toggled by the
+# 🔍 button) and only over images inside a `.loupe` block. Injected in <head>.
+_MAGNIFIER_HEAD = """
+<script>
+(function(){
+  const ZOOM = 2.5, R = 110;
+  let lens = null;
+  function lensEl(){
+    if(!lens){ lens = document.createElement('div'); lens.className='mag-lens';
+      (document.body || document.documentElement).appendChild(lens); }
+    return lens;
+  }
+  function hide(){ if(lens) lens.style.display='none'; }
+  function onMove(e){
+    if(!document.body.classList.contains('loupe-on')){ hide(); return; }
+    const img = e.target;
+    if(!(img && img.tagName==='IMG' && img.closest('.loupe') && img.src)){ hide(); return; }
+    const r = img.getBoundingClientRect();
+    const x = e.clientX - r.left, y = e.clientY - r.top;
+    if(x<0||y<0||x>r.width||y>r.height){ hide(); return; }
+    const L = lensEl();
+    L.style.display='block';
+    L.style.left = e.clientX+'px';
+    L.style.top  = e.clientY+'px';
+    L.style.backgroundImage = 'url("'+img.src+'")';
+    L.style.backgroundSize = (r.width*ZOOM)+'px '+(r.height*ZOOM)+'px';
+    L.style.backgroundPosition = (-(x*ZOOM - R))+'px '+(-(y*ZOOM - R))+'px';
+  }
+  function init(){ document.addEventListener('mousemove', onMove, {passive:true}); }
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded', init);
+  else init();
+})();
+</script>
+"""
+
 _CSS = """
 @import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap');
+
+/* Hover magnifier (loupe) */
+.mag-lens { position: fixed; pointer-events: none; display: none;
+    width: 220px; height: 220px; border-radius: 50%;
+    border: 3px solid var(--ac); background-color: #000; background-repeat: no-repeat;
+    box-shadow: 0 6px 24px rgba(0,0,0,.45); transform: translate(-50%,-50%);
+    z-index: 99999; }
+body.loupe-on .loupe img { cursor: crosshair; }
+body.loupe-on #mag-btn { background: var(--ac) !important; color: #fff !important;
+    border-color: var(--ac) !important; }
 
 /* Custom CSS uses Gradio theme vars (--body-text-color etc.) so it adapts to
    both light and dark automatically. --ac is the accent (teal), brighter in dark. */
@@ -822,10 +868,16 @@ def build_demo() -> gr.Blocks:
             f'<span class="pill"><span class="dot"></span>running locally · {device_name}</span>'
             "</div>"
         )
-        theme_btn = gr.Button(
-            "◐ Light / Dark", elem_id="theme-toggle", size="sm", variant="secondary"
-        )
+        with gr.Row():
+            theme_btn = gr.Button(
+                "◐ Light / Dark", elem_id="theme-toggle", size="sm", variant="secondary"
+            )
+            mag_btn = gr.Button(
+                "🔍 Magnifier", elem_id="mag-btn", size="sm", variant="secondary",
+            )
         theme_btn.click(None, js=_TOGGLE_THEME_JS)
+        # JS-only toggle: enables the hover loupe over result images
+        mag_btn.click(None, js="() => document.body.classList.toggle('loupe-on')")
 
         with gr.Tabs():
             # ---- Tab 1: Upscale & Enhance ----
@@ -923,6 +975,7 @@ def build_demo() -> gr.Blocks:
                         out = gr.ImageSlider(
                             label="Before / after — drag the divider to compare",
                             type="pil", height=300, buttons=["download", "fullscreen"],
+                            elem_classes=["loupe"],
                         )
                         info = gr.Markdown()
 
@@ -996,6 +1049,7 @@ def build_demo() -> gr.Blocks:
                         vid_compare = gr.ImageSlider(
                             label="First frame — before / after (drag to compare)",
                             type="pil", height=220, buttons=["download", "fullscreen"],
+                            elem_classes=["loupe"],
                         )
                         vid_info = gr.Markdown()
 
@@ -1118,7 +1172,7 @@ def build_demo() -> gr.Blocks:
                     with gr.Column(scale=1):
                         bg_preview = gr.Image(
                             label="Cut-out (checkerboard = transparent)",
-                            height=300, buttons=["fullscreen"],
+                            height=300, buttons=["fullscreen"], elem_classes=["loupe"],
                         )
                         bg_file = gr.File(label="Download transparent PNG")
                         bg_info = gr.Markdown()
@@ -1275,7 +1329,7 @@ def build_demo() -> gr.Blocks:
                     with gr.Column(scale=1):
                         pn_preview = gr.Image(
                             label="Preview — bright = kept, dim = cropped out",
-                            height=300, buttons=["fullscreen"],
+                            height=300, buttons=["fullscreen"], elem_classes=["loupe"],
                         )
                         pn_file = gr.File(label="Download export")
                         pn_info = gr.Markdown()
@@ -1371,4 +1425,5 @@ if __name__ == "__main__":
         theme=THEME,
         css=_CSS,
         js=_APPLY_THEME_JS,
+        head=_MAGNIFIER_HEAD,
     )
