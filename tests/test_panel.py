@@ -61,15 +61,31 @@ def test_gradient_background_differs_across_canvas():
 
 
 def test_text_overlay_renders():
-    p = panel.PanelParams(fit="cover", text="HI", text_size=200, text_color="#ffffff")
+    ov = [dict(type="text", content="HI", font=panel.DEFAULT_FONT, size=200,
+               color="#ffffff", align="center", x=0, y=0, rotation=0,
+               stroke="#000000", stroke_w=0)]
+    p = panel.PanelParams(fit="cover", overlays=ov)
     blank = Image.new("RGB", (10, 10), (0, 0, 0))
     out = panel.compose_frame(blank, p)
     # some near-white text pixels should exist near the centre
     found = any(
         min(out.getpixel((x, 240))) > 200
-        for x in range(880, 1040, 4)
+        for x in range(820, 1100, 4)
     )
     assert found
+
+
+def test_sticker_overlay_renders():
+    sticker = Image.new("RGBA", (120, 120), (255, 0, 0, 255))
+    ov = [dict(type="sticker", image=sticker, scale=50, x=0, y=0, rotation=0, opacity=1.0)]
+    p = panel.PanelParams(fit="cover", bg_type="solid", bg_color="#0000ff", overlays=ov)
+    out = panel.compose_frame(Image.new("RGB", (10, 10), (0, 0, 255)), p)
+    assert out.getpixel((960, 240))[0] > 200  # red sticker at centre
+
+
+def test_fonts_discovered():
+    assert len(panel.FONT_NAMES) >= 1
+    assert panel.DEFAULT_FONT in panel.FONTS
 
 
 def _make_comp(dirpath, n):

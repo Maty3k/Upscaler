@@ -259,16 +259,42 @@ def _switch_method(choice):
 
 # -- Lian Li 8.8" panel builder ----------------------------------------------
 
+# Overlay slots: up to N_TEXT styled text layers + N_STICKER image stickers.
+N_TEXT = 3
+N_STICKER = 2
+_TEXT_FIELDS = 11   # enabled, content, font, size, color, align, x, y, rot, stroke, stroke_w
+_STICKER_FIELDS = 7  # enabled, image, scale, x, y, rot, opacity
+N_OVERLAY_VALS = N_TEXT * _TEXT_FIELDS + N_STICKER * _STICKER_FIELDS
+
+
 def _panel_params(orientation, fit, zoom, off_x, off_y, bg_type, bg_color,
-                  bg_color2, bg_angle, text, text_size, text_color, text_off_x,
-                  text_off_y, text_stroke, text_stroke_w):
+                  bg_color2, bg_angle, *ov):
+    """Build PanelParams from the base controls plus the flat overlay-slot
+    values (text slots first, then sticker slots)."""
+    overlays = []
+    i = 0
+    for _ in range(N_TEXT):
+        en, content, font, size, color, align, x, y, rot, stroke, stroke_w = ov[i:i + _TEXT_FIELDS]
+        i += _TEXT_FIELDS
+        if en and (content or "").strip():
+            overlays.append(dict(
+                type="text", content=content, font=font, size=int(size),
+                color=color, align=align, x=float(x), y=float(y),
+                rotation=float(rot), stroke=stroke, stroke_w=int(stroke_w),
+            ))
+    for _ in range(N_STICKER):
+        en, image, scale, x, y, rot, opacity = ov[i:i + _STICKER_FIELDS]
+        i += _STICKER_FIELDS
+        if en and image is not None:
+            overlays.append(dict(
+                type="sticker", image=image, scale=float(scale), x=float(x),
+                y=float(y), rotation=float(rot), opacity=float(opacity),
+            ))
     return panel.PanelParams(
         orientation=orientation, fit=fit, zoom=float(zoom),
         off_x=float(off_x), off_y=float(off_y), bg_type=bg_type,
         bg_color=bg_color, bg_color2=bg_color2, bg_angle=float(bg_angle),
-        text=text or "", text_size=int(text_size), text_color=text_color,
-        text_off_x=float(text_off_x), text_off_y=float(text_off_y),
-        text_stroke=text_stroke, text_stroke_w=int(text_stroke_w),
+        overlays=overlays,
     )
 
 
@@ -297,15 +323,16 @@ def panel_on_media(media):
 
 
 def panel_export_ui(media, orientation, fit, zoom, off_x, off_y, bg_type,
-                    bg_color, bg_color2, bg_angle, text, text_size, text_color,
-                    text_off_x, text_off_y, text_stroke, text_stroke_w,
-                    out_fmt, fps, loop, gif_colors, trim_start, trim_end,
-                    loop_mode, out_dir, progress=gr.Progress()):
+                    bg_color, bg_color2, bg_angle, *rest, progress=gr.Progress()):
+    # rest = <overlay slot values> + [out_fmt, fps, loop, gif_colors,
+    #         trim_start, trim_end, loop_mode, out_dir]
     if not media:
         raise gr.Error("Upload media first.")
+    ov_vals = rest[:N_OVERLAY_VALS]
+    (out_fmt, fps, loop, gif_colors, trim_start, trim_end,
+     loop_mode, out_dir) = rest[N_OVERLAY_VALS:]
     p = _panel_params(orientation, fit, zoom, off_x, off_y, bg_type, bg_color,
-                      bg_color2, bg_angle, text, text_size, text_color,
-                      text_off_x, text_off_y, text_stroke, text_stroke_w)
+                      bg_color2, bg_angle, *ov_vals)
     cw, ch = panel.canvas_size(orientation)
     fmt = out_fmt.lower()
     progress(0.05, desc="Preparing…")
@@ -946,17 +973,57 @@ def build_demo() -> gr.Blocks:
                                 pn_bgcol = gr.ColorPicker(value="#000000", label="Color / Stop A")
                                 pn_bgcol2 = gr.ColorPicker(value="#333333", label="Stop B")
                             pn_bgang = gr.Slider(0, 360, value=90, step=1, label="Gradient angle")
-                        with gr.Accordion("Text overlay", open=False):
-                            pn_text = gr.Textbox(label="Text", lines=2, placeholder="(optional)")
-                            with gr.Row():
-                                pn_tsize = gr.Slider(20, 900, value=180, step=2, label="Size (px)")
-                                pn_tcol = gr.ColorPicker(value="#ffffff", label="Color")
-                            with gr.Row():
-                                pn_toffx = gr.Slider(-100, 100, value=0, step=1, label="Text X (%)")
-                                pn_toffy = gr.Slider(-100, 100, value=0, step=1, label="Text Y (%)")
-                            with gr.Row():
-                                pn_tstroke = gr.ColorPicker(value="#000000", label="Stroke")
-                                pn_tstrokew = gr.Slider(0, 40, value=0, step=1, label="Stroke width")
+                        # Overlays: up to N_TEXT text layers + N_STICKER stickers.
+                        # Each slot's components are collected (in field order) so
+                        # the preview/export handlers can rebuild the overlay list.
+                        _text_slots = []
+                        with gr.Accordion("Text overlays", open=True):
+                            for _t in range(N_TEXT):
+                                with gr.Accordion(f"Text {_t + 1}", open=(_t == 0)):
+                                    t_en = gr.Checkbox(value=(_t == 0), label="Show this text")
+                                    t_content = gr.Textbox(label="Text", lines=2,
+                                                           placeholder="(your text)")
+                                    with gr.Row():
+                                        t_font = gr.Dropdown(panel.FONT_NAMES,
+                                                             value=panel.DEFAULT_FONT,
+                                                             label="Font", filterable=True)
+                                        t_size = gr.Slider(16, 900, value=180, step=2,
+                                                           label="Size (px)")
+                                    with gr.Row():
+                                        t_color = gr.ColorPicker(value="#ffffff", label="Color")
+                                        t_align = gr.Radio(["left", "center", "right"],
+                                                           value="center", label="Align")
+                                    with gr.Row():
+                                        t_x = gr.Slider(-100, 100, value=0, step=1, label="X (%)")
+                                        t_y = gr.Slider(-100, 100, value=0, step=1, label="Y (%)")
+                                    t_rot = gr.Slider(-180, 180, value=0, step=1,
+                                                      label="Rotation (°)")
+                                    with gr.Row():
+                                        t_stroke = gr.ColorPicker(value="#000000", label="Stroke")
+                                        t_strokew = gr.Slider(0, 40, value=0, step=1,
+                                                              label="Stroke width")
+                                _text_slots.append([t_en, t_content, t_font, t_size, t_color,
+                                                    t_align, t_x, t_y, t_rot, t_stroke, t_strokew])
+                        _sticker_slots = []
+                        with gr.Accordion("Stickers (image overlays)", open=False):
+                            for _s in range(N_STICKER):
+                                with gr.Accordion(f"Sticker {_s + 1}", open=False):
+                                    s_en = gr.Checkbox(value=False, label="Show this sticker")
+                                    s_img = gr.Image(label="Sticker image (PNG with "
+                                                     "transparency works best)", type="pil",
+                                                     sources=["upload", "clipboard"], height=120)
+                                    with gr.Row():
+                                        s_scale = gr.Slider(2, 100, value=40, step=1,
+                                                            label="Size (% of panel height)")
+                                        s_op = gr.Slider(0, 1, value=1, step=0.01, label="Opacity")
+                                    with gr.Row():
+                                        s_x = gr.Slider(-100, 100, value=0, step=1, label="X (%)")
+                                        s_y = gr.Slider(-100, 100, value=0, step=1, label="Y (%)")
+                                    s_rot = gr.Slider(-180, 180, value=0, step=1,
+                                                      label="Rotation (°)")
+                                _sticker_slots.append([s_en, s_img, s_scale, s_x, s_y, s_rot, s_op])
+                        _overlay_inputs = [c for slot in _text_slots for c in slot] + \
+                                          [c for slot in _sticker_slots for c in slot]
                         with gr.Group(visible=False) as pn_anim_group:
                             gr.Markdown("**Animation** — for GIF / MP4 export.")
                             with gr.Row():
@@ -1027,12 +1094,12 @@ def build_demo() -> gr.Blocks:
         vid_in.change(_on_video_change, vid_in, [vid_start, vid_end])
 
         # ---- Lian Li panel builder wiring ----
-        # Controls that affect the static composite → live preview.
+        # Controls that affect the static composite → live preview. Order must
+        # match _panel_params: base controls, then the flat overlay-slot values.
         _pn_preview_inputs = [
             pn_media, pn_orient, pn_fit, pn_zoom, pn_offx, pn_offy, pn_bgtype,
-            pn_bgcol, pn_bgcol2, pn_bgang, pn_text, pn_tsize, pn_tcol, pn_toffx,
-            pn_toffy, pn_tstroke, pn_tstrokew,
-        ]
+            pn_bgcol, pn_bgcol2, pn_bgang,
+        ] + _overlay_inputs
         for _c in _pn_preview_inputs:
             # show_progress="hidden" removes the loading flash on every slider
             # tick; the source frame is cached and the preview composites at
