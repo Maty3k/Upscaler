@@ -36,6 +36,21 @@ def _load_state_dict(path) -> dict:
     return ckpt
 
 
+def output_looks_corrupt(out: torch.Tensor, ref: torch.Tensor) -> bool:
+    """Heuristic: did a GPU forward pass return garbage?
+
+    Apple-Silicon MPS can silently produce corrupt output on large tensors
+    (e.g. red banding) instead of erroring. We catch it two ways: non-finite
+    values, or a gross per-channel mean shift versus the reference input — a
+    correct restore/upscale keeps the overall colour, garbage does not.
+    """
+    if not torch.isfinite(out).all():
+        return True
+    om = out.clamp(0, 1).mean(dim=(0, 2, 3))
+    rm = ref.clamp(0, 1).mean(dim=(0, 2, 3))
+    return bool((om - rm).abs().max().item() > 0.20)
+
+
 class Upscaler:
     """Wraps a pretrained Real-ESRGAN generator for inference.
 
@@ -82,16 +97,37 @@ class Upscaler:
 
     # -- public API -------------------------------------------------------
 
+    def _forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self._run_tiled(x) if self.tile > 0 else self.net(x)
+
     @torch.inference_mode()
     def upscale(self, image: Image.Image) -> Image.Image:
-        """Upscale a PIL RGB image by the model's native scale factor."""
+        """Upscale a PIL RGB image by the model's native scale factor.
+
+        If a GPU (MPS/CUDA) returns corrupt output — the Apple-Silicon
+        large-tensor failure — the image is transparently re-run on CPU so the
+        result is correct rather than garbage.
+        """
         rgb = image.convert("RGB")
-        x = torch.from_numpy(np.asarray(rgb, dtype=np.float32) / 255.0)
-        x = x.permute(2, 0, 1).unsqueeze(0).to(self.device)
+        x0 = torch.from_numpy(np.asarray(rgb, dtype=np.float32) / 255.0)
+        x0 = x0.permute(2, 0, 1).unsqueeze(0)
+        x = x0.to(self.device)
         if self.use_fp16:
             x = x.half()
 
-        out = self._run_tiled(x) if self.tile > 0 else self.net(x)
+        out = self._forward(x)
+
+        if self.device.type != "cpu" and output_looks_corrupt(out, x):
+            import warnings
+            warnings.warn(
+                f"{self.device.type} returned a corrupt upscale; re-running on CPU.",
+                RuntimeWarning, stacklevel=2,
+            )
+            self.net.to("cpu")
+            try:
+                out = self._forward(x0.float())
+            finally:
+                self.net.to(self.device)
 
         out = out.clamp_(0, 1).squeeze(0).permute(1, 2, 0).float().cpu().numpy()
         return Image.fromarray(np.round(out * 255.0).astype(np.uint8), mode="RGB")
