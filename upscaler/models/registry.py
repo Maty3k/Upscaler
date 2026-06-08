@@ -125,6 +125,19 @@ DEBLUR_MODELS: dict[str, DeblurSpec] = {
         sha256="19394e6155d12ef6371d1d57496f87f0ec88f92bdffa27c0792690722d5d1a5c",
         notes="Motion deblur (GoPro), lighter/faster. ~69MB.",
     ),
+    # Same NAFNet architecture, trained on SIDD for denoising rather than
+    # deblurring — runs through the identical Deblurrer forward pass.
+    "nafnet-sidd-width64": DeblurSpec(
+        name="nafnet-sidd-width64",
+        url=f"{_HF}/NAFNet-SIDD-width64.pth",
+        filename="NAFNet-SIDD-width64.pth",
+        width=64,
+        middle_blk_num=12,
+        enc_blk_nums=(2, 2, 4, 8),
+        dec_blk_nums=(2, 2, 2, 2),
+        sha256=None,  # pin before a release (see scripts/print_checksums.py)
+        notes="Denoise (SIDD) — removes sensor noise / grain (not motion blur). ~272MB.",
+    ),
 }
 
 DEFAULT_DEBLUR_MODEL = "nafnet-gopro-width64"

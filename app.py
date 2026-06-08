@@ -20,7 +20,7 @@ from datetime import datetime
 import gradio as gr
 from PIL import Image
 
-from upscaler import panel
+from upscaler import background, panel
 from upscaler.convert import FORMATS, convert, extension_for
 from upscaler.document import images_to_pdf, pdf_to_images
 from upscaler.deblur import Deblurrer
@@ -115,6 +115,32 @@ def extract_pdf(pdf_file, dpi):
             im.save(buf, format="PNG")
             z.writestr(f"page_{i:03d}.png", buf.getvalue())
     return zpath, pages, f"✅ {len(pages)} page(s) → PNG · {int(dpi)} dpi (zip)"
+
+
+# -- Background removal -------------------------------------------------------
+
+_BG_CHOICES = [(f"{s.name} — {s.notes}", s.name) for s in background.BG_MODELS.values()]
+
+
+def remove_bg_ui(image, model, feather, progress=gr.Progress()):
+    if image is None:
+        raise gr.Error("Upload an image first.")
+    img = image if isinstance(image, Image.Image) else Image.fromarray(image)
+    progress(0.2, desc="Loading model…")
+    try:
+        cut = background.remove_background(img.convert("RGB"), model=model,
+                                           feather=int(feather))
+    except (RuntimeError, ValueError, FileNotFoundError) as e:
+        raise gr.Error(str(e)) from e
+    progress(0.9, desc="Saving transparent PNG…")
+    fd, path = tempfile.mkstemp(suffix=".png")
+    os.close(fd)
+    cut.save(path, "PNG")  # PNG keeps the alpha channel
+    preview = background.on_checkerboard(cut)
+    return preview, path, (
+        f"✅ Background removed — {cut.width}×{cut.height}px transparent PNG. "
+        "Drop it into the Lian Li tab as a sticker."
+    )
 
 
 # -- Upscale & enhance -------------------------------------------------------
@@ -711,16 +737,18 @@ def build_demo() -> gr.Blocks:
                             info="Crispens edges after upscaling. Keep it low — too "
                             "high adds halos around edges.",
                         )
-                        with gr.Accordion("Deblur (motion blur)", open=False):
+                        with gr.Accordion("Restore: deblur / denoise (NAFNet)", open=False):
                             deblur = gr.Checkbox(
-                                value=False, label="Deblur first (NAFNet)",
-                                info="Only for genuinely motion-blurred shots — it "
-                                "softens images that are already sharp.",
+                                value=False, label="Restore first (NAFNet)",
+                                info="Run a NAFNet restoration pass before upscaling. "
+                                "Pick the GoPro model for motion blur, or the SIDD "
+                                "model to remove sensor noise / grain.",
                             )
                             deblur_model = gr.Dropdown(
                                 _DEBLUR_CHOICES, value="nafnet-gopro-width64",
-                                label="Deblur model",
-                                info="width64 = best quality · width32 = faster.",
+                                label="Restoration model",
+                                info="GoPro = motion deblur (width64 best, width32 "
+                                "faster) · SIDD = denoise grain/noise.",
                             )
                         with gr.Accordion("Advanced", open=False):
                             device = gr.Dropdown(
@@ -911,7 +939,44 @@ def build_demo() -> gr.Blocks:
                     _switch_method, method, [grp_format, grp_topdf, grp_frompdf]
                 )
 
-            # ---- Tab 4: Lian Li 8.8" Screen builder ----
+            # ---- Tab 4: Remove background ----
+            with gr.Tab("Remove BG"):
+                gr.HTML(_section_head(
+                    "Cut-out", "Remove Background",
+                    "Cut the subject out of a photo with U²-Net and save a "
+                    "transparent PNG. Pairs with the Lian Li tab — drop the "
+                    "cut-out in as a sticker.",
+                    icon=ICON_AI,
+                ))
+                with gr.Row(equal_height=True):
+                    with gr.Column(scale=1):
+                        bg_in = gr.Image(
+                            label="Input", type="pil",
+                            sources=["upload", "clipboard"], height=300,
+                            elem_classes="drop", buttons=["download", "fullscreen"],
+                        )
+                        bg_model = gr.Dropdown(
+                            _BG_CHOICES, value=background.DEFAULT_BG_MODEL,
+                            label="Model",
+                            info="u2net = best all-rounder · u2netp = lighter/faster.",
+                        )
+                        bg_feather = gr.Slider(
+                            0, 10, value=1, step=1, label="Edge feather (px)",
+                            info="Softens the cut-out edge slightly. 0 = hard edge.",
+                        )
+                        with gr.Row():
+                            bg_btn = gr.Button("Remove background", variant="primary",
+                                               size="lg", scale=3)
+                            bg_clear = gr.Button("↺ Clear", variant="secondary", scale=1)
+                    with gr.Column(scale=1):
+                        bg_preview = gr.Image(
+                            label="Cut-out (checkerboard = transparent)",
+                            height=300, buttons=["fullscreen"],
+                        )
+                        bg_file = gr.File(label="Download transparent PNG")
+                        bg_info = gr.Markdown()
+
+            # ---- Tab 5: Lian Li 8.8" Screen builder ----
             with gr.Tab("Lian Li Screen"):
                 gr.HTML(_section_head(
                     "Panel", "Lian Li 8.8″ Screen",
@@ -1074,6 +1139,12 @@ def build_demo() -> gr.Blocks:
             [conv_file, conv_info],
         )
         pdf_build_btn.click(build_pdf, [pdf_imgs_in], [pdf_build_out, pdf_build_info])
+        bg_btn.click(
+            remove_bg_ui, [bg_in, bg_model, bg_feather],
+            [bg_preview, bg_file, bg_info], show_progress_on=[bg_preview],
+        )
+        bg_clear.click(lambda: (None, None, None, None), None,
+                       [bg_in, bg_preview, bg_file, bg_info])
         pdf_extract_btn.click(
             extract_pdf, [pdf_in, pdf_dpi], [pdf_extract_out, pdf_gallery, pdf_extract_info]
         )
