@@ -72,6 +72,35 @@ def test_text_overlay_renders():
     assert found
 
 
+def _make_comp(dirpath, n):
+    dirpath.mkdir()
+    for i in range(1, n + 1):
+        Image.new("RGB", (8, 8), (i, i, i)).save(dirpath / f"c_{i:05d}.png")
+
+
+def test_apply_loop_frame_counts(tmp_path):
+    import os
+
+    # normal: untouched pattern
+    d0 = tmp_path / "c0"
+    _make_comp(d0, 10)
+    assert panel._apply_loop(str(d0), 10, "normal", 10).endswith("c_%05d.png")
+
+    # boomerang: forward + back = 2n - 2 frames
+    d1 = tmp_path / "c1"
+    _make_comp(d1, 10)
+    patt = panel._apply_loop(str(d1), 10, "boomerang", 10)
+    seq = os.path.dirname(patt)
+    assert len([f for f in os.listdir(seq) if f.startswith("s_")]) == 18
+
+    # crossfade: n - k frames (k = min(fps//2, n//3))
+    d2 = tmp_path / "c2"
+    _make_comp(d2, 12)
+    patt = panel._apply_loop(str(d2), 12, "crossfade", 10)
+    seq = os.path.dirname(patt)
+    assert len([f for f in os.listdir(seq) if f.startswith("s_")]) == 12 - 4
+
+
 def test_media_kind_and_hex():
     assert panel.media_kind(None) is None
     assert panel.media_kind("a.png") == "image"

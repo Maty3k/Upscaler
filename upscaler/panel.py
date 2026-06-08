@@ -335,6 +335,9 @@ def _extract_frames(src_path: str, fps: float, start: float, dur: float, into: s
     return len([f for f in os.listdir(into) if f.startswith("frame_")])
 
 
+LOOP_STYLES = ["normal", "boomerang", "crossfade"]
+
+
 def export_animated(
     src_path: str | None,
     p: PanelParams,
@@ -344,6 +347,7 @@ def export_animated(
     gif_colors: int,
     trim_start: float,
     trim_end: float,
+    loop_mode: str = "normal",
     progress=None,
 ) -> str:
     if not src_path:
@@ -380,20 +384,59 @@ def export_animated(
             if progress:
                 progress(0.1 + 0.6 * i / len(files), desc=f"Compositing frame {i}/{len(files)}")
 
+        pattern = _apply_loop(comp, len(files), loop_mode, fps)
         if fmt == "mp4":
-            return _encode_mp4(comp, fps, progress)
-        return _encode_gif(comp, fps, loop, gif_colors, progress)
+            return _encode_mp4(pattern, fps, progress)
+        return _encode_gif(pattern, fps, loop, gif_colors, progress)
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
 
-def _encode_mp4(comp_dir: str, fps: int, progress=None) -> str:
+def _apply_loop(comp_dir: str, n: int, mode: str, fps: int) -> str:
+    """Reorder / blend the composited frames for a seamless loop and return the
+    ffmpeg input pattern. `boomerang` plays forward then back; `crossfade`
+    overlaps the tail onto the head so the loop join falls between two original
+    consecutive frames (no visible seam)."""
+    default = os.path.join(comp_dir, "c_%05d.png")
+    if mode not in ("boomerang", "crossfade") or n < 4:
+        return default
+
+    seq = os.path.join(comp_dir, "seq")
+    os.makedirs(seq, exist_ok=True)
+    cpath = lambda i: os.path.join(comp_dir, f"c_{i:05d}.png")  # noqa: E731
+    spath = lambda i: os.path.join(seq, f"s_{i:05d}.png")  # noqa: E731
+
+    def link(src: str, dst: str) -> None:
+        try:
+            os.link(src, dst)  # hardlink — no copy cost on the same fs
+        except OSError:
+            shutil.copyfile(src, dst)
+
+    if mode == "boomerang":
+        order = list(range(1, n + 1)) + list(range(n - 1, 1, -1))  # 1..n, n-1..2
+        for k, idx in enumerate(order, 1):
+            link(cpath(idx), spath(k))
+    else:  # crossfade
+        k = max(1, min(int(round(fps * 0.5)), n // 3))  # ~0.5 s crossfade
+        length = n - k
+        for i in range(1, length + 1):
+            if i <= k:
+                a = i / (k + 1)  # 0→1: tail fades into head over the first k frames
+                tail = Image.open(cpath(n - k + i)).convert("RGB")
+                head = Image.open(cpath(i)).convert("RGB")
+                Image.blend(tail, head, a).save(spath(i))
+            else:
+                link(cpath(i), spath(i))
+    return os.path.join(seq, "s_%05d.png")
+
+
+def _encode_mp4(in_pattern: str, fps: int, progress=None) -> str:
     fd, out = tempfile.mkstemp(suffix=".mp4")
     os.close(fd)
     if progress:
         progress(0.8, desc="Encoding H.264…")
     subprocess.run(
-        [_ffmpeg(), "-y", "-framerate", str(fps), "-i", os.path.join(comp_dir, "c_%05d.png"),
+        [_ffmpeg(), "-y", "-framerate", str(fps), "-i", in_pattern,
          "-c:v", "libx264", "-pix_fmt", "yuv420p", "-profile:v", "main",
          "-preset", "medium", "-movflags", "+faststart", "-r", str(fps), out],
         capture_output=True,
@@ -403,7 +446,7 @@ def _encode_mp4(comp_dir: str, fps: int, progress=None) -> str:
     return out
 
 
-def _encode_gif(comp_dir: str, fps: int, loop: bool, colors: int, progress=None) -> str:
+def _encode_gif(in_pattern: str, fps: int, loop: bool, colors: int, progress=None) -> str:
     fd, out = tempfile.mkstemp(suffix=".gif")
     os.close(fd)
     if progress:
@@ -415,7 +458,7 @@ def _encode_gif(comp_dir: str, fps: int, loop: bool, colors: int, progress=None)
         f"[s1][p]paletteuse=dither=bayer"
     )
     subprocess.run(
-        [_ffmpeg(), "-y", "-framerate", str(fps), "-i", os.path.join(comp_dir, "c_%05d.png"),
+        [_ffmpeg(), "-y", "-framerate", str(fps), "-i", in_pattern,
          "-vf", vf, "-loop", loop_arg, out],
         capture_output=True,
     )

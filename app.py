@@ -12,8 +12,10 @@ from __future__ import annotations
 
 import io
 import os
+import shutil
 import tempfile
 import zipfile
+from datetime import datetime
 
 import gradio as gr
 from PIL import Image
@@ -298,7 +300,7 @@ def panel_export_ui(media, orientation, fit, zoom, off_x, off_y, bg_type,
                     bg_color, bg_color2, bg_angle, text, text_size, text_color,
                     text_off_x, text_off_y, text_stroke, text_stroke_w,
                     out_fmt, fps, loop, gif_colors, trim_start, trim_end,
-                    progress=gr.Progress()):
+                    loop_mode, out_dir, progress=gr.Progress()):
     if not media:
         raise gr.Error("Upload media first.")
     p = _panel_params(orientation, fit, zoom, off_x, off_y, bg_type, bg_color,
@@ -315,12 +317,26 @@ def panel_export_ui(media, orientation, fit, zoom, off_x, off_y, bg_type,
             f = panel.export_animated(
                 media, p, "mp4" if fmt == "mp4" else "gif", int(fps), bool(loop),
                 int(gif_colors), float(trim_start or 0), float(trim_end or 0),
-                progress=progress,
+                loop_mode=loop_mode, progress=progress,
             )
+            extra = "" if loop_mode == "normal" else f" · {loop_mode} loop"
             detail = "H.264 / yuv420p" if fmt == "mp4" else f"{int(gif_colors)} colors"
-            msg = f"✅ {out_fmt} exported — {cw}×{ch}px · {detail}."
+            msg = f"✅ {out_fmt} exported — {cw}×{ch}px · {detail}{extra}."
     except (RuntimeError, ValueError, FileNotFoundError) as e:
         raise gr.Error(str(e)) from e
+
+    # Optionally drop a timestamped copy into a chosen folder (e.g. the
+    # L-Connect media folder) so it lands where it's actually used.
+    out_dir = (out_dir or "").strip()
+    if out_dir:
+        try:
+            os.makedirs(out_dir, exist_ok=True)
+            name = f"lianli_{datetime.now():%Y%m%d_%H%M%S}{os.path.splitext(f)[1]}"
+            dest = os.path.join(out_dir, name)
+            shutil.copyfile(f, dest)
+            msg += f"\n\n📁 Saved a copy to `{dest}`"
+        except OSError as e:
+            msg += f"\n\n⚠ Couldn't save to `{out_dir}`: {e}"
     return f, msg
 
 
@@ -955,9 +971,20 @@ def build_demo() -> gr.Blocks:
                             pn_colors = gr.Slider(
                                 2, 256, value=128, step=1, label="GIF colors",
                             )
+                            pn_loopmode = gr.Radio(
+                                panel.LOOP_STYLES, value="normal", label="Loop style",
+                                info="boomerang plays forward then back · crossfade "
+                                "blends the end into the start — both remove the loop seam.",
+                            )
                         pn_fmt = gr.Radio(
                             ["PNG", "JPG", "GIF", "MP4"], value="GIF",
                             label="Export format",
+                        )
+                        pn_outdir = gr.Textbox(
+                            label="Save a copy to folder (optional)",
+                            placeholder="/path/to/your L-Connect media folder",
+                            info="A timestamped copy is written here on export, in "
+                            "addition to the download below.",
                         )
                         with gr.Row():
                             pn_export = gr.Button("Export", variant="primary", size="lg", scale=3)
@@ -1025,7 +1052,8 @@ def build_demo() -> gr.Blocks:
         )
         pn_export.click(
             panel_export_ui,
-            _pn_preview_inputs + [pn_fmt, pn_fps, pn_loop, pn_colors, pn_start, pn_end],
+            _pn_preview_inputs + [pn_fmt, pn_fps, pn_loop, pn_colors, pn_start,
+                                  pn_end, pn_loopmode, pn_outdir],
             [pn_file, pn_info],
             show_progress_on=[pn_file],
         )
