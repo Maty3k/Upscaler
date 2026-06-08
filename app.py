@@ -145,15 +145,27 @@ def remove_bg_ui(image, model, feather, progress=gr.Progress()):
 
 # -- Upscale & enhance -------------------------------------------------------
 
-def enhance(image, model, device, deblur, deblur_model, sharpen, tile, onnx, out_size):
+def _restore(src_img, deblur_model, device, onnx, strength):
+    """Run a NAFNet restore (deblur/denoise) and blend it back over the source
+    by `strength` (1 = full effect, lower keeps more original detail/noise).
+    The blend is backend-agnostic, so it works for torch and ONNX deblurrers."""
+    rgb = src_img.convert("RGB")
+    out = _get_deblurrer(deblur_model, device, onnx).deblur(rgb)
+    strength = max(0.0, min(1.0, float(strength)))
+    return out if strength >= 0.999 else Image.blend(rgb, out, strength)
+
+
+def enhance(image, model, device, deblur, deblur_model, restore_strength, sharpen,
+            tile, onnx, out_size):
     if image is None:
         raise gr.Error("Upload an image to enhance first.")
     original = image if isinstance(image, Image.Image) else Image.fromarray(image)
     src = original
     stages = []
     if deblur:
-        src = _get_deblurrer(deblur_model, device, onnx).deblur(src)
-        stages.append(f"deblur `{deblur_model}`")
+        src = _restore(src, deblur_model, device, onnx, restore_strength)
+        pct = "" if restore_strength >= 0.999 else f" @{int(round(restore_strength * 100))}%"
+        stages.append(f"restore `{deblur_model}`{pct}")
     up = _get_upscaler(model, device, int(tile), onnx)
     result = up.upscale(src)
     stages.append(f"upscale ×{up.scale}")
@@ -182,13 +194,14 @@ def enhance(image, model, device, deblur, deblur_model, sharpen, tile, onnx, out
     return (original, result), info
 
 
-def restore_only(image, deblur_model, sharpen, device, onnx):
+def restore_only(image, deblur_model, restore_strength, sharpen, device, onnx):
     """Run just the NAFNet restoration pass (deblur or denoise) — no upscaling."""
     if image is None:
         raise gr.Error("Upload an image to restore first.")
     original = image if isinstance(image, Image.Image) else Image.fromarray(image)
-    result = _get_deblurrer(deblur_model, device, onnx).deblur(original)
-    stages = [f"restore `{deblur_model}`"]
+    result = _restore(original, deblur_model, device, onnx, restore_strength)
+    pct = "" if restore_strength >= 0.999 else f" @{int(round(restore_strength * 100))}%"
+    stages = [f"restore `{deblur_model}`{pct}"]
     if sharpen > 0:
         result = unsharp_mask(result, strength=float(sharpen))
         stages.append(f"sharpen {sharpen:g}")
@@ -767,6 +780,12 @@ def build_demo() -> gr.Blocks:
                                 info="GoPro = motion deblur (width64 best, width32 "
                                 "faster) · SIDD = denoise grain/noise.",
                             )
+                            restore_strength = gr.Slider(
+                                0.0, 1.0, value=1.0, step=0.05,
+                                label="Denoise / restore strength",
+                                info="1 = full effect · lower blends back the "
+                                "original to keep more detail (and some noise).",
+                            )
                             restore_btn = gr.Button(
                                 "✨ Restore only (deblur / denoise · no upscale)",
                                 variant="secondary",
@@ -1171,13 +1190,14 @@ def build_demo() -> gr.Blocks:
         )
         run.click(
             enhance,
-            [inp, model, device, deblur, deblur_model, sharpen, tile, onnx, out_size],
+            [inp, model, device, deblur, deblur_model, restore_strength, sharpen,
+             tile, onnx, out_size],
             [out, info],
             show_progress_on=[out],
         )
         restore_btn.click(
             restore_only,
-            [inp, deblur_model, sharpen, device, onnx],
+            [inp, deblur_model, restore_strength, sharpen, device, onnx],
             [out, info],
             show_progress_on=[out],
         )
