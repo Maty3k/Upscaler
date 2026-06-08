@@ -18,6 +18,7 @@ import zipfile
 from datetime import datetime
 
 import gradio as gr
+import numpy as np
 from PIL import Image
 
 from upscaler import background, panel
@@ -145,14 +146,38 @@ def remove_bg_ui(image, model, feather, progress=gr.Progress()):
 
 # -- Upscale & enhance -------------------------------------------------------
 
+def _structural_ok(a_img, b_img) -> bool:
+    """True if b preserves a's structure (luma correlation). A real deblur/
+    denoise keeps the image; a failed one (e.g. GoPro motion-deblur on a grainy
+    photo) returns garbage that doesn't correlate with the input at all."""
+    a = np.asarray(a_img.convert("RGB"), dtype=np.float32)
+    b = np.asarray(b_img.convert("RGB"), dtype=np.float32)
+    la = (0.299 * a[..., 0] + 0.587 * a[..., 1] + 0.114 * a[..., 2]).ravel()
+    lb = (0.299 * b[..., 0] + 0.587 * b[..., 1] + 0.114 * b[..., 2]).ravel()
+    la -= la.mean()
+    lb -= lb.mean()
+    denom = float(np.linalg.norm(la) * np.linalg.norm(lb))
+    if denom < 1e-6:
+        return True  # flat image — can't tell, assume fine
+    return float(la @ lb) / denom > 0.5
+
+
 def _restore(src_img, deblur_model, device, onnx, strength):
     """Run a NAFNet restore (deblur/denoise) and blend it back over the source
     by `strength` (1 = full effect, lower keeps more original detail/noise).
-    The blend is backend-agnostic, so it works for torch and ONNX deblurrers."""
+
+    Returns (image, ok). If the model produced garbage (doesn't resemble the
+    input), the original is returned with ok=False so callers can skip it and
+    warn instead of feeding garbage downstream. Backend-agnostic blend works for
+    torch and ONNX deblurrers.
+    """
     rgb = src_img.convert("RGB")
     out = _get_deblurrer(deblur_model, device, onnx).deblur(rgb)
+    if not _structural_ok(rgb, out):
+        return rgb, False
     strength = max(0.0, min(1.0, float(strength)))
-    return out if strength >= 0.999 else Image.blend(rgb, out, strength)
+    blended = out if strength >= 0.999 else Image.blend(rgb, out, strength)
+    return blended, True
 
 
 def enhance(image, model, device, deblur, deblur_model, restore_strength, sharpen,
@@ -163,9 +188,12 @@ def enhance(image, model, device, deblur, deblur_model, restore_strength, sharpe
     src = original
     stages = []
     if deblur:
-        src = _restore(src, deblur_model, device, onnx, restore_strength)
-        pct = "" if restore_strength >= 0.999 else f" @{int(round(restore_strength * 100))}%"
-        stages.append(f"restore `{deblur_model}`{pct}")
+        src, ok = _restore(src, deblur_model, device, onnx, restore_strength)
+        if ok:
+            pct = "" if restore_strength >= 0.999 else f" @{int(round(restore_strength * 100))}%"
+            stages.append(f"restore `{deblur_model}`{pct}")
+        else:
+            stages.append(f"⚠ restore skipped (`{deblur_model}` unsuited to this image)")
     up = _get_upscaler(model, device, int(tile), onnx)
     result = up.upscale(src)
     stages.append(f"upscale ×{up.scale}")
@@ -199,7 +227,13 @@ def restore_only(image, deblur_model, restore_strength, sharpen, device, onnx):
     if image is None:
         raise gr.Error("Upload an image to restore first.")
     original = image if isinstance(image, Image.Image) else Image.fromarray(image)
-    result = _restore(original, deblur_model, device, onnx, restore_strength)
+    result, ok = _restore(original, deblur_model, device, onnx, restore_strength)
+    if not ok:
+        return (original, original), (
+            f"⚠ `{deblur_model}` produced garbage on this image and was skipped. "
+            "For a noisy/grainy photo use the **SIDD (Denoise)** model — GoPro is "
+            "only for genuine motion blur."
+        )
     pct = "" if restore_strength >= 0.999 else f" @{int(round(restore_strength * 100))}%"
     stages = [f"restore `{deblur_model}`{pct}"]
     if sharpen > 0:
@@ -775,10 +809,10 @@ def build_demo() -> gr.Blocks:
                                 "(no upscale), use the button below instead.",
                             )
                             deblur_model = gr.Dropdown(
-                                _DEBLUR_CHOICES, value="nafnet-gopro-width64",
+                                _DEBLUR_CHOICES, value="nafnet-sidd-width64",
                                 label="Restoration model",
-                                info="GoPro = motion deblur (width64 best, width32 "
-                                "faster) · SIDD = denoise grain/noise.",
+                                info="SIDD = denoise grain/noise (safe default) · "
+                                "GoPro = motion deblur ONLY — it garbages noisy photos.",
                             )
                             restore_strength = gr.Slider(
                                 0.0, 1.0, value=1.0, step=0.05,
