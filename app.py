@@ -18,6 +18,7 @@ import zipfile
 import gradio as gr
 from PIL import Image
 
+from upscaler import panel
 from upscaler.convert import FORMATS, convert, extension_for
 from upscaler.document import images_to_pdf, pdf_to_images
 from upscaler.deblur import Deblurrer
@@ -254,6 +255,75 @@ def _switch_method(choice):
     )
 
 
+# -- Lian Li 8.8" panel builder ----------------------------------------------
+
+def _panel_params(orientation, fit, zoom, off_x, off_y, bg_type, bg_color,
+                  bg_color2, bg_angle, text, text_size, text_color, text_off_x,
+                  text_off_y, text_stroke, text_stroke_w):
+    return panel.PanelParams(
+        orientation=orientation, fit=fit, zoom=float(zoom),
+        off_x=float(off_x), off_y=float(off_y), bg_type=bg_type,
+        bg_color=bg_color, bg_color2=bg_color2, bg_angle=float(bg_angle),
+        text=text or "", text_size=int(text_size), text_color=text_color,
+        text_off_x=float(text_off_x), text_off_y=float(text_off_y),
+        text_stroke=text_stroke, text_stroke_w=int(text_stroke_w),
+    )
+
+
+def panel_preview_ui(media, *vals):
+    """Live crop-dimming preview (bright = kept, dim = cropped out)."""
+    return panel.preview(media, _panel_params(*vals))
+
+
+def panel_on_media(media):
+    """On upload: fill trim End with the clip length, reveal the animation
+    controls for animated sources, and describe what was loaded."""
+    kind = panel.media_kind(media)
+    dur = panel.media_duration(media) if kind == "animated" else 0.0
+    is_anim = kind == "animated"
+    if not media:
+        note = "Upload an image, GIF or video to begin."
+    elif is_anim:
+        note = f"Animated source · {dur:g}s — trims to ≤ 3 min on export."
+    else:
+        note = "Still image loaded."
+    return (
+        gr.update(value=dur, maximum=dur or None),
+        gr.update(visible=is_anim),
+        note,
+    )
+
+
+def panel_export_ui(media, orientation, fit, zoom, off_x, off_y, bg_type,
+                    bg_color, bg_color2, bg_angle, text, text_size, text_color,
+                    text_off_x, text_off_y, text_stroke, text_stroke_w,
+                    out_fmt, fps, loop, gif_colors, trim_start, trim_end,
+                    progress=gr.Progress()):
+    if not media:
+        raise gr.Error("Upload media first.")
+    p = _panel_params(orientation, fit, zoom, off_x, off_y, bg_type, bg_color,
+                      bg_color2, bg_angle, text, text_size, text_color,
+                      text_off_x, text_off_y, text_stroke, text_stroke_w)
+    cw, ch = panel.canvas_size(orientation)
+    fmt = out_fmt.lower()
+    progress(0.05, desc="Preparing…")
+    try:
+        if fmt in ("png", "jpg"):
+            f = panel.export_still(media, p, "jpeg" if fmt == "jpg" else "png")
+            msg = f"✅ {out_fmt} exported — exactly {cw}×{ch}px."
+        else:
+            f = panel.export_animated(
+                media, p, "mp4" if fmt == "mp4" else "gif", int(fps), bool(loop),
+                int(gif_colors), float(trim_start or 0), float(trim_end or 0),
+                progress=progress,
+            )
+            detail = "H.264 / yuv420p" if fmt == "mp4" else f"{int(gif_colors)} colors"
+            msg = f"✅ {out_fmt} exported — {cw}×{ch}px · {detail}."
+    except (RuntimeError, ValueError, FileNotFoundError) as e:
+        raise gr.Error(str(e)) from e
+    return f, msg
+
+
 _MODEL_CHOICES = [(f"{s.name}  (×{s.scale}) — {s.notes}", s.name) for s in MODELS.values()]
 _DEBLUR_CHOICES = [(f"{s.name} — {s.notes}", s.name) for s in DEBLUR_MODELS.values()]
 _DEVICES = ["auto", "cpu", "cuda", "mps"]
@@ -487,6 +557,8 @@ ICON_CONVERT = _svg('<path d="M7 4 3 8l4 4"/><path d="M3 8h14"/>'
                     '<path d="m17 20 4-4-4-4"/><path d="M21 16H7"/>')
 ICON_PDF = _svg('<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 '
                 '2-2V8z"/><path d="M14 3v5h5"/>')
+ICON_PANEL = _svg('<rect x="2" y="8" width="20" height="8" rx="1.5"/>'
+                  '<path d="M6 12h.01M9 12h.01"/>')
 ICON_LOGO = (
     '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" '
     'stroke="currentColor" stroke-width="2.1" stroke-linecap="round" '
@@ -758,6 +830,94 @@ def build_demo() -> gr.Blocks:
                     _switch_method, method, [grp_format, grp_topdf, grp_frompdf]
                 )
 
+            # ---- Tab 4: Lian Li 8.8" Screen builder ----
+            with gr.Tab("Lian Li Screen"):
+                gr.HTML(_section_head(
+                    "Panel", "Lian Li 8.8″ Screen",
+                    "Build media sized exactly for the Lian Li 8.8″ panel "
+                    "(1920×480 / 480×1920, 4:1) so L-Connect 3 never resamples it. "
+                    "Fit any source into the 4:1 frame — the dim area is what gets "
+                    "cropped. Export PNG/JPG, looping GIF, or H.264 MP4.",
+                    icon=ICON_PANEL,
+                ))
+                with gr.Row(equal_height=True):
+                    with gr.Column(scale=1):
+                        pn_media = gr.File(
+                            label="Image, GIF or video",
+                            file_count="single",
+                            file_types=["image", ".gif", ".mp4", ".mov", ".webm",
+                                        ".mkv", ".m4v", ".avi"],
+                            elem_classes="drop",
+                        )
+                        pn_orient = gr.Radio(
+                            list(panel.ORIENTATIONS), value="Landscape · 1920×480",
+                            label="Orientation",
+                        )
+                        pn_fit = gr.Radio(
+                            panel.FITS, value="cover", label="Fit",
+                            info="cover fills & crops · contain letterboxes · "
+                            "stretch distorts · manual = free zoom.",
+                        )
+                        with gr.Row():
+                            pn_offx = gr.Slider(
+                                -100, 100, value=0, step=1, label="Pan X (%)",
+                                info="Which band survives the crop (cover/manual).",
+                            )
+                            pn_offy = gr.Slider(
+                                -100, 100, value=0, step=1, label="Pan Y (%)",
+                            )
+                        pn_zoom = gr.Slider(
+                            0.1, 5, value=1, step=0.01, label="Zoom (manual fit)",
+                        )
+                        with gr.Accordion("Background (fills letterbox gaps)", open=False):
+                            pn_bgtype = gr.Radio(
+                                ["solid", "gradient"], value="solid",
+                                label="Type",
+                            )
+                            with gr.Row():
+                                pn_bgcol = gr.ColorPicker(value="#000000", label="Color / Stop A")
+                                pn_bgcol2 = gr.ColorPicker(value="#333333", label="Stop B")
+                            pn_bgang = gr.Slider(0, 360, value=90, step=1, label="Gradient angle")
+                        with gr.Accordion("Text overlay", open=False):
+                            pn_text = gr.Textbox(label="Text", lines=2, placeholder="(optional)")
+                            with gr.Row():
+                                pn_tsize = gr.Slider(20, 900, value=180, step=2, label="Size (px)")
+                                pn_tcol = gr.ColorPicker(value="#ffffff", label="Color")
+                            with gr.Row():
+                                pn_toffx = gr.Slider(-100, 100, value=0, step=1, label="Text X (%)")
+                                pn_toffy = gr.Slider(-100, 100, value=0, step=1, label="Text Y (%)")
+                            with gr.Row():
+                                pn_tstroke = gr.ColorPicker(value="#000000", label="Stroke")
+                                pn_tstrokew = gr.Slider(0, 40, value=0, step=1, label="Stroke width")
+                        with gr.Group(visible=False) as pn_anim_group:
+                            gr.Markdown("**Animation** — for GIF / MP4 export.")
+                            with gr.Row():
+                                pn_start = gr.Number(value=0, label="Trim start (s)", minimum=0)
+                                pn_end = gr.Number(value=0, label="Trim end (s)", minimum=0)
+                            with gr.Row():
+                                pn_fps = gr.Dropdown(
+                                    ["10", "12", "15", "24", "25", "30", "48", "50", "60"],
+                                    value="30", label="FPS (≤ 60)",
+                                )
+                                pn_loop = gr.Checkbox(value=True, label="Loop")
+                            pn_colors = gr.Slider(
+                                2, 256, value=128, step=1, label="GIF colors",
+                            )
+                        pn_fmt = gr.Radio(
+                            ["PNG", "JPG", "GIF", "MP4"], value="GIF",
+                            label="Export format",
+                        )
+                        with gr.Row():
+                            pn_export = gr.Button("Export", variant="primary", size="lg", scale=3)
+                            pn_clear = gr.Button("↺ Clear", variant="secondary", scale=1)
+                    with gr.Column(scale=1):
+                        pn_preview = gr.Image(
+                            label="Preview — bright = kept, dim = cropped out",
+                            height=300, buttons=["fullscreen"],
+                        )
+                        pn_file = gr.File(label="Download export")
+                        pn_info = gr.Markdown()
+
         conv_btn.click(
             convert_image,
             [conv_in, conv_fmt, conv_quality, conv_lossless],
@@ -786,6 +946,28 @@ def build_demo() -> gr.Blocks:
             [vid_in, vid_out, vid_compare, vid_info],
         )
         vid_in.change(_on_video_change, vid_in, [vid_start, vid_end])
+
+        # ---- Lian Li panel builder wiring ----
+        # Controls that affect the static composite → live preview.
+        _pn_preview_inputs = [
+            pn_media, pn_orient, pn_fit, pn_zoom, pn_offx, pn_offy, pn_bgtype,
+            pn_bgcol, pn_bgcol2, pn_bgang, pn_text, pn_tsize, pn_tcol, pn_toffx,
+            pn_toffy, pn_tstroke, pn_tstrokew,
+        ]
+        for _c in _pn_preview_inputs:
+            _c.change(panel_preview_ui, _pn_preview_inputs, pn_preview)
+        pn_media.change(
+            panel_on_media, pn_media, [pn_end, pn_anim_group, pn_info]
+        )
+        pn_export.click(
+            panel_export_ui,
+            _pn_preview_inputs + [pn_fmt, pn_fps, pn_loop, pn_colors, pn_start, pn_end],
+            [pn_file, pn_info],
+            show_progress_on=[pn_file],
+        )
+        pn_clear.click(
+            lambda: (None, None, None), None, [pn_media, pn_preview, pn_file]
+        )
     return demo
 
 
