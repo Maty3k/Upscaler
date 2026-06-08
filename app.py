@@ -324,6 +324,44 @@ def panel_export_ui(media, orientation, fit, zoom, off_x, off_y, bg_type,
     return f, msg
 
 
+def panel_enhance_source(media, up_model, *vals, progress=gr.Progress()):
+    """Run the dropped source through the AI upscaler, then replace the working
+    source with the enhanced version — so fitting/export use crisp pixels. Best
+    for low-res sources the 1920×480 panel would otherwise show soft."""
+    if not media:
+        raise gr.Error("Upload media first.")
+    kind = panel.media_kind(media)
+    progress(0.1, desc="Loading model…")
+    try:
+        if kind == "image":
+            img = Image.open(media).convert("RGB")
+            up = _get_upscaler(up_model, "auto", 512, False)
+            progress(0.4, desc="Upscaling…")
+            result = up.upscale(img)
+            fd, out = tempfile.mkstemp(suffix=".png")
+            os.close(fd)
+            result.save(out, "PNG")
+            note = (f"✨ Source upscaled ×{up.scale} → {result.width}×{result.height}px. "
+                    "Re-fit and export.")
+        elif kind == "animated":
+            from upscaler.video import upscale_video
+
+            fd, out = tempfile.mkstemp(suffix=".mp4")
+            os.close(fd)
+
+            def cb(i, n):
+                progress(i / n, desc=f"Upscaling frame {i}/{n}")
+
+            upscale_video(media, out, model=up_model, device="auto", tile=512,
+                          progress_cb=cb)
+            note = "✨ Video source upscaled. Re-fit and export."
+        else:
+            raise gr.Error("Unsupported source for AI upscale.")
+    except (RuntimeError, FileNotFoundError) as e:
+        raise gr.Error(str(e)) from e
+    return gr.update(value=out), panel.preview(out, _panel_params(*vals)), note
+
+
 _MODEL_CHOICES = [(f"{s.name}  (×{s.scale}) — {s.notes}", s.name) for s in MODELS.values()]
 _DEBLUR_CHOICES = [(f"{s.name} — {s.notes}", s.name) for s in DEBLUR_MODELS.values()]
 _DEVICES = ["auto", "cpu", "cuda", "mps"]
@@ -849,6 +887,20 @@ def build_demo() -> gr.Blocks:
                                         ".mkv", ".m4v", ".avi"],
                             elem_classes="drop",
                         )
+                        with gr.Accordion("Source quality — AI upscale (optional)", open=False):
+                            gr.Markdown(
+                                "Run the source through Real-ESRGAN **before** "
+                                "fitting — best for low-res images/clips the "
+                                "panel would otherwise show soft. Replaces the "
+                                "working source with the enhanced version."
+                            )
+                            pn_up_model = gr.Dropdown(
+                                _MODEL_CHOICES, value="realesrgan-x2plus",
+                                label="Upscale model",
+                                info="×2 is plenty when fitting into 1920×480 · "
+                                "×4 for very small sources · anime for line art.",
+                            )
+                            pn_enhance = gr.Button("✨ Enhance source", variant="secondary")
                         pn_orient = gr.Radio(
                             list(panel.ORIENTATIONS), value="Landscape · 1920×480",
                             label="Orientation",
@@ -964,6 +1016,12 @@ def build_demo() -> gr.Blocks:
             )
         pn_media.change(
             panel_on_media, pn_media, [pn_end, pn_anim_group, pn_info]
+        )
+        pn_enhance.click(
+            panel_enhance_source,
+            [pn_media, pn_up_model] + _pn_preview_inputs[1:],
+            [pn_media, pn_preview, pn_info],
+            show_progress_on=[pn_preview],
         )
         pn_export.click(
             panel_export_ui,
