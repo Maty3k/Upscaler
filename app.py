@@ -1009,8 +1009,12 @@ def build_demo() -> gr.Blocks:
                             for _s in range(N_STICKER):
                                 with gr.Accordion(f"Sticker {_s + 1}", open=False):
                                     s_en = gr.Checkbox(value=False, label="Show this sticker")
+                                    # image_mode="RGBA" preserves transparency —
+                                    # without it Gradio drops alpha and PNG cut-outs
+                                    # composite as opaque black.
                                     s_img = gr.Image(label="Sticker image (PNG with "
                                                      "transparency works best)", type="pil",
+                                                     image_mode="RGBA",
                                                      sources=["upload", "clipboard"], height=120)
                                     with gr.Row():
                                         s_scale = gr.Slider(2, 100, value=40, step=1,
