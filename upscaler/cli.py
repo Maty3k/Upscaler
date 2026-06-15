@@ -90,6 +90,10 @@ def run_convert(argv: list[str]) -> int:
     if not inputs:
         print(f"error: no images found in {args.input}", file=sys.stderr)
         return 2
+    if len(inputs) > 1 and args.output and args.output.suffix:
+        print("error: --output must be a directory when processing a folder",
+              file=sys.stderr)
+        return 2
 
     for src in tqdm(inputs, disable=len(inputs) == 1, desc="convert"):
         dst = _convert_output_path(src, args.output, fmt)
@@ -340,6 +344,10 @@ def main(argv: list[str] | None = None) -> int:
     inputs = _gather_inputs(args.input)
     if not inputs:
         print(f"error: no images found in {args.input}", file=sys.stderr)
+        return 2
+    if len(inputs) > 1 and args.output is not None and args.output.suffix:
+        print("error: --output must be a directory when processing a folder",
+              file=sys.stderr)
         return 2
 
     if args.onnx:

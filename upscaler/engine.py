@@ -7,6 +7,7 @@ from typing import Optional
 import numpy as np
 import torch
 from PIL import Image
+from torch.nn import functional as F
 
 from upscaler.models.registry import ModelSpec, resolve_model
 from upscaler.models.rrdbnet import RRDBNet
@@ -91,10 +92,25 @@ class Upscaler:
         if self.use_fp16:
             x = x.half()
 
-        out = self._run_tiled(x) if self.tile > 0 else self.net(x)
+        out = self._run_tiled(x) if self.tile > 0 else self._net(x)
 
         out = out.clamp_(0, 1).squeeze(0).permute(1, 2, 0).float().cpu().numpy()
         return Image.fromarray(np.round(out * 255.0).astype(np.uint8), mode="RGB")
+
+    def _net(self, t: torch.Tensor) -> torch.Tensor:
+        """Run the model, first padding spatial dims up to the multiple that
+        RRDBNet's pixel_unshuffle requires (2 for ×2 models, 4 for ×1), then
+        cropping the result back — so odd-sized images/tiles don't trip the
+        ``spatial dims must be divisible by scale`` assert. (×4 needs no padding.)
+        """
+        m = 2 if self.scale == 2 else 4 if self.scale == 1 else 1
+        if m == 1:
+            return self.net(t)
+        _, _, h, w = t.shape
+        ph, pw = (-h) % m, (-w) % m
+        if ph or pw:
+            t = F.pad(t, (0, pw, 0, ph), mode="replicate")
+        return self.net(t)[:, :, : h * self.scale, : w * self.scale]
 
     def upscale_file(self, src, dst) -> Image.Image:
         result = self.upscale(Image.open(src))
@@ -123,7 +139,7 @@ class Upscaler:
                 px0, py0 = max(x0 - self.tile_pad, 0), max(y0 - self.tile_pad, 0)
                 px1, py1 = min(x1 + self.tile_pad, w), min(y1 + self.tile_pad, h)
 
-                tile_out = self.net(x[:, :, py0:py1, px0:px1])
+                tile_out = self._net(x[:, :, py0:py1, px0:px1])
 
                 # map the (unpadded) tile region into the padded output tile
                 ox0, oy0 = (x0 - px0) * s, (y0 - py0) * s
