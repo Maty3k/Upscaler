@@ -549,7 +549,7 @@ UPSCALE_PRESETS: dict[str, dict] = {
         model="realesrgan-x2plus", sharpen=0.2, restore=True, strength=1.0,
         hint="Strong denoise first, gentle ×2, low sharpen so grain isn't amplified.",
     ),
-    "🎨 Anime / Art": dict(
+    "🎨 Anime / art": dict(
         model="realesrgan-x4plus-anime", sharpen=0.0, restore=False, strength=1.0,
         hint="Anime model at ×4, no sharpen (line art needs none).",
     ),
@@ -963,7 +963,7 @@ Open **PowerShell** and run:
 ```powershell
 winget install Gyan.FFmpeg
 ```
-Or skip this and let the app bundle one by adding the `video` extra in step 4
+Or skip this and let the app install one for you by adding the `video` extra in step 4
 (use `".[gui,video]"`).
 
 **3 · Get Upscaler**
@@ -1065,7 +1065,7 @@ def build_demo() -> gr.Blocks:
             with gr.Tab("Upscale"):
                 gr.HTML(_section_head(
                     "Enhance", "Upscale & Enhance",
-                    "Enlarge and sharpen any image with AI, with optional cleanup "
+                    "Enlarge and sharpen any image with AI, plus optional cleanup "
                     "for blur and noise. ×2 keeps already-good photos looking "
                     "natural; ×4 adds the most detail but can over-process clean "
                     "images. Start with a preset, then fine-tune.",
@@ -1119,7 +1119,7 @@ def build_demo() -> gr.Blocks:
                                 _DEBLUR_CHOICES, value="nafnet-sidd-width64",
                                 label="Clean-up model", filterable=False,
                                 info="SIDD is the safe default — it cleans grain and "
-                                "noise. GoPro fixes motion blur ONLY and will wreck "
+                                "noise. GoPro fixes motion blur only and will wreck "
                                 "noisy photos, so use it only for genuine motion blur.",
                             )
                             restore_strength = gr.Slider(
@@ -1161,7 +1161,7 @@ def build_demo() -> gr.Blocks:
                                 "ones.\n"
                                 "* **Keep Sharpen near 0** — past ~1.0 you get halos "
                                 "(glowing edges).\n"
-                                "* **Turn on \"Clean up first\" only for blurry or "
+                                "* **Turn on \"Clean up before upscaling\" only for blurry or "
                                 "noisy photos**, and lower the strength (~0.5) for "
                                 "faces.\n"
                                 "* **Out-of-memory error?** Lower the Tile size "
