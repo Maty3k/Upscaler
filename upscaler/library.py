@@ -75,11 +75,22 @@ def save_image(img, kind: str, fmt: str = "PNG") -> "Path | None":
 
 
 def list_items() -> "tuple[list[str], list[str]]":
-    """Return ``(images_and_gifs, videos)`` as path strings, newest first."""
+    """Return ``(images_and_gifs, videos)`` as path strings, newest first.
+
+    Tolerant of files deleted concurrently (e.g. the user clears items from the
+    library folder while the tab refreshes): such files are skipped, never raised.
+    """
     if not LIBRARY_DIR.exists():
         return [], []
-    files = [p for p in LIBRARY_DIR.iterdir() if p.is_file()]
-    files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    pairs = []
+    for p in LIBRARY_DIR.iterdir():
+        try:
+            if p.is_file():
+                pairs.append((p.stat().st_mtime, p))
+        except OSError:  # vanished between iterdir() and stat() — skip it
+            continue
+    pairs.sort(key=lambda mp: mp[0], reverse=True)
+    files = [p for _, p in pairs]
     imgs = [str(p) for p in files if p.suffix.lower() in IMAGE_EXTS]
     vids = [str(p) for p in files if p.suffix.lower() in VIDEO_EXTS]
     return imgs, vids
