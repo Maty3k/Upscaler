@@ -194,9 +194,9 @@ def enhance(image, model, device, deblur, deblur_model, restore_strength, sharpe
         src, ok = _restore(src, deblur_model, device, onnx, restore_strength)
         if ok:
             pct = "" if restore_strength >= 0.999 else f" @{int(round(restore_strength * 100))}%"
-            stages.append(f"restore `{deblur_model}`{pct}")
+            stages.append(f"clean up `{deblur_model}`{pct}")
         else:
-            stages.append(f"⚠ restore skipped (`{deblur_model}` unsuited to this image)")
+            stages.append(f"⚠ clean-up skipped (`{deblur_model}` unsuited to this image)")
     up = _get_upscaler(model, device, int(tile), onnx)
     result = up.upscale(src)
     stages.append(f"upscale ×{up.scale}")
@@ -229,7 +229,7 @@ def enhance(image, model, device, deblur, deblur_model, restore_strength, sharpe
 def restore_only(image, deblur_model, restore_strength, sharpen, device, onnx):
     """Run just the NAFNet restoration pass (deblur or denoise) — no upscaling."""
     if image is None:
-        raise gr.Error("Upload an image to restore first.")
+        raise gr.Error("Upload an image to clean up first.")
     original = image if isinstance(image, Image.Image) else Image.fromarray(image)
     result, ok = _restore(original, deblur_model, device, onnx, restore_strength)
     if not ok:
@@ -239,7 +239,7 @@ def restore_only(image, deblur_model, restore_strength, sharpen, device, onnx):
             "only for genuine motion blur."
         )
     pct = "" if restore_strength >= 0.999 else f" @{int(round(restore_strength * 100))}%"
-    stages = [f"restore `{deblur_model}`{pct}"]
+    stages = [f"clean up `{deblur_model}`{pct}"]
     if sharpen > 0:
         result = unsharp_mask(result, strength=float(sharpen))
         stages.append(f"sharpen {sharpen:g}")
@@ -1025,7 +1025,7 @@ def build_demo() -> gr.Blocks:
             '<div id="hero">'
             f'<div class="brandrow"><span class="logo">{ICON_LOGO}</span>'
             '<span class="brand">Upscaler</span></div>'
-            '<div class="sub">Enlarge, sharpen and restore your photos with AI — '
+            '<div class="sub">Enlarge, sharpen and clean up your photos with AI — '
             "then convert formats, clean up video, build PDFs or cut out "
             "backgrounds. Every tool runs on your own machine; nothing is ever "
             "uploaded.</div>"
@@ -1094,29 +1094,29 @@ def build_demo() -> gr.Blocks:
                             info="Crispens edges after enlarging. Keep it low — too "
                             "much adds bright halos (glowing outlines) around edges.",
                         )
-                        with gr.Accordion("Clean up first — deblur / denoise", open=False):
+                        with gr.Accordion("Clean up — deblur / denoise", open=False):
                             deblur = gr.Checkbox(
-                                value=False, label="Restore first (when upscaling)",
+                                value=False, label="Clean up before upscaling",
                                 info="Tick to clean up the photo (deblur / denoise) "
                                 "before enlarging. To only clean it up without "
-                                "enlarging, use the Restore-only button below.",
+                                "enlarging, use the Clean-up-only button below.",
                             )
                             deblur_model = gr.Dropdown(
                                 _DEBLUR_CHOICES, value="nafnet-sidd-width64",
-                                label="Restoration model", filterable=False,
+                                label="Clean-up model", filterable=False,
                                 info="SIDD is the safe default — it cleans grain and "
                                 "noise. GoPro fixes motion blur ONLY and will wreck "
                                 "noisy photos, so use it only for genuine motion blur.",
                             )
                             restore_strength = gr.Slider(
                                 0.0, 1.0, value=1.0, step=0.05,
-                                label="Denoise / restore strength",
+                                label="Clean-up strength",
                                 info="How strongly the cleanup is applied. 1 = full "
                                 "effect; lower blends the original back in to keep "
                                 "more fine detail (and a little noise).",
                             )
                             restore_btn = gr.Button(
-                                "✨ Restore only (deblur / denoise · no upscale)",
+                                "✨ Clean up only (deblur / denoise · no upscale)",
                                 variant="secondary",
                             )
                         with gr.Accordion("Advanced", open=False):
