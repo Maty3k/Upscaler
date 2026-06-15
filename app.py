@@ -40,7 +40,8 @@ def _onnx_engines():
         from upscaler.onnx_engine import OnnxDeblurrer, OnnxUpscaler
     except ImportError as e:
         raise gr.Error(
-            'ONNX backend needs optional deps — install with: pip install -e ".[onnx]"'
+            "The ONNX engine needs extra packages. Install them with: "
+            'pip install -e ".[onnx]"'
         ) from e
     return OnnxUpscaler, OnnxDeblurrer
 
@@ -93,7 +94,7 @@ def convert_image(image, fmt, quality, lossless):
 
 def build_pdf(files):
     if not files:
-        raise gr.Error("Add at least one image.")
+        raise gr.Error("Add at least one image to build a PDF.")
     images = [Image.open(f) for f in files]
     data = images_to_pdf(images)
     fd, path = tempfile.mkstemp(suffix=".pdf")
@@ -127,14 +128,17 @@ _BG_CHOICES = [(f"{s.name} — {s.notes}", s.name) for s in background.BG_MODELS
 
 def remove_bg_ui(image, model, feather, progress=gr.Progress()):
     if image is None:
-        raise gr.Error("Upload an image first.")
+        raise gr.Error("Upload an image to remove its background.")
     img = image if isinstance(image, Image.Image) else Image.fromarray(image)
     progress(0.2, desc="Loading model…")
     try:
         cut = background.remove_background(img.convert("RGB"), model=model,
                                            feather=int(feather))
     except (RuntimeError, ValueError, FileNotFoundError) as e:
-        raise gr.Error(str(e)) from e
+        raise gr.Error(
+            "Couldn't remove the background. The model downloads on first use, so "
+            "check your internet connection and try again."
+        ) from e
     progress(0.9, desc="Saving transparent PNG…")
     fd, path = tempfile.mkstemp(suffix=".png")
     os.close(fd)
@@ -196,7 +200,7 @@ def enhance(image, model, device, deblur, deblur_model, restore_strength, sharpe
             pct = "" if restore_strength >= 0.999 else f" @{int(round(restore_strength * 100))}%"
             stages.append(f"clean up `{deblur_model}`{pct}")
         else:
-            stages.append(f"⚠ clean-up skipped (`{deblur_model}` unsuited to this image)")
+            stages.append(f"⚠ clean-up skipped — `{deblur_model}` didn't suit this image")
     up = _get_upscaler(model, device, int(tile), onnx)
     result = up.upscale(src)
     stages.append(f"upscale ×{up.scale}")
@@ -234,9 +238,9 @@ def restore_only(image, deblur_model, restore_strength, sharpen, device, onnx):
     result, ok = _restore(original, deblur_model, device, onnx, restore_strength)
     if not ok:
         return (original, original), (
-            f"⚠ `{deblur_model}` produced garbage on this image and was skipped. "
-            "For a noisy/grainy photo use the **SIDD (Denoise)** model — GoPro is "
-            "only for genuine motion blur."
+            f"⚠ The `{deblur_model}` clean-up didn't suit this image, so it was "
+            "skipped. For a noisy or grainy photo, choose the **SIDD (denoise)** "
+            "model — GoPro only fixes genuine motion blur."
         )
     pct = "" if restore_strength >= 0.999 else f" @{int(round(restore_strength * 100))}%"
     stages = [f"clean up `{deblur_model}`{pct}"]
@@ -317,7 +321,11 @@ def upscale_video_ui(video_path, model, out_size, sharpen, smooth, trim_start,
             trim_start=start, trim_end=end, progress_cb=cb,
         )
     except (RuntimeError, FileNotFoundError) as e:
-        raise gr.Error(str(e)) from e
+        raise gr.Error(
+            "Couldn't process the video. Make sure ffmpeg is installed (e.g. "
+            '"brew install ffmpeg" on macOS) and the file is a standard video, '
+            "then try again."
+        ) from e
 
     try:
         compare = (_first_frame(video_path), _first_frame(out))
@@ -423,7 +431,7 @@ def panel_export_ui(media, orientation, fit, zoom, off_x, off_y, bg_type,
     # rest = <overlay slot values> + [out_fmt, fps, loop, gif_colors,
     #         trim_start, trim_end, loop_mode, out_dir]
     if not media:
-        raise gr.Error("Upload media first.")
+        raise gr.Error("Upload an image, GIF or video first.")
     ov_vals = rest[:N_OVERLAY_VALS]
     (out_fmt, fps, loop, gif_colors, trim_start, trim_end,
      loop_mode, out_dir) = rest[N_OVERLAY_VALS:]
@@ -443,10 +451,13 @@ def panel_export_ui(media, orientation, fit, zoom, off_x, off_y, bg_type,
                 loop_mode=loop_mode, progress=progress,
             )
             extra = "" if loop_mode == "normal" else f" · {loop_mode} loop"
-            detail = "H.264 / yuv420p" if fmt == "mp4" else f"{int(gif_colors)} colors"
+            detail = "H.264" if fmt == "mp4" else f"{int(gif_colors)} colors"
             msg = f"✅ {out_fmt} exported — {cw}×{ch}px · {detail}{extra}."
     except (RuntimeError, ValueError, FileNotFoundError) as e:
-        raise gr.Error(str(e)) from e
+        raise gr.Error(
+            "Couldn't create the export. GIF and MP4 need ffmpeg installed; "
+            "otherwise check your source file and settings, then try again."
+        ) from e
 
     library.save_path(f, "lianli")  # auto-add to the Library
 
@@ -470,7 +481,7 @@ def panel_enhance_source(media, up_model, *vals, progress=gr.Progress()):
     source with the enhanced version — so fitting/export use crisp pixels. Best
     for low-res sources the 1920×480 panel would otherwise show soft."""
     if not media:
-        raise gr.Error("Upload media first.")
+        raise gr.Error("Upload an image, GIF or video first.")
     kind = panel.media_kind(media)
     progress(0.1, desc="Loading model…")
     try:
@@ -497,9 +508,12 @@ def panel_enhance_source(media, up_model, *vals, progress=gr.Progress()):
                           progress_cb=cb)
             note = "✨ Video source upscaled. Re-fit and export."
         else:
-            raise gr.Error("Unsupported source for AI upscale.")
+            raise gr.Error("That file type can't be enhanced — use an image, GIF or video.")
     except (RuntimeError, FileNotFoundError) as e:
-        raise gr.Error(str(e)) from e
+        raise gr.Error(
+            "Couldn't enhance the source. The model downloads on first use, so "
+            "check your internet connection and try again."
+        ) from e
     return gr.update(value=out), panel.preview(out, _panel_params(*vals)), note
 
 
