@@ -38,13 +38,25 @@ def _stamp() -> str:
     return datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
 
 
+def _unique(dest: Path) -> Path:
+    """Return ``dest``, or ``dest-1``/``dest-2``… if it already exists, so rapid
+    batch saves (which can share a millisecond timestamp) never overwrite."""
+    if not dest.exists():
+        return dest
+    stem, suffix = dest.stem, dest.suffix
+    i = 1
+    while (cand := dest.with_name(f"{stem}-{i}{suffix}")).exists():
+        i += 1
+    return cand
+
+
 def save_path(src: "str | os.PathLike", kind: str) -> "Path | None":
     """Copy an exported file into the library as ``<kind>_<timestamp><ext>``."""
     try:
         src = Path(src)
         if not src.is_file():
             return None
-        dest = ensure_dir() / f"{kind}_{_stamp()}{src.suffix.lower()}"
+        dest = _unique(ensure_dir() / f"{kind}_{_stamp()}{src.suffix.lower()}")
         shutil.copyfile(src, dest)
         return dest
     except OSError:
@@ -55,7 +67,7 @@ def save_image(img, kind: str, fmt: str = "PNG") -> "Path | None":
     """Save a PIL image into the library as ``<kind>_<timestamp>.<fmt>``."""
     try:
         ext = ".png" if fmt.upper() == "PNG" else f".{fmt.lower()}"
-        dest = ensure_dir() / f"{kind}_{_stamp()}{ext}"
+        dest = _unique(ensure_dir() / f"{kind}_{_stamp()}{ext}")
         img.save(dest, fmt)
         return dest
     except (OSError, ValueError, KeyError):
