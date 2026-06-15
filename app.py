@@ -911,6 +911,25 @@ button.preset-active, .preset-active > button {
     border-color: var(--ac) !important; color: var(--ac) !important;
     box-shadow: inset 0 0 0 1px var(--ac) !important; font-weight: 700 !important; }
 
+/* Long file paths in `code` spans must wrap, not get clipped at the block edge
+   (e.g. the Settings "Where your files live" paths in a half-width column).
+   Gradio's own `.md :not(pre)>code` uses word-break:normal + display:inline-flex
+   at higher specificity, so override forcefully so long path tokens break. */
+.gradio-container .md :not(pre) > code, .gradio-container code,
+.gradio-container kbd {
+    white-space: normal !important; overflow-wrap: anywhere !important;
+    word-break: break-word !important; display: inline !important;
+    max-width: 100%; }
+.gradio-container pre { overflow-wrap: anywhere; max-width: 100%; }
+
+/* Markdown prose must wrap and not be clipped at the block edge — this was
+   shaving the first letter off wrapped lines (e.g. the About text). overflow
+   visible + a hair of side padding keeps glyphs fully inside. */
+.gradio-container .md, .gradio-container .prose { overflow: visible; }
+.gradio-container .md p, .gradio-container .prose p,
+.gradio-container .md li, .gradio-container .prose li {
+    overflow-wrap: break-word; word-break: break-word; padding-inline: 2px; }
+
 footer { display: none !important; }
 """
 
