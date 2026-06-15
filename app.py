@@ -843,6 +843,14 @@ ul.options .item, .options .item { transition: background-color .12s ease; }
     width: auto !important; min-width: 0 !important; flex: none !important; }
 #topbar button { width: auto !important; min-width: 0 !important;
     flex: 0 0 auto !important; white-space: nowrap; }
+/* the gear is icon-only — keep it a tidy square with a slightly larger glyph */
+#settings-btn { font-size: 1.05rem !important; line-height: 1;
+    padding-left: 11px !important; padding-right: 11px !important; }
+
+/* compact, left-aligned button row (e.g. the Library toolbar) */
+.toolbar { gap: 8px; }
+.toolbar button { flex: 0 0 auto !important; width: auto !important;
+    min-width: 0 !important; }
 
 /* tab bar: accent the selected tab */
 .tabitem { padding-top: 28px !important; }
@@ -1031,11 +1039,14 @@ def build_demo() -> gr.Blocks:
             mag_btn = gr.Button(
                 "🔍 Magnifier", elem_id="mag-btn", size="sm", variant="secondary",
             )
+            settings_btn = gr.Button(
+                "⚙", elem_id="settings-btn", size="sm", variant="secondary",
+            )
         theme_btn.click(None, js=_TOGGLE_THEME_JS)
         # JS-only toggle: enables the hover loupe over result images
         mag_btn.click(None, js="() => document.body.classList.toggle('loupe-on')")
 
-        with gr.Tabs():
+        with gr.Tabs() as main_tabs:
             # ---- Tab 1: Upscale & Enhance ----
             with gr.Tab("Upscale"):
                 gr.HTML(_section_head(
@@ -1645,71 +1656,77 @@ def build_demo() -> gr.Blocks:
                     "preview your videos, or open the folder to manage the files.",
                     icon=ICON_LIBRARY,
                 ))
-                with gr.Row():
+                with gr.Row(elem_classes="toolbar"):
                     lib_refresh = gr.Button("🔄 Refresh", variant="secondary", size="sm")
                     lib_open = gr.Button("📂 Open folder", variant="secondary", size="sm")
                 lib_count = gr.Markdown()
-                lib_gallery = gr.Gallery(
-                    label="Images & GIFs", columns=4, height=440,
-                    object_fit="contain", buttons=["download", "fullscreen"],
-                    elem_classes=["loupe"],
-                )
-                with gr.Accordion("Videos", open=True):
-                    lib_video_pick = gr.Dropdown(
-                        label="Pick a video to preview", filterable=False,
-                    )
-                    lib_video = gr.Video(label="Preview", buttons=["download"])
+                with gr.Row(equal_height=False):
+                    with gr.Column(scale=3):
+                        lib_gallery = gr.Gallery(
+                            label="Images & GIFs", columns=4, height=560,
+                            object_fit="cover", buttons=["download", "fullscreen"],
+                            elem_classes=["loupe"],
+                        )
+                    with gr.Column(scale=2):
+                        lib_video_pick = gr.Dropdown(
+                            label="Your videos", filterable=False,
+                        )
+                        lib_video = gr.Video(label="Preview", buttons=["download"])
 
-            # ---- Tab 7: Settings & Setup ----
-            with gr.Tab("Settings"):
-                gr.HTML(_section_head(
-                    "Settings", "Settings & Setup",
-                    "Set your defaults once, see where your files live, and follow "
-                    "the step-by-step guide to run Upscaler on a Windows PC.",
-                    icon=ICON_SETTINGS,
-                ))
-                with gr.Accordion("Preferences", open=True):
-                    set_device = gr.Dropdown(
-                        _DEVICES, value=_cfg_device, label="Default device",
-                        filterable=False,
-                        info="Where work runs by default — \"auto\" uses your "
-                        "graphics card (GPU) when it can, otherwise the CPU.",
-                    )
-                    set_model = gr.Dropdown(
-                        _MODEL_CHOICES, value=_cfg_model,
-                        label="Default upscale model", filterable=False,
-                        info="The model pre-selected on the Upscale tab when the "
-                        "app starts.",
-                    )
-                    set_outdir = gr.Textbox(
-                        value=cfg["output_dir"], label="Default save-to folder",
-                        placeholder="/path/to/a folder (optional)",
-                        info="Pre-fills the Lian Li \"save a copy to folder\" box.",
-                    )
-                    set_save = gr.Button("Save preferences", variant="primary")
-                    set_status = gr.Markdown()
-                    gr.Markdown(
-                        "*Stored in `~/.upscaler/config.json` · applied the next "
-                        "time you start the app.*"
-                    )
-                with gr.Accordion("Where your files live", open=False):
-                    gr.Markdown(
-                        f"- **Library (your exports):** `{library.LIBRARY_DIR}`\n"
-                        f"- **Preferences:** `{config.CONFIG_PATH}`\n\n"
-                        "Everything you make is saved to the Library automatically — "
-                        "browse it in the **Library** tab."
-                    )
-                    set_open_lib = gr.Button(
-                        "📂 Open library folder", variant="secondary", size="sm"
-                    )
-                with gr.Accordion("Install on Windows — step by step", open=False):
-                    gr.Markdown(WINDOWS_GUIDE)
-                with gr.Accordion("About", open=False):
-                    gr.Markdown(
-                        f"**Upscaler** · running locally on **{device_name}** · "
-                        "powered by Real-ESRGAN + NAFNet. 100% offline — no cloud, "
-                        "no API keys, nothing uploaded."
-                    )
+        # ---- Settings: its own page, opened by the ⚙ gear (hidden by default) ----
+        with gr.Column(visible=False) as settings_view:
+            set_back = gr.Button("← Back to the app", variant="secondary", size="sm")
+            gr.HTML(_section_head(
+                "Settings", "Settings & Setup",
+                "Set your defaults once, see where your files live, and follow the "
+                "step-by-step guide to run Upscaler on a Windows PC.",
+                icon=ICON_SETTINGS,
+            ))
+            with gr.Row():
+                with gr.Column(scale=1):
+                    with gr.Accordion("Preferences", open=True):
+                        set_device = gr.Dropdown(
+                            _DEVICES, value=_cfg_device, label="Default device",
+                            filterable=False,
+                            info="Where work runs by default — \"auto\" uses your "
+                            "graphics card (GPU) when it can, otherwise the CPU.",
+                        )
+                        set_model = gr.Dropdown(
+                            _MODEL_CHOICES, value=_cfg_model,
+                            label="Default upscale model", filterable=False,
+                            info="The model pre-selected on the Upscale tab when "
+                            "the app starts.",
+                        )
+                        set_outdir = gr.Textbox(
+                            value=cfg["output_dir"], label="Default save-to folder",
+                            placeholder="/path/to/a folder (optional)",
+                            info="Pre-fills the Lian Li \"save a copy to folder\" box.",
+                        )
+                        set_save = gr.Button("Save preferences", variant="primary")
+                        set_status = gr.Markdown()
+                        gr.Markdown(
+                            "*Stored in `~/.upscaler/config.json` · applied the "
+                            "next time you start the app.*"
+                        )
+                    with gr.Accordion("Where your files live", open=False):
+                        gr.Markdown(
+                            f"- **Library (your exports):** `{library.LIBRARY_DIR}`\n"
+                            f"- **Preferences:** `{config.CONFIG_PATH}`\n\n"
+                            "Everything you make is saved to the Library "
+                            "automatically — browse it in the **Library** tab."
+                        )
+                        set_open_lib = gr.Button(
+                            "📂 Open library folder", variant="secondary", size="sm"
+                        )
+                    with gr.Accordion("About", open=False):
+                        gr.Markdown(
+                            f"**Upscaler** · running locally on **{device_name}** · "
+                            "powered by Real-ESRGAN + NAFNet. 100% offline — no "
+                            "cloud, no API keys, nothing uploaded."
+                        )
+                with gr.Column(scale=1):
+                    with gr.Accordion("Install on Windows — step by step", open=True):
+                        gr.Markdown(WINDOWS_GUIDE)
 
         conv_btn.click(
             convert_image,
@@ -1800,7 +1817,15 @@ def build_demo() -> gr.Blocks:
         lib_video_pick.change(lambda v: v, lib_video_pick, lib_video)
         lib_open.click(open_library_folder, None, None)
 
-        # ---- Settings tab ----
+        # ---- Settings page (opened by the ⚙ gear, closed by Back) ----
+        settings_btn.click(
+            lambda: (gr.update(visible=False), gr.update(visible=True)),
+            None, [main_tabs, settings_view],
+        )
+        set_back.click(
+            lambda: (gr.update(visible=True), gr.update(visible=False)),
+            None, [main_tabs, settings_view],
+        )
         set_save.click(save_settings, [set_device, set_model, set_outdir], set_status)
         set_open_lib.click(open_library_folder, None, None)
     return demo
