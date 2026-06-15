@@ -459,9 +459,9 @@ def _decode_first_frame(path: str, _mtime: float) -> Image.Image | None:
         ext = os.path.splitext(str(path))[1].lower()
         if ext == ".gif":
             try:
-                im = Image.open(path)
-                im.seek(0)
-                return im.convert("RGB")
+                with Image.open(path) as im:  # context-manage so the fp closes
+                    im.seek(0)
+                    return im.convert("RGB")
             except Exception:
                 return None
         # video: pull the first frame with ffmpeg (only once per file, cached)
@@ -553,10 +553,15 @@ def export_animated(
 
     dur_total = media_duration(src_path)
     start = max(0.0, float(trim_start or 0))
-    end = float(trim_end) if trim_end and trim_end > 0 else dur_total
-    if end <= start:
-        end = dur_total if dur_total > start else start + 1
-    dur = min(end - start, MAX_DURATION_SEC)
+    has_end = bool(trim_end and float(trim_end) > start)
+    if has_end:
+        dur = min(float(trim_end) - start, MAX_DURATION_SEC)
+    elif dur_total > start:
+        dur = min(dur_total - start, MAX_DURATION_SEC)
+    else:
+        # Duration unknown (ffprobe returned 0 / N/A) and no explicit end — don't
+        # fabricate a 1-second clip; let ffmpeg read to EOF, capped at the max.
+        dur = MAX_DURATION_SEC
 
     work = tempfile.mkdtemp(prefix="panel_")
     raw = os.path.join(work, "raw")
@@ -566,13 +571,23 @@ def export_animated(
     try:
         n = _extract_frames(src_path, fps, start, dur, raw)
         if n == 0:
-            # Static source treated as animated: synthesise a held frame.
+            # No video frames decoded: treat as a still and hold it for a short
+            # clip — but if even the first frame won't decode, fail loudly rather
+            # than emitting a 0-byte "export".
             base = _first_image(src_path)
-            n = max(1, int(round(dur * fps)))
+            if base is None:
+                raise ValueError(
+                    "Couldn't decode the uploaded media — it may be corrupt or an "
+                    "unsupported format."
+                )
+            hold = dur if has_end else min(dur, 3.0)
+            n = max(1, int(round(hold * fps)))
             for i in range(1, n + 1):
-                base.save(os.path.join(raw, f"frame_{i:05d}.png")) if base else None
+                base.save(os.path.join(raw, f"frame_{i:05d}.png"))
 
         files = sorted(f for f in os.listdir(raw) if f.startswith("frame_"))
+        if not files:
+            raise ValueError("No frames could be extracted from the source.")
         for i, fn in enumerate(files, 1):
             with Image.open(os.path.join(raw, fn)) as fr:
                 out = compose_frame(fr.convert("RGB"), p)

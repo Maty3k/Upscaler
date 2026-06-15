@@ -95,12 +95,18 @@ def run_convert(argv: list[str]) -> int:
               file=sys.stderr)
         return 2
 
+    failed = 0
     for src in tqdm(inputs, disable=len(inputs) == 1, desc="convert"):
-        dst = _convert_output_path(src, args.output, fmt)
-        convert_file(src, dst, fmt=fmt, quality=args.quality, lossless=args.lossless)
+        try:
+            dst = _convert_output_path(src, args.output, fmt)
+            convert_file(src, dst, fmt=fmt, quality=args.quality, lossless=args.lossless)
+        except (Image.UnidentifiedImageError, OSError) as e:
+            print(f"error on {src.name}: {e}", file=sys.stderr)
+            failed += 1
+            continue
         if len(inputs) == 1:
             print(f"→ {dst}", file=sys.stderr)
-    return 0
+    return 0 if failed < len(inputs) else 2
 
 
 def build_pdf_parser() -> argparse.ArgumentParser:
@@ -139,11 +145,20 @@ def run_pdf(argv: list[str]) -> int:
         if not paths:
             print("error: no images to combine", file=sys.stderr)
             return 2
-        data = images_to_pdf([Image.open(p) for p in paths])
+        images = []
+        for p in paths:
+            try:
+                images.append(Image.open(p))
+            except (Image.UnidentifiedImageError, OSError) as e:
+                print(f"error on {p.name}: {e} (skipped)", file=sys.stderr)
+        if not images:
+            print("error: none of the inputs are readable images", file=sys.stderr)
+            return 2
+        data = images_to_pdf(images)
         if args.output.parent != Path():
             args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_bytes(data)
-        print(f"→ {args.output} ({len(paths)} page(s))", file=sys.stderr)
+        print(f"→ {args.output} ({len(images)} page(s))", file=sys.stderr)
         return 0
 
     # extract
@@ -376,18 +391,24 @@ def main(argv: list[str] | None = None) -> int:
     )
     print(f"{stages} backend={backend}", file=sys.stderr)
 
+    failed = 0
     for src in tqdm(inputs, disable=len(inputs) == 1, desc="images"):
-        img = Image.open(src)
-        if deblurrer:
-            img = deblurrer.deblur(img)
-        result = up.upscale(img)
-        if args.sharpen > 0:
-            result = unsharp_mask(result, strength=args.sharpen)
-        dst = _output_path(src, args.output, up.scale)
-        result.save(dst)
+        try:
+            img = Image.open(src)
+            if deblurrer:
+                img = deblurrer.deblur(img)
+            result = up.upscale(img)
+            if args.sharpen > 0:
+                result = unsharp_mask(result, strength=args.sharpen)
+            dst = _output_path(src, args.output, up.scale)
+            result.save(dst)
+        except (Image.UnidentifiedImageError, OSError) as e:
+            print(f"error on {src.name}: {e}", file=sys.stderr)
+            failed += 1
+            continue
         if len(inputs) == 1:
             print(f"→ {dst}", file=sys.stderr)
-    return 0
+    return 0 if failed < len(inputs) else 2
 
 
 if __name__ == "__main__":

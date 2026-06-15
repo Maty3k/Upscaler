@@ -194,15 +194,22 @@ def enhance(image, model, device, deblur, deblur_model, restore_strength, sharpe
     original = image if isinstance(image, Image.Image) else Image.fromarray(image)
     src = original
     stages = []
-    if deblur:
-        src, ok = _restore(src, deblur_model, device, onnx, restore_strength)
-        if ok:
-            pct = "" if restore_strength >= 0.999 else f" @{int(round(restore_strength * 100))}%"
-            stages.append(f"clean up `{deblur_model}`{pct}")
-        else:
-            stages.append(f"⚠ clean-up skipped — `{deblur_model}` didn't suit this image")
-    up = _get_upscaler(model, device, int(tile), onnx)
-    result = up.upscale(src)
+    try:
+        if deblur:
+            src, ok = _restore(src, deblur_model, device, onnx, restore_strength)
+            if ok:
+                pct = "" if restore_strength >= 0.999 else f" @{int(round(restore_strength * 100))}%"
+                stages.append(f"clean up `{deblur_model}`{pct}")
+            else:
+                stages.append(f"⚠ clean-up skipped — `{deblur_model}` didn't suit this image")
+        up = _get_upscaler(model, device, int(tile), onnx)
+        result = up.upscale(src)
+    except (RuntimeError, AssertionError, OSError, ValueError) as e:
+        raise gr.Error(
+            "Couldn't run the enhancement. If you set a specific Device "
+            "(cuda / mps) your machine may not support it — try \"auto\". Models "
+            "also download on first use, so check your connection."
+        ) from e
     stages.append(f"upscale ×{up.scale}")
     if sharpen > 0:
         result = unsharp_mask(result, strength=float(sharpen))
@@ -235,7 +242,14 @@ def restore_only(image, deblur_model, restore_strength, sharpen, device, onnx):
     if image is None:
         raise gr.Error("Upload an image to clean up first.")
     original = image if isinstance(image, Image.Image) else Image.fromarray(image)
-    result, ok = _restore(original, deblur_model, device, onnx, restore_strength)
+    try:
+        result, ok = _restore(original, deblur_model, device, onnx, restore_strength)
+    except (RuntimeError, AssertionError, OSError, ValueError) as e:
+        raise gr.Error(
+            "Couldn't run the clean-up. If you set a specific Device (cuda / mps) "
+            "your machine may not support it — try \"auto\". Models also download "
+            "on first use, so check your connection."
+        ) from e
     if not ok:
         return (original, original), (
             f"⚠ The `{deblur_model}` clean-up didn't suit this image, so it was "
@@ -295,7 +309,13 @@ def _first_frame(video_path):
         [_ffmpeg(), "-y", "-i", str(video_path), "-frames:v", "1", p],
         capture_output=True,
     )
-    return Image.open(p)
+    img = Image.open(p)
+    img.load()  # read fully into memory, then drop the temp file (no leak)
+    try:
+        os.remove(p)
+    except OSError:
+        pass
+    return img
 
 
 def upscale_video_ui(video_path, model, out_size, sharpen, smooth, trim_start,
@@ -433,11 +453,13 @@ def batch_process(files, op, model, out_size, sharpen, fmt, quality,
             continue
 
     if not saved:
+        shutil.rmtree(work, ignore_errors=True)
         raise gr.Error("None of those files could be processed as images.")
     fd, zpath = tempfile.mkstemp(suffix=".zip")
     with os.fdopen(fd, "wb") as fh, zipfile.ZipFile(fh, "w") as z:
         for sp in saved:
             z.write(sp, arcname=os.path.basename(sp))
+    shutil.rmtree(work, ignore_errors=True)  # zipped + in the Library; don't leak
     progress(1.0, desc="Done")
     skipped = f" · {failed} skipped" if failed else ""
     return gallery, zpath, (
