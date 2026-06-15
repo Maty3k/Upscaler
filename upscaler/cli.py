@@ -176,7 +176,7 @@ def build_video_parser() -> argparse.ArgumentParser:
         "-s", "--scale", type=int, default=2, choices=(2, 4),
         help="Upscale factor (default: 2 — gentler/faster, less flicker).",
     )
-    p.add_argument("-m", "--model", choices=sorted(MODELS), help="Explicit model.")
+    p.add_argument("-m", "--model", choices=sorted(MODELS), help="Explicit model (overrides --scale).")
     p.add_argument(
         "--sharpen", nargs="?", type=float, const=1.0, default=0.0,
         help="Unsharp strength per frame (default off).",
@@ -186,7 +186,7 @@ def build_video_parser() -> argparse.ArgumentParser:
         help="Compute device (default: auto).",
     )
     p.add_argument("--tile", type=int, default=512, help="Tile size, 0 disables tiling.")
-    p.add_argument("--crf", type=int, default=18, help="x264 quality, lower=better (18).")
+    p.add_argument("--crf", type=int, default=18, help="x264 quality (lower is better; default 18).")
     p.add_argument(
         "--fps", type=int, default=None,
         help="Motion-interpolate to this fps for smoother motion (e.g. 60). Slow.",
@@ -324,7 +324,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.list_models:
         print("Upscale models:")
         for name, spec in sorted(MODELS.items()):
-            print(f"  {name:24s} x{spec.scale}  {spec.notes}")
+            print(f"  {name:24s} ×{spec.scale}  {spec.notes}")
         print("Deblur models (--deblur-model):")
         for name, spec in sorted(DEBLUR_MODELS.items()):
             print(f"  {name:24s}      {spec.notes}")
@@ -364,7 +364,7 @@ def main(argv: list[str] | None = None) -> int:
         backend = up.device.type
 
     stages = (f"deblur={deblurrer.spec.name} " if deblurrer else "") + (
-        f"upscale={up.spec.name} x{up.scale}"
+        f"upscale={up.spec.name} ×{up.scale}"
     )
     print(f"{stages} backend={backend}", file=sys.stderr)
 

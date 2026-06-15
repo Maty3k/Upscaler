@@ -21,7 +21,7 @@ import gradio as gr
 import numpy as np
 from PIL import Image
 
-from upscaler import background, panel
+from upscaler import background, config, library, panel
 from upscaler.convert import FORMATS, convert, extension_for
 from upscaler.document import images_to_pdf, pdf_to_images
 from upscaler.deblur import Deblurrer
@@ -40,7 +40,8 @@ def _onnx_engines():
         from upscaler.onnx_engine import OnnxDeblurrer, OnnxUpscaler
     except ImportError as e:
         raise gr.Error(
-            'ONNX backend needs optional deps — install with: pip install -e ".[onnx]"'
+            "The ONNX engine needs extra packages. Install them with: "
+            'pip install -e ".[onnx]"'
         ) from e
     return OnnxUpscaler, OnnxDeblurrer
 
@@ -85,6 +86,7 @@ def convert_image(image, fmt, quality, lossless):
 
     kb = len(data) / 1024
     note = "lossless" if (lossless and fmt == "WebP") or not FORMATS[fmt][2] else f"q{int(quality)}"
+    library.save_path(path, "convert")  # auto-add to the Library
     return path, f"✅ Converted to **{fmt}** ({note}) · {kb:,.1f} KB · {img.width}×{img.height}px"
 
 
@@ -92,12 +94,13 @@ def convert_image(image, fmt, quality, lossless):
 
 def build_pdf(files):
     if not files:
-        raise gr.Error("Add at least one image.")
+        raise gr.Error("Add at least one image to build a PDF.")
     images = [Image.open(f) for f in files]
     data = images_to_pdf(images)
     fd, path = tempfile.mkstemp(suffix=".pdf")
     with os.fdopen(fd, "wb") as f:
         f.write(data)
+    library.save_path(path, "pdf")  # auto-add to the Library
     return path, f"✅ {len(images)} image(s) → PDF · {len(data) / 1024:,.1f} KB"
 
 
@@ -125,18 +128,22 @@ _BG_CHOICES = [(f"{s.name} — {s.notes}", s.name) for s in background.BG_MODELS
 
 def remove_bg_ui(image, model, feather, progress=gr.Progress()):
     if image is None:
-        raise gr.Error("Upload an image first.")
+        raise gr.Error("Upload an image to remove its background.")
     img = image if isinstance(image, Image.Image) else Image.fromarray(image)
     progress(0.2, desc="Loading model…")
     try:
         cut = background.remove_background(img.convert("RGB"), model=model,
                                            feather=int(feather))
     except (RuntimeError, ValueError, FileNotFoundError) as e:
-        raise gr.Error(str(e)) from e
+        raise gr.Error(
+            "Couldn't remove the background. The model downloads on first use, so "
+            "check your internet connection and try again."
+        ) from e
     progress(0.9, desc="Saving transparent PNG…")
     fd, path = tempfile.mkstemp(suffix=".png")
     os.close(fd)
     cut.save(path, "PNG")  # PNG keeps the alpha channel
+    library.save_path(path, "removebg")  # auto-add to the Library
     preview = background.on_checkerboard(cut)
     return preview, path, (
         f"✅ Background removed — {cut.width}×{cut.height}px transparent PNG. "
@@ -191,9 +198,9 @@ def enhance(image, model, device, deblur, deblur_model, restore_strength, sharpe
         src, ok = _restore(src, deblur_model, device, onnx, restore_strength)
         if ok:
             pct = "" if restore_strength >= 0.999 else f" @{int(round(restore_strength * 100))}%"
-            stages.append(f"restore `{deblur_model}`{pct}")
+            stages.append(f"clean up `{deblur_model}`{pct}")
         else:
-            stages.append(f"⚠ restore skipped (`{deblur_model}` unsuited to this image)")
+            stages.append(f"⚠ clean-up skipped — `{deblur_model}` didn't suit this image")
     up = _get_upscaler(model, device, int(tile), onnx)
     result = up.upscale(src)
     stages.append(f"upscale ×{up.scale}")
@@ -218,6 +225,7 @@ def enhance(image, model, device, deblur, deblur_model, restore_strength, sharpe
         "✅ " + " → ".join(stages)
         + f" · backend `{backend}` · {result.width}×{result.height}px"
     )
+    library.save_image(result, "upscale")  # auto-add to the Library
     # (before, after) for the comparison slider
     return (original, result), info
 
@@ -225,17 +233,17 @@ def enhance(image, model, device, deblur, deblur_model, restore_strength, sharpe
 def restore_only(image, deblur_model, restore_strength, sharpen, device, onnx):
     """Run just the NAFNet restoration pass (deblur or denoise) — no upscaling."""
     if image is None:
-        raise gr.Error("Upload an image to restore first.")
+        raise gr.Error("Upload an image to clean up first.")
     original = image if isinstance(image, Image.Image) else Image.fromarray(image)
     result, ok = _restore(original, deblur_model, device, onnx, restore_strength)
     if not ok:
         return (original, original), (
-            f"⚠ `{deblur_model}` produced garbage on this image and was skipped. "
-            "For a noisy/grainy photo use the **SIDD (Denoise)** model — GoPro is "
-            "only for genuine motion blur."
+            f"⚠ The `{deblur_model}` clean-up didn't suit this image, so it was "
+            "skipped. For a noisy or grainy photo, choose the **SIDD (denoise)** "
+            "model — GoPro only fixes genuine motion blur."
         )
     pct = "" if restore_strength >= 0.999 else f" @{int(round(restore_strength * 100))}%"
-    stages = [f"restore `{deblur_model}`{pct}"]
+    stages = [f"clean up `{deblur_model}`{pct}"]
     if sharpen > 0:
         result = unsharp_mask(result, strength=float(sharpen))
         stages.append(f"sharpen {sharpen:g}")
@@ -243,6 +251,7 @@ def restore_only(image, deblur_model, restore_strength, sharpen, device, onnx):
         "✅ " + " → ".join(stages)
         + f" · {result.width}×{result.height}px (no upscale)"
     )
+    library.save_image(result, "restore")  # auto-add to the Library
     return (original, result), info
 
 
@@ -312,7 +321,11 @@ def upscale_video_ui(video_path, model, out_size, sharpen, smooth, trim_start,
             trim_start=start, trim_end=end, progress_cb=cb,
         )
     except (RuntimeError, FileNotFoundError) as e:
-        raise gr.Error(str(e)) from e
+        raise gr.Error(
+            "Couldn't process the video. Make sure ffmpeg is installed (e.g. "
+            '"brew install ffmpeg" on macOS) and the file is a standard video, '
+            "then try again."
+        ) from e
 
     try:
         compare = (_first_frame(video_path), _first_frame(out))
@@ -321,6 +334,7 @@ def upscale_video_ui(video_path, model, out_size, sharpen, smooth, trim_start,
     extra = (f" · {target}px" if target else "") + (f" · {fps} fps" if fps else "")
     if start or end:
         extra += f" · trim {start or 0:g}–{end if end else 'end'}s"
+    library.save_path(out, "video")  # auto-add to the Library
     return out, compare, f"✅ Done — preview and download below.{extra}"
 
 
@@ -417,7 +431,7 @@ def panel_export_ui(media, orientation, fit, zoom, off_x, off_y, bg_type,
     # rest = <overlay slot values> + [out_fmt, fps, loop, gif_colors,
     #         trim_start, trim_end, loop_mode, out_dir]
     if not media:
-        raise gr.Error("Upload media first.")
+        raise gr.Error("Upload an image, GIF or video first.")
     ov_vals = rest[:N_OVERLAY_VALS]
     (out_fmt, fps, loop, gif_colors, trim_start, trim_end,
      loop_mode, out_dir) = rest[N_OVERLAY_VALS:]
@@ -437,10 +451,15 @@ def panel_export_ui(media, orientation, fit, zoom, off_x, off_y, bg_type,
                 loop_mode=loop_mode, progress=progress,
             )
             extra = "" if loop_mode == "normal" else f" · {loop_mode} loop"
-            detail = "H.264 / yuv420p" if fmt == "mp4" else f"{int(gif_colors)} colors"
+            detail = "H.264" if fmt == "mp4" else f"{int(gif_colors)} colors"
             msg = f"✅ {out_fmt} exported — {cw}×{ch}px · {detail}{extra}."
     except (RuntimeError, ValueError, FileNotFoundError) as e:
-        raise gr.Error(str(e)) from e
+        raise gr.Error(
+            "Couldn't create the export. GIF and MP4 need ffmpeg installed; "
+            "otherwise check your source file and settings, then try again."
+        ) from e
+
+    library.save_path(f, "lianli")  # auto-add to the Library
 
     # Optionally drop a timestamped copy into a chosen folder (e.g. the
     # L-Connect media folder) so it lands where it's actually used.
@@ -462,7 +481,7 @@ def panel_enhance_source(media, up_model, *vals, progress=gr.Progress()):
     source with the enhanced version — so fitting/export use crisp pixels. Best
     for low-res sources the 1920×480 panel would otherwise show soft."""
     if not media:
-        raise gr.Error("Upload media first.")
+        raise gr.Error("Upload an image, GIF or video first.")
     kind = panel.media_kind(media)
     progress(0.1, desc="Loading model…")
     try:
@@ -489,9 +508,12 @@ def panel_enhance_source(media, up_model, *vals, progress=gr.Progress()):
                           progress_cb=cb)
             note = "✨ Video source upscaled. Re-fit and export."
         else:
-            raise gr.Error("Unsupported source for AI upscale.")
+            raise gr.Error("That file type can't be enhanced — use an image, GIF or video.")
     except (RuntimeError, FileNotFoundError) as e:
-        raise gr.Error(str(e)) from e
+        raise gr.Error(
+            "Couldn't enhance the source. The model downloads on first use, so "
+            "check your internet connection and try again."
+        ) from e
     return gr.update(value=out), panel.preview(out, _panel_params(*vals)), note
 
 
@@ -527,7 +549,7 @@ UPSCALE_PRESETS: dict[str, dict] = {
         model="realesrgan-x2plus", sharpen=0.2, restore=True, strength=1.0,
         hint="Strong denoise first, gentle ×2, low sharpen so grain isn't amplified.",
     ),
-    "🎨 Anime / Art": dict(
+    "🎨 Anime / art": dict(
         model="realesrgan-x4plus-anime", sharpen=0.0, restore=False, strength=1.0,
         hint="Anime model at ×4, no sharpen (line art needs none).",
     ),
@@ -555,12 +577,58 @@ def apply_preset(name):
         gr.update(value=p["strength"]),              # restore_strength
         f"**{name}** — {p['hint']}",                 # preset_info
     )
-    # highlight the clicked preset (primary) and un-highlight the rest
-    variants = tuple(
-        gr.update(variant="primary" if pn == name else "secondary")
+    # highlight the active preset with an accent OUTLINE (a CSS class), leaving
+    # the real Enhance button as the only filled/primary button on screen.
+    highlights = tuple(
+        gr.update(elem_classes=["preset-active"] if pn == name else [])
         for pn in UPSCALE_PRESETS
     )
-    return controls + variants
+    return controls + highlights
+
+
+# -- Library (everything you export, saved automatically) --------------------
+
+def refresh_library():
+    """Reload the Library tab from disk — newest first. Returns updates for
+    (gallery, video picker, video preview, count message)."""
+    imgs, vids = library.list_items()
+    vid_choices = [(os.path.basename(v), v) for v in vids]
+    first_vid = vids[0] if vids else None
+    n = len(imgs) + len(vids)
+    if n:
+        msg = (
+            f"**{n}** item{'s' if n != 1 else ''} in your library · "
+            f"{len(imgs)} image/GIF · {len(vids)} video"
+            f"{'s' if len(vids) != 1 else ''}. Newest first."
+        )
+    else:
+        msg = ("Your library is empty — export anything (an upscale, a GIF, a "
+               "converted file…) and it'll appear here automatically.")
+    return (
+        imgs,
+        gr.update(choices=vid_choices, value=first_vid),
+        first_vid,
+        msg,
+    )
+
+
+def open_library_folder():
+    """Open the library folder in the OS file manager. This is a local app, so
+    it opens on the machine running it — i.e. the user's own computer."""
+    import subprocess
+    import sys
+
+    path = str(library.ensure_dir())
+    try:
+        if sys.platform == "darwin":
+            subprocess.run(["open", path])
+        elif sys.platform.startswith("win"):
+            os.startfile(path)  # type: ignore[attr-defined]  # noqa: F821 (Windows-only)
+        else:
+            subprocess.run(["xdg-open", path])
+    except (OSError, FileNotFoundError):
+        pass
+
 
 THEME = gr.themes.Base(
     primary_hue=gr.themes.colors.teal,
@@ -701,10 +769,8 @@ body.loupe-on #mag-btn { background: var(--ac) !important; color: #fff !importan
 
 /* Custom CSS uses Gradio theme vars (--body-text-color etc.) so it adapts to
    both light and dark automatically. --ac is the accent (teal), brighter in dark. */
-.gradio-container { --ac: #0F766E; --ac-weak: rgba(13,148,136,.10);
-    --tex: rgba(28,25,23,.07); }
-.dark .gradio-container, .dark { --ac: #2DD4BF; --ac-weak: rgba(45,212,191,.13);
-    --tex: rgba(255,255,255,.06); }
+.gradio-container { --ac: #0F766E; --ac-weak: rgba(13,148,136,.10); }
+.dark .gradio-container, .dark { --ac: #2DD4BF; --ac-weak: rgba(45,212,191,.13); }
 
 /* gradio-app carries the .dark scope, so fill the viewport with IT (html/body
    sit outside the scope and would otherwise show a strip behind the app). The
@@ -712,14 +778,11 @@ body.loupe-on #mag-btn { background: var(--ac) !important; color: #fff !importan
 html, body { background: var(--body-background-fill) !important; }
 gradio-app { display: block; min-height: 100vh;
     background: var(--body-background-fill) !important; }
-/* The container has the accent + texture vars in scope, so the warm glow and a
-   faint dot texture go here (not on gradio-app, where those vars are undefined). */
+/* Flat, calm surface — no decorative glow or dot texture (matches Upscayl /
+   Krea / upscale.media). Just the theme's neutral background. */
 .gradio-container { max-width: 100% !important; padding: 6px 44px 64px !important;
     position: relative;
-    background:
-      radial-gradient(1100px 460px at 18% -8%, var(--ac-weak), transparent 62%),
-      radial-gradient(var(--tex) 1px, transparent 1.4px) 0 0 / 22px 22px,
-      var(--body-background-fill) !important; }
+    background: var(--body-background-fill) !important; }
 
 /* Cheap transitions on interactive controls ONLY — color/border, no box-shadow
    or transform on every .block (that caused heavy repaints / ~20fps jank). */
@@ -733,37 +796,45 @@ button, .tab-nav button, .drop, .item, .dropdown-arrow {
 .gradio-container button.primary:active { transform: translateY(0); box-shadow: none; }
 .tab-nav button:hover { color: var(--body-text-color) !important; }
 
-/* Entrance fades — only opacity + a tiny transform, GPU-composited (will-change)
-   so they stay smooth. Hero/section heads fill `both` (load-time); tab/accordion
-   bodies use no fill (default opacity 1) so they can't get stuck invisible. */
-@keyframes fadeUp { from { opacity: 0; transform: translateY(6px); }
-    to { opacity: 1; transform: none; } }
-#hero, .sec-head, .tabitem, [data-testid="accordion-content"] {
-    will-change: opacity, transform; }
-#hero { animation: fadeUp .55s cubic-bezier(.22,.61,.36,1) both; }
-.sec-head { animation: fadeUp .55s cubic-bezier(.22,.61,.36,1) .05s both; }
-.tabitem { animation: fadeUp .45s cubic-bezier(.22,.61,.36,1); }
-[data-testid="accordion-content"] { animation: fadeUp .4s cubic-bezier(.22,.61,.36,1); }
+/* Entrance motion kept to a single subtle hero fade (opacity only). Sections,
+   tab bodies and accordion bodies render statically — no movement on every tab
+   switch or accordion open. */
+@keyframes fadeUp { from { opacity: 0; } to { opacity: 1; } }
+#hero { will-change: opacity; animation: fadeUp .4s ease both; }
 .label-wrap .icon { transition: transform .25s cubic-bezier(.22,.61,.36,1) !important; }
 
-/* dropdown list: smooth open (was an abrupt instant pop) */
-@keyframes ddOpen { from { opacity: 0; transform: translateY(-5px) scale(.99); }
-    to { opacity: 1; transform: none; } }
-/* z-index so an open list sits ABOVE other controls instead of overlapping
-   them; box-shadow + solid bg so it reads as a floating popover. */
-ul.options, .options { animation: ddOpen .2s cubic-bezier(.22,.61,.36,1);
-    transform-origin: top center; z-index: 200 !important;
+/* Dropdown popover: opacity-only fade so it never animates its POSITION while
+   Gradio is still deciding to place it above/below the box (that transform was
+   the "jump up then drop down" flicker). Keep z-index/shadow/solid-bg so it
+   still reads as a floating layer. */
+@keyframes ddOpen { from { opacity: 0; } to { opacity: 1; } }
+ul.options, .options { animation: ddOpen .12s ease-out; z-index: 200 !important;
     box-shadow: 0 8px 28px rgba(28,25,23,.16) !important;
     background: var(--block-background-fill) !important; }
 ul.options .item, .options .item { transition: background-color .12s ease; }
 .dropdown-arrow { transition: transform .25s cubic-bezier(.22,.61,.36,1); }
 
+/* --- Smooth, purposeful micro-interactions (opacity / tiny transform only,
+   nothing that loops) — content eases in on transitions, controls give quiet
+   hover + focus feedback. --- */
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+/* Tab content and accordion bodies ease in instead of snapping. */
+.tabitem { animation: fadeIn .28s ease; }
+[data-testid="accordion-content"] { animation: fadeIn .22s ease; }
+/* Gentle hover lift on secondary + preset buttons (primary already lifts). */
+.gradio-container button.secondary { transition: background-color .18s ease,
+    border-color .18s ease, color .18s ease, transform .12s ease, box-shadow .18s ease; }
+.gradio-container button.secondary:hover { transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(28,25,23,.08); }
+.gradio-container button.secondary:active { transform: translateY(0); box-shadow: none; }
+/* Calm accent focus halo on text / number / color inputs. */
+.gradio-container input:focus, .gradio-container textarea:focus {
+    box-shadow: 0 0 0 3px var(--ac-weak) !important; outline: none !important; }
+
 @media (prefers-reduced-motion: reduce) {
-    #hero, .sec-head, .tabitem, [data-testid="accordion-content"],
-    ul.options, .options { animation: none; } }
-@keyframes livepulse { 0% { box-shadow: 0 0 0 0 rgba(34,197,94,.45); }
-    70% { box-shadow: 0 0 0 7px rgba(34,197,94,0); }
-    100% { box-shadow: 0 0 0 0 rgba(34,197,94,0); } }
+    #hero, .tabitem, [data-testid="accordion-content"],
+    ul.options, .options { animation: none; }
+    .gradio-container button.secondary:hover { transform: none; box-shadow: none; } }
 
 #hero { padding: 32px 2px 18px; margin-bottom: 8px;
     border-bottom: 1px solid var(--border-color-primary); }
@@ -777,12 +848,23 @@ ul.options .item, .options .item { transition: background-color .12s ease; }
     border: 1px solid var(--border-color-primary); border-radius: 999px;
     font-size: 0.8rem; color: var(--body-text-color-subdued);
     background: var(--block-background-fill); font-weight: 500; }
-.pill .dot { width: 7px; height: 7px; border-radius: 999px; background: #22C55E;
-    animation: livepulse 2.4s ease-out infinite; }
+.pill .dot { width: 7px; height: 7px; border-radius: 999px; background: #22C55E; }
 
-/* theme toggle, floated top-right */
-#theme-toggle { position: absolute; top: 20px; right: 40px; z-index: 50;
+/* top-right utility cluster: Light/Dark + Magnifier toggles, side by side, no
+   overlap. The whole row floats (not just one button), so both stay together. */
+#topbar { position: absolute; top: 18px; right: 40px; z-index: 50;
+    display: flex; flex-wrap: nowrap; gap: 8px; align-items: center;
     width: auto !important; min-width: 0 !important; flex: none !important; }
+#topbar button { width: auto !important; min-width: 0 !important;
+    flex: 0 0 auto !important; white-space: nowrap; }
+/* the gear is icon-only — keep it a tidy square with a slightly larger glyph */
+#settings-btn { font-size: 1.05rem !important; line-height: 1;
+    padding-left: 11px !important; padding-right: 11px !important; }
+
+/* compact, left-aligned button row (e.g. the Library toolbar) */
+.toolbar { gap: 8px; }
+.toolbar button { flex: 0 0 auto !important; width: auto !important;
+    min-width: 0 !important; }
 
 /* tab bar: accent the selected tab */
 .tabitem { padding-top: 28px !important; }
@@ -817,6 +899,37 @@ ul.options .item, .options .item { transition: background-color .12s ease; }
     transition: border-color .15s ease, background .15s ease; }
 .drop:hover { border-color: var(--ac) !important; background: var(--ac-weak) !important; }
 
+/* "Tips" lists inside the collapsed Tips accordions — quiet text, no nested box. */
+.notes ul { margin: 2px 0 0; padding-left: 20px; }
+.notes li { margin: 3px 0; font-size: 0.88rem; line-height: 1.5;
+    color: var(--body-text-color-subdued); }
+.notes li strong { color: var(--body-text-color); font-weight: 600; }
+
+/* active quick-preset: a calm accent outline, NOT a second filled button — so
+   the real Enhance button stays the only primary action on screen. */
+button.preset-active, .preset-active > button {
+    border-color: var(--ac) !important; color: var(--ac) !important;
+    box-shadow: inset 0 0 0 1px var(--ac) !important; font-weight: 700 !important; }
+
+/* Long file paths in `code` spans must wrap, not get clipped at the block edge
+   (e.g. the Settings "Where your files live" paths in a half-width column).
+   Gradio's own `.md :not(pre)>code` uses word-break:normal + display:inline-flex
+   at higher specificity, so override forcefully so long path tokens break. */
+.gradio-container .md :not(pre) > code, .gradio-container code,
+.gradio-container kbd {
+    white-space: normal !important; overflow-wrap: anywhere !important;
+    word-break: break-word !important; display: inline !important;
+    max-width: 100%; }
+.gradio-container pre { overflow-wrap: anywhere; max-width: 100%; }
+
+/* Markdown prose must wrap and not be clipped at the block edge — this was
+   shaving the first letter off wrapped lines (e.g. the About text). overflow
+   visible + a hair of side padding keeps glyphs fully inside. */
+.gradio-container .md, .gradio-container .prose { overflow: visible; }
+.gradio-container .md p, .gradio-container .prose p,
+.gradio-container .md li, .gradio-container .prose li {
+    overflow-wrap: break-word; word-break: break-word; padding-inline: 2px; }
+
 footer { display: none !important; }
 """
 
@@ -839,6 +952,85 @@ ICON_PDF = _svg('<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 '
                 '2-2V8z"/><path d="M14 3v5h5"/>')
 ICON_PANEL = _svg('<rect x="2" y="8" width="20" height="8" rx="1.5"/>'
                   '<path d="M6 12h.01M9 12h.01"/>')
+ICON_LIBRARY = _svg('<rect x="3" y="3" width="7" height="7" rx="1.5"/>'
+                    '<rect x="14" y="3" width="7" height="7" rx="1.5"/>'
+                    '<rect x="3" y="14" width="7" height="7" rx="1.5"/>'
+                    '<rect x="14" y="14" width="7" height="7" rx="1.5"/>')
+ICON_SETTINGS = _svg('<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 '
+                     '0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 '
+                     '0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 '
+                     '1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 '
+                     '1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 '
+                     '0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 '
+                     '0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 '
+                     '0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 '
+                     '1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 '
+                     '2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 '
+                     '1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>')
+
+# Step-by-step Windows install guide, shown in the Settings tab.
+WINDOWS_GUIDE = """\
+Get Upscaler running on a Windows PC — about 10 minutes, all local.
+
+**1 · Install Python**
+Download **Python 3.12** from [python.org](https://www.python.org/downloads/windows/),
+run the installer, and **tick "Add python.exe to PATH"** before you click Install.
+*(Anything from 3.9–3.12 works; 3.12 is the safe pick for the AI libraries.)*
+
+**2 · Install ffmpeg** *(only needed for the Video tab)*
+Open **PowerShell** and run:
+```powershell
+winget install Gyan.FFmpeg
+```
+Or skip this and let the app install one for you by adding the `video` extra in step 4
+(use `".[gui,video]"`).
+
+**3 · Get Upscaler**
+Download the project as a ZIP and unzip it (or `git clone` it). Then open
+**PowerShell inside that folder**: in File Explorer, Shift-right-click the folder
+→ *"Open PowerShell window here"*.
+
+**4 · Create an environment and install**
+```powershell
+py -m venv .venv
+.venv\\Scripts\\Activate.ps1
+pip install -e ".[gui]"
+```
+*If activation is blocked, run `Set-ExecutionPolicy -Scope Process RemoteSigned`
+once, then re-run the activate line.*
+
+**5 · Start it**
+```powershell
+python app.py
+```
+Open **http://127.0.0.1:7860** in your browser. Press **Ctrl+C** in PowerShell to stop.
+
+---
+
+**Make it faster with your GPU** *(optional)*
+- **NVIDIA:** install a CUDA build of PyTorch from
+  [pytorch.org/get-started](https://pytorch.org/get-started/locally/), then
+  re-run the app — the Device setting "auto" will pick up the GPU.
+- **AMD Radeon:** follow the full **`docs/SETUP-WINDOWS-AMD.md`** guide included
+  in this project (WSL2 + ROCm, with a DirectML fallback).
+- **No GPU?** It still runs on the CPU — slower, but fine for images.
+
+**Good to know**
+- Everything runs on your machine; nothing is ever uploaded.
+- Your exports are saved to `C:\\Users\\<you>\\.upscaler\\library` (see the **Library** tab).
+- Next time: open PowerShell in the folder, run `.venv\\Scripts\\Activate.ps1`, then `python app.py`.
+"""
+
+
+def save_settings(device, model, output_dir):
+    """Persist the Settings-tab preferences to ~/.upscaler/config.json."""
+    ok = config.save(
+        device=device, model=model, output_dir=(output_dir or "").strip()
+    )
+    if ok:
+        return ("✅ Saved to `~/.upscaler/config.json`. Restart the app (or reload "
+                "the page) and these become the defaults.")
+    return "⚠ Couldn't write the settings file — check the folder's permissions."
 ICON_LOGO = (
     '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" '
     'stroke="currentColor" stroke-width="2.1" stroke-linecap="round" '
@@ -857,36 +1049,45 @@ def _section_head(eyebrow: str, title: str, desc: str, icon: str = "") -> str:
 
 def build_demo() -> gr.Blocks:
     device_name = resolve_device("auto").type
+    # Saved preferences seed the defaults (guarded against stale/invalid values).
+    cfg = config.load()
+    _cfg_model = cfg["model"] if cfg["model"] in MODELS else "realesrgan-x4plus"
+    _cfg_device = cfg["device"] if cfg["device"] in _DEVICES else "auto"
     with gr.Blocks(title="Upscaler") as demo:
         gr.HTML(
             '<div id="hero">'
             f'<div class="brandrow"><span class="logo">{ICON_LOGO}</span>'
             '<span class="brand">Upscaler</span></div>'
-            '<div class="sub">A quiet little toolbox for images — convert formats, '
-            "make and split PDFs, and upscale with AI. Everything runs locally; "
-            "nothing is uploaded.</div>"
-            f'<span class="pill"><span class="dot"></span>running locally · {device_name}</span>'
+            '<div class="sub">Enlarge, sharpen and clean up your photos with AI — '
+            "then convert formats, clean up video, build PDFs or cut out "
+            "backgrounds. Every tool runs on your own machine; nothing is ever "
+            "uploaded.</div>"
+            f'<span class="pill"><span class="dot"></span>Running locally · {device_name}</span>'
             "</div>"
         )
-        with gr.Row():
+        with gr.Row(elem_id="topbar"):
             theme_btn = gr.Button(
                 "◐ Light / Dark", elem_id="theme-toggle", size="sm", variant="secondary"
             )
             mag_btn = gr.Button(
                 "🔍 Magnifier", elem_id="mag-btn", size="sm", variant="secondary",
             )
+            settings_btn = gr.Button(
+                "⚙", elem_id="settings-btn", size="sm", variant="secondary",
+            )
         theme_btn.click(None, js=_TOGGLE_THEME_JS)
         # JS-only toggle: enables the hover loupe over result images
         mag_btn.click(None, js="() => document.body.classList.toggle('loupe-on')")
 
-        with gr.Tabs():
+        with gr.Tabs() as main_tabs:
             # ---- Tab 1: Upscale & Enhance ----
             with gr.Tab("Upscale"):
                 gr.HTML(_section_head(
-                    "AI", "Upscale & Enhance",
-                    "Real-ESRGAN super-resolution, with optional deblur and "
-                    "sharpening. Tip: for an already-decent photo, prefer the ×2 "
-                    "model — ×4 can over-process clean images.",
+                    "Enhance", "Upscale & Enhance",
+                    "Enlarge and sharpen any image with AI, plus optional cleanup "
+                    "for blur and noise. ×2 keeps already-good photos looking "
+                    "natural; ×4 adds the most detail but can over-process clean "
+                    "images. Start with a preset, then fine-tune.",
                     icon=ICON_AI,
                 ))
                 with gr.Row(equal_height=True):
@@ -907,64 +1108,84 @@ def build_demo() -> gr.Blocks:
                                     )
                         preset_info = gr.Markdown()
                         model = gr.Dropdown(
-                            _MODEL_CHOICES, value="realesrgan-x4plus",
-                            label="Upscale model",
-                            info="×2 is gentler for already-good photos · ×4 adds "
-                            "the most detail but can over-process · anime model is "
-                            "for illustrations & line art.",
+                            _MODEL_CHOICES, value=_cfg_model,
+                            label="Upscale model", filterable=False,
+                            info="Picks the AI that enlarges your image. Use ×2 for "
+                            "already-good photos, ×4 for small or soft ones, or the "
+                            "anime model for drawings and line art.",
                         )
                         out_size = gr.Dropdown(
                             list(_SIZE_PRESETS), value="Model default (×2/×4)",
-                            label="Output size",
-                            info="After AI upscaling, fit the longest edge to this "
-                            "size. 4K = 3840px. Pick the AI model that overshoots "
-                            "your target, then it's resized down to stay crisp.",
+                            label="Output size", filterable=False,
+                            info="After enlarging, shrinks the longest edge to this "
+                            "size (4K = 3840px). Pick a model that overshoots your "
+                            "target so the result stays crisp.",
                         )
                         sharpen = gr.Slider(
                             0.0, 3.0, value=0.0, step=0.1,
-                            label="Sharpen (unsharp mask) — 0 = off",
-                            info="Crispens edges after upscaling. Keep it low — too "
-                            "high adds halos around edges.",
+                            label="Sharpen edges — 0 = off",
+                            info="Crispens edges after enlarging. Keep it low — too "
+                            "much adds bright halos (glowing outlines) around edges.",
                         )
-                        with gr.Accordion("Restore: deblur / denoise (NAFNet)", open=True):
+                        with gr.Accordion("Clean up — deblur / denoise", open=False):
                             deblur = gr.Checkbox(
-                                value=False, label="Restore first (when upscaling)",
-                                info="Tick to run the restoration pass before "
-                                "upscaling when you click Enhance. To ONLY restore "
-                                "(no upscale), use the button below instead.",
+                                value=False, label="Clean up before upscaling",
+                                info="Tick to clean up the photo (deblur / denoise) "
+                                "before enlarging. To only clean it up without "
+                                "enlarging, use the Clean-up-only button below.",
                             )
                             deblur_model = gr.Dropdown(
                                 _DEBLUR_CHOICES, value="nafnet-sidd-width64",
-                                label="Restoration model",
-                                info="SIDD = denoise grain/noise (safe default) · "
-                                "GoPro = motion deblur ONLY — it garbages noisy photos.",
+                                label="Clean-up model", filterable=False,
+                                info="SIDD is the safe default — it cleans grain and "
+                                "noise. GoPro fixes motion blur only and will wreck "
+                                "noisy photos, so use it only for genuine motion blur.",
                             )
                             restore_strength = gr.Slider(
                                 0.0, 1.0, value=1.0, step=0.05,
-                                label="Denoise / restore strength",
-                                info="1 = full effect · lower blends back the "
-                                "original to keep more detail (and some noise).",
+                                label="Clean-up strength",
+                                info="How strongly the cleanup is applied. 1 = full "
+                                "effect; lower blends the original back in to keep "
+                                "more fine detail (and a little noise).",
                             )
                             restore_btn = gr.Button(
-                                "✨ Restore only (deblur / denoise · no upscale)",
+                                "✨ Clean up only (deblur / denoise · no upscale)",
                                 variant="secondary",
                             )
                         with gr.Accordion("Advanced", open=False):
                             device = gr.Dropdown(
-                                _DEVICES, value="auto", label="Device",
-                                info="auto picks a GPU if available (CUDA / Apple "
-                                "MPS), otherwise CPU.",
+                                _DEVICES, value=_cfg_device, label="Device",
+                                filterable=False,
+                                info="Where the work runs. \"auto\" uses your "
+                                "graphics card (GPU) if it can, otherwise your "
+                                "processor (CPU).",
                             )
                             onnx = gr.Checkbox(
-                                value=False, label="ONNX Runtime backend",
-                                info="Exports the model to ONNX once, then runs "
-                                "without PyTorch — often faster on CPU.",
+                                value=False, label="Alternative speed engine (ONNX)",
+                                info="Runs without PyTorch — often faster on a CPU. "
+                                "The first run exports the model, so it takes a "
+                                "moment.",
                             )
                             tile = gr.Slider(
                                 0, 1024, value=512, step=64,
                                 label="Tile size (0 = off)",
-                                info="Processes big images in tiles to save memory. "
-                                "Lower this if you hit out-of-memory errors.",
+                                info="Splits big images into chunks so they use less "
+                                "memory. Lower this if you hit out-of-memory errors; "
+                                "0 turns it off.",
+                            )
+                        with gr.Accordion("Tips", open=False):
+                            gr.Markdown(
+                                "* **Start with a Quick preset**, then fine-tune — "
+                                "×2 suits everyday photos, ×4 can over-process clean "
+                                "ones.\n"
+                                "* **Keep Sharpen near 0** — past ~1.0 you get halos "
+                                "(glowing edges).\n"
+                                "* **Turn on \"Clean up before upscaling\" only for blurry or "
+                                "noisy photos**, and lower the strength (~0.5) for "
+                                "faces.\n"
+                                "* **Out-of-memory error?** Lower the Tile size "
+                                "(under Advanced) first.",
+                                elem_classes="notes",
                             )
                         with gr.Row():
                             run = gr.Button(
@@ -982,10 +1203,10 @@ def build_demo() -> gr.Blocks:
             # ---- Tab 2: Video (frame-by-frame) ----
             with gr.Tab("Video"):
                 gr.HTML(_section_head(
-                    "AI · Video", "Video Upscaler",
-                    "Upscale a clip frame-by-frame (offline, audio kept). ×2 is "
-                    "faster and flickers less than ×4. Long clips take a while — "
-                    "needs ffmpeg installed.",
+                    "Video", "Video Upscaler",
+                    "Upscale a clip frame by frame on your own machine, keeping the "
+                    "original audio. ×2 is faster and steadier between frames than "
+                    "×4. Longer clips take a while, and ffmpeg must be installed.",
                     icon=ICON_AI,
                 ))
                 with gr.Row(equal_height=True):
@@ -993,27 +1214,29 @@ def build_demo() -> gr.Blocks:
                         vid_in = gr.Video(label="Input video", sources=["upload"])
                         vid_model = gr.Dropdown(
                             _MODEL_CHOICES, value="realesrgan-x2plus",
-                            label="Upscale model",
-                            info="×2 recommended for video — faster, less shimmer "
-                            "between frames.",
+                            label="Upscale model", filterable=False,
+                            info="The AI that enlarges each frame. ×2 is recommended "
+                            "for video — it's faster and flickers less between frames "
+                            "than ×4.",
                         )
                         vid_size = gr.Dropdown(
                             list(_SIZE_PRESETS), value="Model default (×2/×4)",
-                            label="Output size",
-                            info="Fit the longest edge to this size after upscaling "
-                            "(e.g. 4K = 3840px). Resizes every frame.",
+                            label="Output size", filterable=False,
+                            info="After enlarging, shrinks the longest edge of every "
+                            "frame to this size (e.g. 4K = 3840px).",
                         )
                         vid_sharpen = gr.Slider(
                             0.0, 3.0, value=0.0, step=0.1,
                             label="Sharpen per frame — 0 = off",
-                            info="Be gentle on video; sharpening can amplify "
-                            "frame-to-frame flicker.",
+                            info="Crispens edges on each frame. Go easy on video — "
+                            "sharpening can amplify flicker between frames.",
                         )
                         vid_smooth = gr.Dropdown(
                             ["Off", "30", "48", "60", "120"], value="Off",
-                            label="Smooth motion (interpolate to fps)",
-                            info="Adds motion-interpolated frames for smoother "
-                            "playback. Higher = smoother but much slower.",
+                            label="Smooth motion (interpolate to fps)", filterable=False,
+                            info="Invents in-between frames so playback looks "
+                            "smoother. Higher target fps = smoother motion but much "
+                            "slower to render.",
                         )
                         with gr.Accordion("Trim (process only part of the clip)", open=False):
                             gr.Markdown(
@@ -1025,19 +1248,39 @@ def build_demo() -> gr.Blocks:
                             with gr.Row():
                                 vid_start = gr.Number(
                                     value=0, label="Start (seconds)", minimum=0,
+                                    info="Skip everything before this point.",
                                 )
                                 vid_end = gr.Number(
                                     value=0, label="End (seconds)", minimum=0,
+                                    info="Stop here (0 or the clip length = play to "
+                                    "the end). Lower it to render less.",
                                 )
                         with gr.Accordion("Advanced", open=False):
                             vid_device = gr.Dropdown(
-                                _DEVICES, value="auto", label="Device",
-                                info="auto picks a GPU if available, else CPU.",
+                                _DEVICES, value=_cfg_device, label="Device",
+                                filterable=False,
+                                info="Where the work runs. \"auto\" uses your "
+                                "graphics card (GPU) if it can, otherwise your "
+                                "processor (CPU).",
                             )
                             vid_tile = gr.Slider(
                                 0, 1024, value=512, step=64,
                                 label="Tile size (0 = off)",
-                                info="Lower if you hit out-of-memory on big frames.",
+                                info="Splits big frames into chunks to use less "
+                                "memory. Lower this if a render crashes with an "
+                                "out-of-memory error; 0 turns it off.",
+                            )
+                        with gr.Accordion("Tips", open=False):
+                            gr.Markdown(
+                                "* **Use the ×2 model for video** — faster, and "
+                                "flickers less between frames than ×4.\n"
+                                "* **Test on a short trim first** (open Trim) before "
+                                "the whole clip — long videos take a while.\n"
+                                "* **Keep per-frame Sharpen very low** — it can "
+                                "amplify shimmer between frames.\n"
+                                "* **Needs ffmpeg installed**; your audio is kept "
+                                "automatically.",
+                                elem_classes="notes",
                             )
                         with gr.Row():
                             vid_btn = gr.Button(
@@ -1057,16 +1300,28 @@ def build_demo() -> gr.Blocks:
             with gr.Tab("Convert"):
                 gr.HTML(_section_head(
                     "Convert", "Convert & Documents",
-                    "Pick what you want to do — change image format, build a PDF "
-                    "from images, or split a PDF back into images.",
+                    "Change an image's format, combine several images into a PDF, "
+                    "or split a PDF back into images. Pick a task below to begin.",
                     icon=ICON_CONVERT,
                 ))
                 method = gr.Dropdown(
                     _CONVERT_METHODS, value=_CONVERT_METHODS[0],
-                    label="What do you want to do?",
-                    info="Switch between converting an image's format, building a "
-                    "PDF from images, or splitting a PDF back into images.",
+                    label="What do you want to do?", filterable=False,
+                    info="Pick your task: change an image's format, build a PDF from "
+                    "images, or split a PDF back into images.",
                 )
+                with gr.Accordion("Tips", open=False):
+                    gr.Markdown(
+                        "* **The options below change** to match the task you pick "
+                        "here.\n"
+                        "* **PNG and TIFF keep full quality**; JPEG, WebP, AVIF and "
+                        "HEIC are smaller but lossy.\n"
+                        "* **Quality 90 is a great balance** for lossy formats "
+                        "(ignored for PNG/TIFF).\n"
+                        "* **PDF pages: 150 DPI is fine on screen** — use 300 only "
+                        "if you'll print them.",
+                        elem_classes="notes",
+                    )
 
                 # -- Method A: change image format --
                 with gr.Column(visible=True) as grp_format:
@@ -1079,17 +1334,21 @@ def build_demo() -> gr.Blocks:
                             )
                             conv_fmt = gr.Dropdown(
                                 list(FORMATS), value="PNG", label="Convert to",
-                                info="PNG / TIFF keep full quality · JPEG, WebP, "
-                                "AVIF, HEIC are smaller but lossy.",
+                                filterable=False,
+                                info="The file type to save. PNG and TIFF keep full "
+                                "quality; JPEG, WebP, AVIF and HEIC make smaller "
+                                "files but are lossy (some quality is thrown away).",
                             )
                             conv_quality = gr.Slider(
                                 1, 100, value=90, step=1, label="Quality (lossy)",
-                                info="Only affects lossy formats. Higher = better "
-                                "looking but larger file.",
+                                info="Only matters for lossy formats. Higher looks "
+                                "better but makes a bigger file; ignored for "
+                                "PNG/TIFF.",
                             )
                             conv_lossless = gr.Checkbox(
                                 value=False, label="Lossless WebP",
-                                info="Encode WebP with no quality loss (bigger file).",
+                                info="Saves WebP with no quality loss at all — a "
+                                "bigger file, but nothing is thrown away.",
                             )
                             conv_btn = gr.Button("Convert", variant="primary", size="lg")
                         with gr.Column(scale=1):
@@ -1122,8 +1381,9 @@ def build_demo() -> gr.Blocks:
                             )
                             pdf_dpi = gr.Slider(
                                 72, 300, value=150, step=1, label="Render DPI",
-                                info="Higher = sharper, larger PNGs. 150 is a good "
-                                "default; 300 for print quality.",
+                                info="How much detail each PDF page is rendered at. "
+                                "Higher = sharper, larger PNGs. 150 is a good "
+                                "default; use 300 for print quality.",
                             )
                             pdf_extract_btn = gr.Button(
                                 "Extract pages", variant="primary", size="lg"
@@ -1144,9 +1404,9 @@ def build_demo() -> gr.Blocks:
             with gr.Tab("Remove BG"):
                 gr.HTML(_section_head(
                     "Cut-out", "Remove Background",
-                    "Cut the subject out of a photo with U²-Net and save a "
-                    "transparent PNG. Pairs with the Lian Li tab — drop the "
-                    "cut-out in as a sticker.",
+                    "Lift the subject cleanly off its background with AI and save a "
+                    "transparent PNG. It drops straight into the Lian Li Screen tab "
+                    "as a sticker.",
                     icon=ICON_AI,
                 ))
                 with gr.Row(equal_height=True):
@@ -1158,13 +1418,28 @@ def build_demo() -> gr.Blocks:
                         )
                         bg_model = gr.Dropdown(
                             _BG_CHOICES, value=background.DEFAULT_BG_MODEL,
-                            label="Model",
-                            info="u2net = best all-rounder · u2netp = lighter/faster.",
+                            label="Model", filterable=False,
+                            info="The AI that finds your subject. u2net is the best "
+                            "all-rounder; u2netp is lighter and faster but a bit "
+                            "less precise.",
                         )
                         bg_feather = gr.Slider(
                             0, 10, value=1, step=1, label="Edge feather (px)",
-                            info="Softens the cut-out edge slightly. 0 = hard edge.",
+                            info="Softens the cut-out edge so it blends in. 0 = a "
+                            "hard, crisp edge.",
                         )
+                        with gr.Accordion("Tips", open=False):
+                            gr.Markdown(
+                                "* **Try u2net first** — best all-rounder; u2netp "
+                                "is lighter and faster.\n"
+                                "* **1–2px of edge feather** looks most natural; use "
+                                "0 for a crisp, hard edge.\n"
+                                "* **The result is a transparent PNG** — the "
+                                "checkerboard just shows where it's see-through.\n"
+                                "* **Pairs with the Lian Li tab** — drop the cut-out "
+                                "in as a sticker.",
+                                elem_classes="notes",
+                            )
                         with gr.Row():
                             bg_btn = gr.Button("Remove background", variant="primary",
                                                size="lg", scale=3)
@@ -1181,10 +1456,10 @@ def build_demo() -> gr.Blocks:
             with gr.Tab("Lian Li Screen"):
                 gr.HTML(_section_head(
                     "Panel", "Lian Li 8.8″ Screen",
-                    "Build media sized exactly for the Lian Li 8.8″ panel "
-                    "(1920×480 / 480×1920, 4:1) so L-Connect 3 never resamples it. "
-                    "Fit any source into the 4:1 frame — the dim area is what gets "
-                    "cropped. Export PNG/JPG, looping GIF, or H.264 MP4.",
+                    "Compose media at the panel's exact size (1920×480 or 480×1920, "
+                    "4:1) so L-Connect 3 never has to resample it. Fit any photo, "
+                    "GIF or video into the frame — the dimmed area is what gets "
+                    "cropped — then export a PNG, looping GIF or MP4.",
                     icon=ICON_PANEL,
                 ))
                 with gr.Row(equal_height=True):
@@ -1205,40 +1480,63 @@ def build_demo() -> gr.Blocks:
                             )
                             pn_up_model = gr.Dropdown(
                                 _MODEL_CHOICES, value="realesrgan-x2plus",
-                                label="Upscale model",
-                                info="×2 is plenty when fitting into 1920×480 · "
-                                "×4 for very small sources · anime for line art.",
+                                label="Upscale model", filterable=False,
+                                info="The AI that enlarges your source before it's "
+                                "fitted. ×2 is plenty for 1920×480; use ×4 for very "
+                                "small sources, or the anime model for line art.",
                             )
                             pn_enhance = gr.Button("✨ Enhance source", variant="secondary")
                         pn_orient = gr.Radio(
                             list(panel.ORIENTATIONS), value="Landscape · 1920×480",
                             label="Orientation",
+                            info="Match how your panel is mounted — wide (Landscape) "
+                            "or tall (Portrait).",
                         )
                         pn_fit = gr.Radio(
                             panel.FITS, value="cover", label="Fit",
-                            info="cover fills & crops · contain letterboxes · "
-                            "stretch distorts · manual = free zoom.",
+                            info="How your media fills the 4:1 frame: cover fills and "
+                            "crops, contain adds bars (letterboxes), stretch "
+                            "distorts, manual lets you zoom and pan freely.",
                         )
                         with gr.Row():
                             pn_offx = gr.Slider(
                                 -100, 100, value=0, step=1, label="Pan X (%)",
-                                info="Which band survives the crop (cover/manual).",
+                                info="Slide left/right to choose which part survives "
+                                "the crop (cover and manual fit).",
                             )
                             pn_offy = gr.Slider(
                                 -100, 100, value=0, step=1, label="Pan Y (%)",
+                                info="Slide up/down to choose which part survives "
+                                "the crop (cover and manual fit).",
                             )
                         pn_zoom = gr.Slider(
                             0.1, 5, value=1, step=0.01, label="Zoom (manual fit)",
+                            info="Zooms the image in or out — only used when Fit is "
+                            "set to manual.",
                         )
                         with gr.Accordion("Background (fills letterbox gaps)", open=False):
                             pn_bgtype = gr.Radio(
                                 ["solid", "gradient"], value="solid",
                                 label="Type",
+                                info="What fills any empty space (letterbox bars): "
+                                "one solid color, or a two-color gradient.",
                             )
                             with gr.Row():
-                                pn_bgcol = gr.ColorPicker(value="#000000", label="Color / Stop A")
-                                pn_bgcol2 = gr.ColorPicker(value="#333333", label="Stop B")
-                            pn_bgang = gr.Slider(0, 360, value=90, step=1, label="Gradient angle")
+                                pn_bgcol = gr.ColorPicker(
+                                    value="#000000", label="Color / Stop A",
+                                    info="The fill color — or the first color of "
+                                    "the gradient.",
+                                )
+                                pn_bgcol2 = gr.ColorPicker(
+                                    value="#333333", label="Stop B",
+                                    info="The second gradient color (only used when "
+                                    "Type is gradient).",
+                                )
+                            pn_bgang = gr.Slider(
+                                0, 360, value=90, step=1, label="Gradient angle",
+                                info="Direction the gradient blends, in degrees "
+                                "(90 = top to bottom).",
+                            )
                         # Overlays: up to N_TEXT text layers + N_STICKER stickers.
                         # Each slot's components are collected (in field order) so
                         # the preview/export handlers can rebuild the overlay list.
@@ -1246,83 +1544,131 @@ def build_demo() -> gr.Blocks:
                         with gr.Accordion("Text overlays", open=True):
                             for _t in range(N_TEXT):
                                 with gr.Accordion(f"Text {_t + 1}", open=(_t == 0)):
-                                    t_en = gr.Checkbox(value=(_t == 0), label="Show this text")
+                                    t_en = gr.Checkbox(value=(_t == 0), label="Show this text",
+                                                       info="Tick to show this text layer.")
                                     t_content = gr.Textbox(label="Text", lines=2,
-                                                           placeholder="(your text)")
+                                                           placeholder="(your text)",
+                                                           info="The words to display — leave "
+                                                           "empty to hide this layer.")
                                     with gr.Row():
                                         t_font = gr.Dropdown(panel.FONT_NAMES,
                                                              value=panel.DEFAULT_FONT,
-                                                             label="Font", filterable=True)
+                                                             label="Font", filterable=True,
+                                                             info="The typeface.")
                                         t_size = gr.Slider(16, 900, value=180, step=2,
-                                                           label="Size (px)")
+                                                           label="Size (px)",
+                                                           info="Text height in pixels.")
                                     with gr.Row():
-                                        t_color = gr.ColorPicker(value="#ffffff", label="Color")
+                                        t_color = gr.ColorPicker(value="#ffffff", label="Color",
+                                                                 info="The text color.")
                                         t_align = gr.Radio(["left", "center", "right"],
-                                                           value="center", label="Align")
+                                                           value="center", label="Align",
+                                                           info="Line up left, center or right.")
                                     with gr.Row():
-                                        t_x = gr.Slider(-100, 100, value=0, step=1, label="X (%)")
-                                        t_y = gr.Slider(-100, 100, value=0, step=1, label="Y (%)")
+                                        t_x = gr.Slider(-100, 100, value=0, step=1, label="X (%)",
+                                                        info="Nudge left/right.")
+                                        t_y = gr.Slider(-100, 100, value=0, step=1, label="Y (%)",
+                                                        info="Nudge up/down.")
                                     t_rot = gr.Slider(-180, 180, value=0, step=1,
-                                                      label="Rotation (°)")
+                                                      label="Rotation (°)",
+                                                      info="Tilt the text (0 = straight).")
                                     with gr.Row():
-                                        t_stroke = gr.ColorPicker(value="#000000", label="Stroke")
+                                        t_stroke = gr.ColorPicker(value="#000000", label="Stroke",
+                                                                  info="Color of the outline "
+                                                                  "around the text.")
                                         t_strokew = gr.Slider(0, 40, value=0, step=1,
-                                                              label="Stroke width")
+                                                              label="Stroke width",
+                                                              info="Outline thickness — "
+                                                              "0 = no outline.")
                                 _text_slots.append([t_en, t_content, t_font, t_size, t_color,
                                                     t_align, t_x, t_y, t_rot, t_stroke, t_strokew])
                         _sticker_slots = []
                         with gr.Accordion("Stickers (image overlays)", open=False):
                             for _s in range(N_STICKER):
                                 with gr.Accordion(f"Sticker {_s + 1}", open=False):
-                                    s_en = gr.Checkbox(value=False, label="Show this sticker")
+                                    s_en = gr.Checkbox(value=False, label="Show this sticker",
+                                                       info="Tick to show this image sticker.")
                                     # image_mode="RGBA" preserves transparency —
                                     # without it Gradio drops alpha and PNG cut-outs
                                     # composite as opaque black.
-                                    s_img = gr.Image(label="Sticker image (PNG with "
-                                                     "transparency works best)", type="pil",
-                                                     image_mode="RGBA",
+                                    s_img = gr.Image(label="Sticker image (a see-through PNG — "
+                                                     "e.g. a Remove-BG cut-out — works best)",
+                                                     type="pil", image_mode="RGBA",
                                                      sources=["upload", "clipboard"], height=120)
                                     with gr.Row():
                                         s_scale = gr.Slider(2, 100, value=40, step=1,
-                                                            label="Size (% of panel height)")
-                                        s_op = gr.Slider(0, 1, value=1, step=0.01, label="Opacity")
+                                                            label="Size (% of panel height)",
+                                                            info="Sticker size, relative to the "
+                                                            "panel's height.")
+                                        s_op = gr.Slider(0, 1, value=1, step=0.01, label="Opacity",
+                                                         info="How see-through it is — "
+                                                         "1 = solid, 0 = invisible.")
                                     with gr.Row():
-                                        s_x = gr.Slider(-100, 100, value=0, step=1, label="X (%)")
-                                        s_y = gr.Slider(-100, 100, value=0, step=1, label="Y (%)")
+                                        s_x = gr.Slider(-100, 100, value=0, step=1, label="X (%)",
+                                                        info="Nudge left/right.")
+                                        s_y = gr.Slider(-100, 100, value=0, step=1, label="Y (%)",
+                                                        info="Nudge up/down.")
                                     s_rot = gr.Slider(-180, 180, value=0, step=1,
-                                                      label="Rotation (°)")
+                                                      label="Rotation (°)",
+                                                      info="Tilt the sticker (0 = straight).")
                                 _sticker_slots.append([s_en, s_img, s_scale, s_x, s_y, s_rot, s_op])
                         _overlay_inputs = [c for slot in _text_slots for c in slot] + \
                                           [c for slot in _sticker_slots for c in slot]
                         with gr.Group(visible=False) as pn_anim_group:
                             gr.Markdown("**Animation** — for GIF / MP4 export.")
                             with gr.Row():
-                                pn_start = gr.Number(value=0, label="Trim start (s)", minimum=0)
-                                pn_end = gr.Number(value=0, label="Trim end (s)", minimum=0)
+                                pn_start = gr.Number(value=0, label="Trim start (s)", minimum=0,
+                                                     info="Skip everything before this point.")
+                                pn_end = gr.Number(value=0, label="Trim end (s)", minimum=0,
+                                                   info="Stop here (0 = play to the end).")
                             with gr.Row():
                                 pn_fps = gr.Dropdown(
                                     ["10", "12", "15", "24", "25", "30", "48", "50", "60"],
-                                    value="30", label="FPS (≤ 60)",
+                                    value="30", label="FPS (≤ 60)", filterable=False,
+                                    info="Frames per second — higher is smoother but a "
+                                    "bigger file.",
                                 )
-                                pn_loop = gr.Checkbox(value=True, label="Loop")
+                                pn_loop = gr.Checkbox(value=True, label="Loop",
+                                                      info="Make the GIF / MP4 repeat forever.")
                             pn_colors = gr.Slider(
                                 2, 256, value=128, step=1, label="GIF colors",
+                                info="How many colors the GIF uses — more is richer but "
+                                "a bigger file (GIF only).",
                             )
                             pn_loopmode = gr.Radio(
                                 panel.LOOP_STYLES, value="normal", label="Loop style",
-                                info="boomerang plays forward then back · crossfade "
-                                "blends the end into the start — both remove the loop seam.",
+                                info="How it loops: normal restarts, boomerang plays "
+                                "forward then back, crossfade blends the end into the "
+                                "start — boomerang and crossfade both hide the seam.",
                             )
                         pn_fmt = gr.Radio(
                             ["PNG", "JPG", "GIF", "MP4"], value="GIF",
                             label="Export format",
+                            info="PNG / JPG = a still image · GIF / MP4 = an "
+                            "animation.",
                         )
                         pn_outdir = gr.Textbox(
+                            value=cfg["output_dir"],
                             label="Save a copy to folder (optional)",
                             placeholder="/path/to/your L-Connect media folder",
-                            info="A timestamped copy is written here on export, in "
-                            "addition to the download below.",
+                            info="On export, also drops a timestamped copy into this "
+                            "folder (e.g. your L-Connect media folder), on top of the "
+                            "normal download.",
                         )
+                        with gr.Accordion("Tips", open=False):
+                            gr.Markdown(
+                                "* **Cover fit suits most photos**; use contain when "
+                                "you can't crop any edges.\n"
+                                "* **Use Pan X / Pan Y to reframe** which part "
+                                "survives a cover crop.\n"
+                                "* **Enhance the source only if it's low-res** and "
+                                "looks soft on the panel; ×2 is plenty.\n"
+                                "* **For a looping GIF / MP4, pick crossfade or "
+                                "boomerang** to hide the repeat seam.\n"
+                                "* **Everything exports at the panel's exact 4:1 "
+                                "size** so L-Connect 3 never resamples it.",
+                                elem_classes="notes",
+                            )
                         with gr.Row():
                             pn_export = gr.Button("Export", variant="primary", size="lg", scale=3)
                             pn_clear = gr.Button("↺ Clear", variant="secondary", scale=1)
@@ -1333,6 +1679,87 @@ def build_demo() -> gr.Blocks:
                         )
                         pn_file = gr.File(label="Download export")
                         pn_info = gr.Markdown()
+
+            # ---- Tab 6: Library (everything you export, saved automatically) ----
+            with gr.Tab("Library") as lib_tab:
+                gr.HTML(_section_head(
+                    "Library", "Your Library",
+                    "Everything you export is saved here automatically, so your "
+                    "creations are easy to find and reuse. Browse images and GIFs, "
+                    "preview your videos, or open the folder to manage the files.",
+                    icon=ICON_LIBRARY,
+                ))
+                with gr.Row(elem_classes="toolbar"):
+                    lib_refresh = gr.Button("🔄 Refresh", variant="secondary", size="sm")
+                    lib_open = gr.Button("📂 Open folder", variant="secondary", size="sm")
+                lib_count = gr.Markdown()
+                with gr.Row(equal_height=False):
+                    with gr.Column(scale=3):
+                        lib_gallery = gr.Gallery(
+                            label="Images & GIFs", columns=4, height=560,
+                            object_fit="cover", buttons=["download", "fullscreen"],
+                            elem_classes=["loupe"],
+                        )
+                    with gr.Column(scale=2):
+                        lib_video_pick = gr.Dropdown(
+                            label="Your videos", filterable=False,
+                        )
+                        lib_video = gr.Video(label="Preview", buttons=["download"])
+
+        # ---- Settings: its own page, opened by the ⚙ gear (hidden by default) ----
+        with gr.Column(visible=False) as settings_view:
+            set_back = gr.Button("← Back to the app", variant="secondary", size="sm")
+            gr.HTML(_section_head(
+                "Settings", "Settings & Setup",
+                "Set your defaults once, see where your files live, and follow the "
+                "step-by-step guide to run Upscaler on a Windows PC.",
+                icon=ICON_SETTINGS,
+            ))
+            with gr.Row():
+                with gr.Column(scale=1):
+                    with gr.Accordion("Preferences", open=True):
+                        set_device = gr.Dropdown(
+                            _DEVICES, value=_cfg_device, label="Default device",
+                            filterable=False,
+                            info="Where work runs by default — \"auto\" uses your "
+                            "graphics card (GPU) when it can, otherwise the CPU.",
+                        )
+                        set_model = gr.Dropdown(
+                            _MODEL_CHOICES, value=_cfg_model,
+                            label="Default upscale model", filterable=False,
+                            info="The model pre-selected on the Upscale tab when "
+                            "the app starts.",
+                        )
+                        set_outdir = gr.Textbox(
+                            value=cfg["output_dir"], label="Default save-to folder",
+                            placeholder="/path/to/a folder (optional)",
+                            info="Pre-fills the Lian Li \"save a copy to folder\" box.",
+                        )
+                        set_save = gr.Button("Save preferences", variant="primary")
+                        set_status = gr.Markdown()
+                        gr.Markdown(
+                            "*Stored in `~/.upscaler/config.json` · applied the "
+                            "next time you start the app.*"
+                        )
+                    with gr.Accordion("Where your files live", open=False):
+                        gr.Markdown(
+                            f"- **Library (your exports):** `{library.LIBRARY_DIR}`\n"
+                            f"- **Preferences:** `{config.CONFIG_PATH}`\n\n"
+                            "Everything you make is saved to the Library "
+                            "automatically — browse it in the **Library** tab."
+                        )
+                        set_open_lib = gr.Button(
+                            "📂 Open library folder", variant="secondary", size="sm"
+                        )
+                    with gr.Accordion("About", open=False):
+                        gr.Markdown(
+                            f"**Upscaler** · running locally on **{device_name}** · "
+                            "powered by Real-ESRGAN + NAFNet. 100% offline — no "
+                            "cloud, no API keys, nothing uploaded."
+                        )
+                with gr.Column(scale=1):
+                    with gr.Accordion("Install on Windows — step by step", open=True):
+                        gr.Markdown(WINDOWS_GUIDE)
 
         conv_btn.click(
             convert_image,
@@ -1415,6 +1842,25 @@ def build_demo() -> gr.Blocks:
         pn_clear.click(
             lambda: (None, None, None), None, [pn_media, pn_preview, pn_file]
         )
+
+        # ---- Library tab ----
+        _lib_outputs = [lib_gallery, lib_video_pick, lib_video, lib_count]
+        lib_tab.select(refresh_library, None, _lib_outputs)   # load on open
+        lib_refresh.click(refresh_library, None, _lib_outputs)
+        lib_video_pick.change(lambda v: v, lib_video_pick, lib_video)
+        lib_open.click(open_library_folder, None, None)
+
+        # ---- Settings page (opened by the ⚙ gear, closed by Back) ----
+        settings_btn.click(
+            lambda: (gr.update(visible=False), gr.update(visible=True)),
+            None, [main_tabs, settings_view],
+        )
+        set_back.click(
+            lambda: (gr.update(visible=True), gr.update(visible=False)),
+            None, [main_tabs, settings_view],
+        )
+        set_save.click(save_settings, [set_device, set_model, set_outdir], set_status)
+        set_open_lib.click(open_library_folder, None, None)
     return demo
 
 
@@ -1426,4 +1872,7 @@ if __name__ == "__main__":
         css=_CSS,
         js=_APPLY_THEME_JS,
         head=_MAGNIFIER_HEAD,
+        # The Library reads from ~/.upscaler/library, outside the app dir — Gradio
+        # won't serve files from there unless the folder is explicitly allowed.
+        allowed_paths=[str(library.ensure_dir())],
     )

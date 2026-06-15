@@ -39,7 +39,7 @@ MODELS: dict[str, ModelSpec] = {
         scale=4,
         num_block=23,
         sha256="4fa0d38905f75ac06eb49a7951b426670021be3018265fd191d2125df9d682f1",
-        notes="General-purpose 4x. Good default.",
+        notes="General-purpose. A good default.",
     ),
     "realesrgan-x2plus": ModelSpec(
         name="realesrgan-x2plus",
@@ -48,7 +48,7 @@ MODELS: dict[str, ModelSpec] = {
         scale=2,
         num_block=23,
         sha256="49fafd45f8fd7aa8d31ab2a22d14d91b536c34494a5cfe31eb5d89c2fa266abb",
-        notes="General-purpose 2x.",
+        notes="General-purpose, gentler on already-good photos.",
     ),
     "realesrgan-x4plus-anime": ModelSpec(
         name="realesrgan-x4plus-anime",

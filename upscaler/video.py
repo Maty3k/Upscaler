@@ -121,7 +121,10 @@ def upscale_video(
         _run([ff, "-y", *seek, "-i", str(src), *dur, str(in_dir / "f_%06d.png")])
         frames = sorted(in_dir.glob("f_*.png"))
         if not frames:
-            raise RuntimeError("No frames could be extracted from the video.")
+            raise RuntimeError(
+                "No frames could be read from the video — it may be corrupt or in "
+                "an unsupported format."
+            )
 
         # 2. upscale each frame
         for i, fr in enumerate(frames, 1):
