@@ -49,8 +49,19 @@ def test_resolve_deblur_model():
 
 
 def test_deblur_specs_use_confirmed_config():
-    # Both GoPro checkpoints share this block layout (from official option files).
-    for spec in DEBLUR_MODELS.values():
-        assert spec.enc_blk_nums == (1, 1, 1, 28)
-        assert spec.dec_blk_nums == (1, 1, 1, 1)
-        assert spec.middle_blk_num == 1
+    # Confirmed block layouts from the official NAFNet option files: the two
+    # GoPro deblur checkpoints share one config; SIDD denoise uses a deeper one.
+    # (width, middle_blk_num, enc_blk_nums, dec_blk_nums)
+    confirmed = {
+        "nafnet-gopro-width64": (64, 1, (1, 1, 1, 28), (1, 1, 1, 1)),
+        "nafnet-gopro-width32": (32, 1, (1, 1, 1, 28), (1, 1, 1, 1)),
+        "nafnet-sidd-width64": (64, 12, (2, 2, 4, 8), (2, 2, 2, 2)),
+    }
+    # A new deblur model must come with its confirmed config here.
+    assert set(DEBLUR_MODELS) == set(confirmed)
+    for name, (width, middle, enc, dec) in confirmed.items():
+        spec = DEBLUR_MODELS[name]
+        assert spec.width == width, name
+        assert spec.middle_blk_num == middle, name
+        assert spec.enc_blk_nums == enc, name
+        assert spec.dec_blk_nums == dec, name

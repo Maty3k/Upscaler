@@ -135,8 +135,8 @@ DEBLUR_MODELS: dict[str, DeblurSpec] = {
         middle_blk_num=12,
         enc_blk_nums=(2, 2, 4, 8),
         dec_blk_nums=(2, 2, 2, 2),
-        sha256=None,  # pin before a release (see scripts/print_checksums.py)
-        notes="Denoise (SIDD) — removes sensor noise / grain (not motion blur). ~272MB.",
+        sha256="cd685efaae01f7c4e9951f2deab05780079c8eb1e49ed664b72f6db04dabb445",
+        notes="Denoise (SIDD) — removes sensor noise / grain (not motion blur). ~443MB.",
     ),
 }
 
