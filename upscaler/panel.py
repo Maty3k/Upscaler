@@ -508,6 +508,16 @@ def export_still(src_path: str | None, p: PanelParams, fmt: str) -> str:
     return out
 
 
+def _ffmpeg_run(cmd: list) -> None:
+    """Run an ffmpeg command, raising RuntimeError (with a stderr tail) when it
+    fails — so a broken extract/encode surfaces as a real error instead of
+    silently leaving a 0-byte or truncated output that we'd report as success."""
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        tail = "\n".join((proc.stderr or "").strip().splitlines()[-6:])
+        raise RuntimeError(f"ffmpeg failed:\n{tail}")
+
+
 def _extract_frames(src_path: str, fps: float, start: float, dur: float, into: str) -> int:
     """Extract frames into `into` as frame_%05d.png; return the frame count."""
     cmd = [_ffmpeg(), "-y"]
@@ -517,7 +527,7 @@ def _extract_frames(src_path: str, fps: float, start: float, dur: float, into: s
     if dur > 0:
         cmd += ["-t", str(dur)]
     cmd += ["-vf", f"fps={fps}", "-vsync", "0", os.path.join(into, "frame_%05d.png")]
-    subprocess.run(cmd, capture_output=True)
+    _ffmpeg_run(cmd)
     return len([f for f in os.listdir(into) if f.startswith("frame_")])
 
 
@@ -621,12 +631,13 @@ def _encode_mp4(in_pattern: str, fps: int, progress=None) -> str:
     os.close(fd)
     if progress:
         progress(0.8, desc="Encoding H.264…")
-    subprocess.run(
+    _ffmpeg_run(
         [_ffmpeg(), "-y", "-framerate", str(fps), "-i", in_pattern,
          "-c:v", "libx264", "-pix_fmt", "yuv420p", "-profile:v", "main",
-         "-preset", "medium", "-movflags", "+faststart", "-r", str(fps), out],
-        capture_output=True,
+         "-preset", "medium", "-movflags", "+faststart", "-r", str(fps), out]
     )
+    if not os.path.getsize(out):
+        raise RuntimeError("ffmpeg produced an empty MP4.")
     if progress:
         progress(1.0)
     return out
@@ -643,11 +654,12 @@ def _encode_gif(in_pattern: str, fps: int, loop: bool, colors: int, progress=Non
         f"fps={fps},split[s0][s1];[s0]palettegen=max_colors={colors}[p];"
         f"[s1][p]paletteuse=dither=bayer"
     )
-    subprocess.run(
+    _ffmpeg_run(
         [_ffmpeg(), "-y", "-framerate", str(fps), "-i", in_pattern,
-         "-vf", vf, "-loop", loop_arg, out],
-        capture_output=True,
+         "-vf", vf, "-loop", loop_arg, out]
     )
+    if not os.path.getsize(out):
+        raise RuntimeError("ffmpeg produced an empty GIF.")
     if progress:
         progress(1.0)
     return out

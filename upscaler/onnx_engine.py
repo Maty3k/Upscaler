@@ -60,7 +60,17 @@ class OnnxUpscaler:
         self._inp = self.sess.get_inputs()[0].name
 
     def _run(self, x: np.ndarray) -> np.ndarray:
-        return self.sess.run(None, {self._inp: x.astype(np.float32)})[0]
+        # ×2 / ×1 models pixel-unshuffle by 2 / 4, so the input H/W must be a
+        # multiple of that; pad odd-sized images/tiles up and crop the result
+        # back (mirrors OnnxDeblurrer). ×4 needs no padding.
+        m = 2 if self.scale == 2 else 4 if self.scale == 1 else 1
+        _, _, h, w = x.shape
+        if m > 1:
+            ph, pw = (-h) % m, (-w) % m
+            if ph or pw:
+                x = np.pad(x, ((0, 0), (0, 0), (0, ph), (0, pw)), mode="edge")
+        out = self.sess.run(None, {self._inp: x.astype(np.float32)})[0]
+        return out[:, :, : h * self.scale, : w * self.scale]
 
     def upscale(self, image: Image.Image) -> Image.Image:
         x = _to_chw(image)
