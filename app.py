@@ -361,6 +361,91 @@ def _switch_method(choice):
     )
 
 
+# -- Batch processing (one operation over many images) -----------------------
+
+_BATCH_OPS = ["Upscale", "Convert format", "Remove background"]
+
+
+def _switch_batch_op(op):
+    """Show only the settings group for the selected batch operation."""
+    return (
+        gr.update(visible=op == _BATCH_OPS[0]),
+        gr.update(visible=op == _BATCH_OPS[1]),
+        gr.update(visible=op == _BATCH_OPS[2]),
+    )
+
+
+def batch_process(files, op, model, out_size, sharpen, fmt, quality,
+                  bg_model, feather, device, tile, progress=gr.Progress()):
+    """Run one operation over many uploaded images. Returns (gallery, zip, info).
+
+    Resilient: a file that can't be read or fails is skipped and counted, so one
+    bad image never sinks the whole batch. Every result is also saved to the
+    Library.
+    """
+    if not files:
+        raise gr.Error("Add at least one image to process.")
+    work = tempfile.mkdtemp()
+    saved: list[str] = []
+    gallery: list = []
+    failed = 0
+    n = len(files)
+    for i, f in enumerate(files):
+        progress(i / n, desc=f"{op} · {i + 1}/{n}")
+        try:
+            src = Image.open(str(f))
+            base = os.path.splitext(os.path.basename(str(f)))[0]
+            if op == "Upscale":
+                res = _get_upscaler(model, device, int(tile), False).upscale(src.convert("RGB"))
+                if sharpen > 0:
+                    res = unsharp_mask(res, strength=float(sharpen))
+                target = _SIZE_PRESETS.get(out_size)
+                if target:
+                    w, h = res.size
+                    longest = max(w, h)
+                    if longest != target:
+                        r = target / longest
+                        res = res.resize(
+                            (max(1, round(w * r)), max(1, round(h * r))), Image.LANCZOS
+                        )
+                out = os.path.join(work, f"{base}_upscaled.png")
+                res.save(out, "PNG")
+                gallery.append(res)
+                library.save_image(res, "upscale")
+            elif op == "Convert format":
+                data = convert(src, fmt, quality=int(quality), lossless=False)
+                out = os.path.join(work, f"{base}.{extension_for(fmt)}")
+                with open(out, "wb") as fo:
+                    fo.write(data)
+                gallery.append(src.convert("RGB"))  # AVIF/HEIC may not render; show source
+                library.save_path(out, "convert")
+            else:  # Remove background
+                cut = background.remove_background(
+                    src.convert("RGB"), model=bg_model, feather=int(feather)
+                )
+                out = os.path.join(work, f"{base}_cutout.png")
+                cut.save(out, "PNG")
+                gallery.append(background.on_checkerboard(cut))
+                library.save_path(out, "removebg")
+            saved.append(out)
+        except Exception:  # noqa: BLE001 — batch must survive a single bad file
+            failed += 1
+            continue
+
+    if not saved:
+        raise gr.Error("None of those files could be processed as images.")
+    fd, zpath = tempfile.mkstemp(suffix=".zip")
+    with os.fdopen(fd, "wb") as fh, zipfile.ZipFile(fh, "w") as z:
+        for sp in saved:
+            z.write(sp, arcname=os.path.basename(sp))
+    progress(1.0, desc="Done")
+    skipped = f" · {failed} skipped" if failed else ""
+    return gallery, zpath, (
+        f"✅ Processed **{len(saved)}** of {n} image(s) · {op}{skipped}. "
+        "Download the ZIP below — results are also saved to your Library."
+    )
+
+
 # -- Lian Li 8.8" panel builder ----------------------------------------------
 
 # Overlay slots: up to N_TEXT styled text layers + N_STICKER image stickers.
@@ -405,6 +490,13 @@ def _panel_params(orientation, fit, zoom, off_x, off_y, bg_type, bg_color,
 def panel_preview_ui(media, *vals):
     """Live crop-dimming preview (bright = kept, dim = cropped out)."""
     return panel.preview(media, _panel_params(*vals))
+
+
+def panel_mockup_ui(media, *vals):
+    """Render a 3D-style product mockup of the composed panel on the screen."""
+    if not media:
+        raise gr.Error("Upload an image, GIF or video first.")
+    return panel.mockup(media, _panel_params(*vals))
 
 
 def panel_on_media(media):
@@ -956,6 +1048,8 @@ ICON_LIBRARY = _svg('<rect x="3" y="3" width="7" height="7" rx="1.5"/>'
                     '<rect x="14" y="3" width="7" height="7" rx="1.5"/>'
                     '<rect x="3" y="14" width="7" height="7" rx="1.5"/>'
                     '<rect x="14" y="14" width="7" height="7" rx="1.5"/>')
+ICON_BATCH = _svg('<rect x="8" y="8" width="12" height="12" rx="2"/>'
+                  '<path d="M4 16V6a2 2 0 0 1 2-2h10"/>')
 ICON_SETTINGS = _svg('<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 '
                      '0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 '
                      '0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 '
@@ -1452,6 +1546,86 @@ def build_demo() -> gr.Blocks:
                         bg_file = gr.File(label="Download transparent PNG")
                         bg_info = gr.Markdown()
 
+            # ---- Tab 4b: Batch (one operation over many images) ----
+            with gr.Tab("Batch"):
+                gr.HTML(_section_head(
+                    "Batch", "Batch Processing",
+                    "Drop a whole stack of images, pick one operation, and run it "
+                    "over all of them at once. Results download as a ZIP and are "
+                    "saved to your Library.",
+                    icon=ICON_BATCH,
+                ))
+                with gr.Row(equal_height=False):
+                    with gr.Column(scale=1):
+                        batch_in = gr.File(
+                            label="Images (drop as many as you like)",
+                            file_count="multiple", file_types=["image"],
+                            elem_classes="drop",
+                        )
+                        batch_op = gr.Radio(
+                            _BATCH_OPS, value="Upscale", label="Operation",
+                            info="What to do to every image you dropped above.",
+                        )
+                        with gr.Column(visible=True) as batch_grp_up:
+                            batch_model = gr.Dropdown(
+                                _MODEL_CHOICES, value=_cfg_model,
+                                label="Upscale model", filterable=False,
+                            )
+                            batch_size = gr.Dropdown(
+                                list(_SIZE_PRESETS), value="Model default (×2/×4)",
+                                label="Output size", filterable=False,
+                            )
+                            batch_sharpen = gr.Slider(
+                                0.0, 3.0, value=0.0, step=0.1,
+                                label="Sharpen edges — 0 = off",
+                            )
+                        with gr.Column(visible=False) as batch_grp_conv:
+                            batch_fmt = gr.Dropdown(
+                                list(FORMATS), value="PNG", label="Convert to",
+                                filterable=False,
+                            )
+                            batch_quality = gr.Slider(
+                                1, 100, value=90, step=1, label="Quality (lossy)",
+                            )
+                        with gr.Column(visible=False) as batch_grp_bg:
+                            batch_bg_model = gr.Dropdown(
+                                _BG_CHOICES, value=background.DEFAULT_BG_MODEL,
+                                label="Model", filterable=False,
+                            )
+                            batch_feather = gr.Slider(
+                                0, 10, value=1, step=1, label="Edge feather (px)",
+                            )
+                        with gr.Accordion("Advanced", open=False):
+                            batch_device = gr.Dropdown(
+                                _DEVICES, value=_cfg_device, label="Device",
+                                filterable=False,
+                            )
+                            batch_tile = gr.Slider(
+                                0, 1024, value=512, step=64,
+                                label="Tile size (0 = off)",
+                            )
+                        batch_run = gr.Button("Process all", variant="primary", size="lg")
+                    with gr.Column(scale=1):
+                        batch_gallery = gr.Gallery(
+                            label="Results", columns=3, height=420,
+                            object_fit="cover", buttons=["download", "fullscreen"],
+                            elem_classes=["loupe"],
+                        )
+                        batch_zip = gr.File(label="Download all (ZIP)")
+                        batch_info = gr.Markdown()
+                batch_op.change(
+                    _switch_batch_op, batch_op,
+                    [batch_grp_up, batch_grp_conv, batch_grp_bg],
+                )
+                batch_run.click(
+                    batch_process,
+                    [batch_in, batch_op, batch_model, batch_size, batch_sharpen,
+                     batch_fmt, batch_quality, batch_bg_model, batch_feather,
+                     batch_device, batch_tile],
+                    [batch_gallery, batch_zip, batch_info],
+                    show_progress_on=[batch_gallery],
+                )
+
             # ---- Tab 5: Lian Li 8.8" Screen builder ----
             with gr.Tab("Lian Li Screen"):
                 gr.HTML(_section_head(
@@ -1677,6 +1851,15 @@ def build_demo() -> gr.Blocks:
                             label="Preview — bright = kept, dim = cropped out",
                             height=300, buttons=["fullscreen"], elem_classes=["loupe"],
                         )
+                        pn_mockup_btn = gr.Button(
+                            "🖥️ See it on the screen (3D)", variant="secondary",
+                            size="sm",
+                        )
+                        pn_mockup = gr.Image(
+                            label="On the Lian Li panel — a 3D mockup",
+                            height=260, buttons=["download", "fullscreen"],
+                            elem_classes=["loupe"],
+                        )
                         pn_file = gr.File(label="Download export")
                         pn_info = gr.Markdown()
 
@@ -1841,6 +2024,10 @@ def build_demo() -> gr.Blocks:
         )
         pn_clear.click(
             lambda: (None, None, None), None, [pn_media, pn_preview, pn_file]
+        )
+        pn_mockup_btn.click(
+            panel_mockup_ui, _pn_preview_inputs, pn_mockup,
+            show_progress_on=[pn_mockup],
         )
 
         # ---- Library tab ----

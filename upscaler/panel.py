@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 
 import numpy as np
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 from upscaler.video import _ffmpeg
 
@@ -354,6 +354,94 @@ def preview(src_path: str | None, p: PanelParams, frame: Image.Image | None = No
         d.line([(gx, pad_y), (gx, pad_y + disp_fh)], fill=(255, 255, 255, 60), width=1)
         d.line([(pad_x, gy), (pad_x + disp_fw, gy)], fill=(255, 255, 255, 60), width=1)
     return prev
+
+
+# ── 3D-style product mockup ───────────────────────────────────────────────────
+def _perspective_coeffs(dst: list, src: list) -> list:
+    """8 PIL PERSPECTIVE coefficients mapping the output `dst` quad back to the
+    input `src` quad (each a list of 4 (x, y) corners: TL, TR, BR, BL)."""
+    m = []
+    for (dx, dy), (sx, sy) in zip(dst, src):
+        m.append([dx, dy, 1, 0, 0, 0, -sx * dx, -sx * dy])
+        m.append([0, 0, 0, dx, dy, 1, -sy * dx, -sy * dy])
+    A = np.array(m, dtype=np.float64)
+    b = np.array(src, dtype=np.float64).reshape(8)
+    return np.linalg.solve(A, b).tolist()
+
+
+def mockup(src_path: str | None, p: PanelParams, width: int = 1400) -> Image.Image:
+    """Render the composed panel as a 3D-style product shot of the physical
+    Lian Li screen: a bezel-framed display tilted in perspective, with a screen
+    glow and a faded floor reflection on a dark studio background.
+
+    Server-side (PIL) so it integrates with the reactive UI and adds no deps.
+    Returns an RGB image.
+    """
+    comp = compose_frame(_first_image(src_path), p).convert("RGB")
+    cw, ch = comp.size
+    portrait = ch > cw
+
+    # 1. Scale the screen to a sensible size within the canvas.
+    if portrait:
+        sh = max(1, int(width * 0.46)); sw = max(1, round(sh * cw / ch))
+    else:
+        sw = max(1, int(width * 0.80)); sh = max(1, round(sw * ch / cw))
+    screen = comp.resize((sw, sh), Image.LANCZOS)
+
+    # 2. Bezel: a dark rounded frame around the screen with a faint rim.
+    b = max(8, round(min(sw, sh) * 0.05))
+    fw, fh = sw + 2 * b, sh + 2 * b
+    frame = Image.new("RGBA", (fw, fh), (0, 0, 0, 0))
+    d = ImageDraw.Draw(frame)
+    rad = max(10, b)
+    d.rounded_rectangle([0, 0, fw - 1, fh - 1], radius=rad, fill=(18, 18, 20, 255))
+    d.rounded_rectangle([1, 1, fw - 2, fh - 2], radius=rad, outline=(72, 72, 80, 255), width=2)
+    frame.paste(screen, (b, b))
+
+    # 3. Yaw perspective — the right edge recedes for a 3/4 view.
+    k = 0.22
+    src_q = [(0, 0), (fw, 0), (fw, fh), (0, fh)]
+    dst_q = [(0, 0), (fw, fh * k * 0.5), (fw, fh * (1 - k * 0.5)), (0, fh)]
+    tilted = frame.transform(
+        (fw, fh), Image.PERSPECTIVE, _perspective_coeffs(dst_q, src_q),
+        resample=Image.BICUBIC,
+    )
+
+    # 4. Dark studio background (vertical gradient).
+    height = max(1, round(width * (1.0 if portrait else 0.64)))
+    yy = np.linspace(0.0, 1.0, height, dtype=np.float32)
+    top = np.array([32, 32, 37], np.float32)
+    bot = np.array([11, 11, 13], np.float32)
+    col = top[None, :] * (1 - yy)[:, None] + bot[None, :] * yy[:, None]
+    bg_arr = np.repeat(col[:, None, :], width, axis=1).clip(0, 255).astype(np.uint8)
+    bg = Image.fromarray(bg_arr, "RGB")
+
+    sx = (width - fw) // 2
+    sy = round(height * (0.13 if not portrait else 0.06))
+
+    # 5. Screen glow — a large soft, low-opacity colour spill onto the studio
+    #    (radial alpha falloff so it reads as ambient light, not a rectangle).
+    glow = screen.resize((round(fw * 1.35), round(fh * 1.6)), Image.LANCZOS)
+    glow = glow.filter(ImageFilter.GaussianBlur(max(22, b * 3)))
+    gw, gh = glow.size
+    ax = 1 - np.abs(np.linspace(-1, 1, gw, dtype=np.float32))
+    ay = 1 - np.abs(np.linspace(-1, 1, gh, dtype=np.float32))
+    gmask = (np.outer(ay, ax) * 90).clip(0, 255).astype(np.uint8)
+    glow.putalpha(Image.fromarray(gmask, "L"))
+    bg.paste(glow, (sx - (gw - fw) // 2, sy - (gh - fh) // 2), glow)
+
+    # 6. Faded floor reflection beneath the screen.
+    refl = tilted.transpose(Image.FLIP_TOP_BOTTOM)
+    fade = np.repeat(
+        np.linspace(80, 0, refl.height, dtype=np.uint8)[:, None], refl.width, axis=1
+    )
+    ralpha = (np.array(refl.split()[-1], np.uint16) * fade // 255).astype(np.uint8)
+    refl.putalpha(Image.fromarray(ralpha, "L"))
+    bg.paste(refl, (sx, sy + fh + max(3, b // 2)), refl)
+
+    # 7. The screen itself on top.
+    bg.paste(tilted, (sx, sy), tilted)
+    return bg
 
 
 @lru_cache(maxsize=8)
