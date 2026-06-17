@@ -10,6 +10,7 @@ import types
 
 import numpy as np
 import pytest
+import torch
 from PIL import Image
 from torch.nn import functional as F
 
@@ -100,3 +101,30 @@ def test_spandrel_fp16_gated_by_supports_half(monkeypatch):
 def test_spandrel_rejects_non_rgb(monkeypatch):
     with pytest.raises(RuntimeError, match="channel"):
         _spandrel_upscaler(monkeypatch, _FakeDesc(in_ch=1, out_ch=3), tile=0)
+
+
+def test_install_runs_only_once(monkeypatch):
+    # Regression: spandrel_extra_arches.install() raises on a second call, so
+    # loading a second model in one process (e.g. GFPGAN after CodeFormer) must
+    # not re-install. The guard makes install() run exactly once.
+    calls = {"n": 0}
+
+    def install():
+        calls["n"] += 1
+        if calls["n"] > 1:
+            raise RuntimeError("Duplicate architecture")
+
+    spandrel = types.ModuleType("spandrel")
+    spandrel.ModelLoader = type(
+        "ModelLoader", (), {"load_from_file": lambda self, p: _FakeDesc()}
+    )
+    sea = types.ModuleType("spandrel_extra_arches")
+    sea.install = install
+    monkeypatch.setitem(sys.modules, "spandrel", spandrel)
+    monkeypatch.setitem(sys.modules, "spandrel_extra_arches", sea)
+    monkeypatch.setattr(engine, "_SPANDREL_INSTALLED", False)
+
+    dev = torch.device("cpu")
+    engine.load_spandrel("a.pth", dev, require_channels=None)
+    engine.load_spandrel("b.pth", dev, require_channels=None)  # must not raise
+    assert calls["n"] == 1
