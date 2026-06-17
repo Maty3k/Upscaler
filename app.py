@@ -26,7 +26,12 @@ from upscaler.convert import FORMATS, convert, extension_for
 from upscaler.document import images_to_pdf, pdf_to_images
 from upscaler.deblur import Deblurrer
 from upscaler.engine import Upscaler, resolve_device
-from upscaler.models.registry import DEBLUR_MODELS, MODELS
+from upscaler.models.registry import (
+    DEBLUR_MODELS,
+    DEFAULT_FACE_MODEL,
+    FACE_MODELS,
+    MODELS,
+)
 from upscaler.sharpen import unsharp_mask
 
 # Cache loaded models so switching images doesn't reload weights every run.
@@ -34,6 +39,7 @@ from upscaler.sharpen import unsharp_mask
 _UP_CACHE: dict[tuple, object] = {}
 _DB_CACHE: dict[tuple, object] = {}
 _FACE_CACHE: dict[tuple, object] = {}
+_FBCNN_CACHE: dict[tuple, object] = {}
 
 
 def _onnx_engines():
@@ -73,13 +79,23 @@ def _get_deblurrer(model: str, device: str, onnx: bool):
     return db
 
 
-def _get_face_restorer(device: str):
-    key = (device,)
+def _get_face_restorer(model: str, device: str):
+    key = (model, device)  # keyed by model too, so switching models isn't stale
     fr = _FACE_CACHE.get(key)
     if fr is None:
         from upscaler.face import FaceRestorer  # optional dep, imported lazily
-        fr = FaceRestorer(device=device)
+        fr = FaceRestorer(model=model, device=device)
         _FACE_CACHE[key] = fr
+    return fr
+
+
+def _get_fbcnn(device: str):
+    key = (device,)
+    fr = _FBCNN_CACHE.get(key)
+    if fr is None:
+        from upscaler.restore import ArtifactRemover  # optional dep, lazy import
+        fr = ArtifactRemover(device=device)
+        _FBCNN_CACHE[key] = fr
     return fr
 
 
@@ -198,13 +214,39 @@ def _restore(src_img, deblur_model, device, onnx, strength):
     return blended, True
 
 
+def _restore_fbcnn(src_img, device):
+    """Remove JPEG artifacts (FBCNN). Returns (image, ok); ok=False if the model
+    produced something that doesn't resemble the input (same garbage-guard as
+    _restore), so callers can skip it and warn instead."""
+    rgb = src_img.convert("RGB")
+    out = _get_fbcnn(device).restore(rgb)
+    if not _structural_ok(rgb, out):
+        return rgb, False
+    return out, True
+
+
 def enhance(image, model, device, deblur, deblur_model, restore_strength, sharpen,
-            tile, onnx, out_size, face=False, face_strength=1.0):
+            tile, onnx, out_size, face=False, face_strength=1.0,
+            face_model=DEFAULT_FACE_MODEL, face_fidelity=0.5, fbcnn=False):
     if image is None:
         raise gr.Error("Upload an image to enhance first.")
     original = image if isinstance(image, Image.Image) else Image.fromarray(image)
     src = original
     stages = []
+    if fbcnn:  # de-block JPEGs first, before any denoise/deblur
+        try:
+            src, ok = _restore_fbcnn(src, device)
+        except RuntimeError as e:  # missing [face] deps → friendly install message
+            raise gr.Error(str(e)) from e
+        except (OSError, AssertionError, ValueError) as e:
+            raise gr.Error(
+                "Couldn't remove JPEG artifacts. The model downloads on first use, "
+                "so check your connection and try again."
+            ) from e
+        stages.append(
+            "remove JPEG artifacts (FBCNN)" if ok
+            else "⚠ JPEG-artifact removal skipped — didn't suit this image"
+        )
     try:
         if deblur:
             src, ok = _restore(src, deblur_model, device, onnx, restore_strength)
@@ -224,7 +266,9 @@ def enhance(image, model, device, deblur, deblur_model, restore_strength, sharpe
     stages.append(f"upscale ×{up.scale}")
     if face:
         try:
-            result = _get_face_restorer(device).restore(result, face_strength)
+            result = _get_face_restorer(face_model, device).restore(
+                result, face_strength, fidelity=face_fidelity
+            )
         except RuntimeError as e:  # missing [face] deps → friendly install message
             raise gr.Error(str(e)) from e
         except (OSError, AssertionError, ValueError) as e:
@@ -233,7 +277,7 @@ def enhance(image, model, device, deblur, deblur_model, restore_strength, sharpe
                 "check your connection and try again."
             ) from e
         fpct = "" if face_strength >= 0.999 else f" @{int(round(face_strength * 100))}%"
-        stages.append(f"faces (GFPGAN){fpct}")
+        stages.append(f"faces ({face_model}){fpct}")
     if sharpen > 0:
         result = unsharp_mask(result, strength=float(sharpen))
         stages.append(f"sharpen {sharpen:g}")
@@ -260,27 +304,49 @@ def enhance(image, model, device, deblur, deblur_model, restore_strength, sharpe
     return (original, result), info
 
 
-def restore_only(image, deblur_model, restore_strength, sharpen, device, onnx):
-    """Run just the NAFNet restoration pass (deblur or denoise) — no upscaling."""
+def restore_only(image, deblur_model, restore_strength, sharpen, device, onnx,
+                 fbcnn=False):
+    """Run just the clean-up passes (FBCNN de-block and/or NAFNet deblur/denoise)
+    — no upscaling."""
     if image is None:
         raise gr.Error("Upload an image to clean up first.")
     original = image if isinstance(image, Image.Image) else Image.fromarray(image)
+    src = original
+    stages = []
+    if fbcnn:  # de-block JPEGs first
+        try:
+            src, fok = _restore_fbcnn(src, device)
+        except RuntimeError as e:  # missing [face] deps → friendly install message
+            raise gr.Error(str(e)) from e
+        except (OSError, AssertionError, ValueError) as e:
+            raise gr.Error(
+                "Couldn't remove JPEG artifacts. The model downloads on first use, "
+                "so check your connection and try again."
+            ) from e
+        stages.append(
+            "remove JPEG artifacts (FBCNN)" if fok
+            else "⚠ JPEG-artifact removal skipped — didn't suit this image"
+        )
     try:
-        result, ok = _restore(original, deblur_model, device, onnx, restore_strength)
+        result, ok = _restore(src, deblur_model, device, onnx, restore_strength)
     except (RuntimeError, AssertionError, OSError, ValueError) as e:
         raise gr.Error(
             "Couldn't run the clean-up. If you set a specific Device (cuda / mps) "
             "your machine may not support it — try \"auto\". Models also download "
             "on first use, so check your connection."
         ) from e
-    if not ok:
+    if ok:
+        pct = "" if restore_strength >= 0.999 else f" @{int(round(restore_strength * 100))}%"
+        stages.append(f"clean up `{deblur_model}`{pct}")
+    elif fbcnn:
+        # NAFNet didn't suit the image, but FBCNN already cleaned it — keep that.
+        result = src
+    else:
         return (original, original), (
             f"⚠ The `{deblur_model}` clean-up didn't suit this image, so it was "
             "skipped. For a noisy or grainy photo, choose the **SIDD (denoise)** "
             "model — GoPro only fixes genuine motion blur."
         )
-    pct = "" if restore_strength >= 0.999 else f" @{int(round(restore_strength * 100))}%"
-    stages = [f"clean up `{deblur_model}`{pct}"]
     if sharpen > 0:
         result = unsharp_mask(result, strength=float(sharpen))
         stages.append(f"sharpen {sharpen:g}")
@@ -656,6 +722,7 @@ def panel_enhance_source(media, up_model, *vals, progress=gr.Progress()):
 
 _MODEL_CHOICES = [(f"{s.name}  (×{s.scale}) — {s.notes}", s.name) for s in MODELS.values()]
 _DEBLUR_CHOICES = [(f"{s.name} — {s.notes}", s.name) for s in DEBLUR_MODELS.values()]
+_FACE_CHOICES = [(f"{s.name} — {s.notes}", s.name) for s in FACE_MODELS.values()]
 _DEVICES = ["auto", "cpu", "cuda", "mps"]
 
 # One-click starting points for the Upscale tab. Each tunes the model + denoise
@@ -1308,23 +1375,43 @@ def build_demo() -> gr.Blocks:
                                 "effect; lower blends the original back in to keep "
                                 "more fine detail (and a little noise).",
                             )
+                            fbcnn = gr.Checkbox(
+                                value=False, label="Remove JPEG artifacts (FBCNN)",
+                                info="De-blocks heavily-compressed JPEGs — runs before "
+                                "the deblur/denoise above. Independent: tick either, "
+                                "both, or neither. Needs the optional \"face\" packages.",
+                            )
                             restore_btn = gr.Button(
                                 "✨ Clean up only (deblur / denoise · no upscale)",
                                 variant="secondary",
                             )
-                        with gr.Accordion("Restore faces (GFPGAN)", open=False):
+                        with gr.Accordion("Restore faces", open=False):
                             face = gr.Checkbox(
                                 value=False, label="Enhance faces",
                                 info="After upscaling, detect faces and restore them "
-                                "with GFPGAN — big improvement on photos of people. "
+                                "— a big improvement on photos of people. "
                                 "Needs the optional \"face\" packages.",
+                            )
+                            face_model = gr.Dropdown(
+                                _FACE_CHOICES, value=DEFAULT_FACE_MODEL,
+                                label="Face model", filterable=False,
+                                info="GFPGAN is the gentle, natural default. "
+                                "CodeFormer is stronger on badly degraded faces and "
+                                "lets you trade fidelity vs. quality below.",
                             )
                             face_strength = gr.Slider(
                                 0.0, 1.0, value=0.8, step=0.05,
                                 label="Face strength",
                                 info="How strongly faces are restored. 1 = full "
-                                "GFPGAN; lower blends the original face back in to "
-                                "keep more likeness.",
+                                "restoration; lower blends the original face back in "
+                                "to keep more likeness.",
+                            )
+                            face_fidelity = gr.Slider(
+                                0.0, 1.0, value=0.5, step=0.05,
+                                label="CodeFormer fidelity",
+                                info="Only used by CodeFormer. Higher = truer to the "
+                                "original face (safer); lower = stronger, freer "
+                                "restoration. Ignored by GFPGAN.",
                             )
                         with gr.Accordion("Advanced", open=False):
                             device = gr.Dropdown(
@@ -2042,13 +2129,14 @@ def build_demo() -> gr.Blocks:
         run.click(
             enhance,
             [inp, model, device, deblur, deblur_model, restore_strength, sharpen,
-             tile, onnx, out_size, face, face_strength],
+             tile, onnx, out_size, face, face_strength, face_model, face_fidelity,
+             fbcnn],
             [out, info],
             show_progress_on=[out],
         )
         restore_btn.click(
             restore_only,
-            [inp, deblur_model, restore_strength, sharpen, device, onnx],
+            [inp, deblur_model, restore_strength, sharpen, device, onnx, fbcnn],
             [out, info],
             show_progress_on=[out],
         )

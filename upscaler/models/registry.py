@@ -195,6 +195,41 @@ def resolve_deblur_model(model: Optional[str] = None) -> DeblurSpec:
     return DEBLUR_MODELS[name]
 
 
+# -- JPEG-artifact removal (optional, via the [face] extra) ------------------
+# FBCNN de-blocks heavily-compressed JPEGs before upscaling. Loaded via spandrel
+# (the arch ships in core spandrel), so no extra dependency beyond [face].
+
+@dataclass(frozen=True)
+class ArtifactSpec:
+    name: str
+    url: str
+    filename: str
+    sha256: Optional[str] = None
+    notes: str = ""
+
+
+ARTIFACT_MODELS: dict[str, ArtifactSpec] = {
+    "fbcnn-color": ArtifactSpec(
+        name="fbcnn-color",
+        url="https://github.com/jiaxi-jiang/FBCNN/releases/download/v1.0/fbcnn_color.pth",
+        filename="fbcnn_color.pth",
+        sha256="8b0e4ef23d59cf7ac934a342cb31a17619e4fa4a0b3374a9d78c5174312387e8",
+        notes="FBCNN — removes JPEG blocking/ringing artifacts (color). "
+        "Run it before upscaling a heavily-compressed photo. Research use. ~288MB.",
+    ),
+}
+DEFAULT_ARTIFACT_MODEL = "fbcnn-color"
+
+
+def resolve_artifact_model(model: Optional[str] = None) -> ArtifactSpec:
+    name = model or DEFAULT_ARTIFACT_MODEL
+    if name not in ARTIFACT_MODELS:
+        raise ValueError(
+            f"Unknown artifact model {name!r}. Available: {', '.join(sorted(ARTIFACT_MODELS))}"
+        )
+    return ARTIFACT_MODELS[name]
+
+
 # -- Face restoration (optional, via the [face] extra) -----------------------
 
 @dataclass(frozen=True)
@@ -204,6 +239,9 @@ class FaceSpec:
     filename: str
     sha256: Optional[str] = None
     notes: str = ""
+    # True if the model takes a per-call fidelity weight (CodeFormer's `w`):
+    # higher = truer to the original face, lower = stronger (freer) restoration.
+    fidelity: bool = False
 
 
 FACE_MODELS: dict[str, FaceSpec] = {
@@ -212,7 +250,16 @@ FACE_MODELS: dict[str, FaceSpec] = {
         url="https://github.com/TencentARC/GFPGAN/releases/download/v1.3.4/GFPGANv1.4.pth",
         filename="GFPGANv1.4.pth",
         sha256="e2cd4703ab14f4d01fd1383a8a8b266f9a5833dacee8e6a79d3bf21a1b6be5ad",
-        notes="GFPGAN v1.4 — restores faces in photos (Apache-2.0). ~349MB.",
+        notes="GFPGAN v1.4 — gentle, natural face restoration (Apache-2.0). ~349MB.",
+    ),
+    "codeformer": FaceSpec(
+        name="codeformer",
+        url="https://github.com/sczhou/CodeFormer/releases/download/v0.1.0/codeformer.pth",
+        filename="codeformer.pth",
+        sha256="1009e537e0c2a07d4cabce6355f53cb66767cd4b4297ec7a4a64ca4b8a5684b7",
+        notes="CodeFormer — stronger restoration with an adjustable fidelity dial; "
+        "best on badly degraded faces (S-Lab License 1.0, non-commercial). ~360MB.",
+        fidelity=True,
     ),
 }
 DEFAULT_FACE_MODEL = "gfpgan-v1.4"
@@ -242,5 +289,6 @@ def iter_pinned_specs():
     """
     yield from MODELS.values()
     yield from DEBLUR_MODELS.values()
+    yield from ARTIFACT_MODELS.values()
     yield from FACE_MODELS.values()
     yield FACE_DETECTOR

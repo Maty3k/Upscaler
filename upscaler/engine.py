@@ -90,6 +90,9 @@ class LoadedModel:
     output_channels: int
 
 
+_SPANDREL_INSTALLED = False  # spandrel_extra_arches.install() must run only once
+
+
 def load_spandrel(
     path,
     device: torch.device,
@@ -119,7 +122,13 @@ def load_spandrel(
             "This model needs extra packages. Install them with: "
             'pip install -e ".[face]"'
         ) from e
-    _sea.install()  # register GFPGAN/CodeFormer/HAT/DRCT/… into spandrel's registry
+    # Register GFPGAN/CodeFormer/HAT/DRCT/… into spandrel's registry — but only
+    # once per process: install() raises DuplicateArchitectureError if re-run, so
+    # loading a second spandrel model (e.g. GFPGAN after CodeFormer) would crash.
+    global _SPANDREL_INSTALLED
+    if not _SPANDREL_INSTALLED:
+        _sea.install()
+        _SPANDREL_INSTALLED = True
     desc = spandrel.ModelLoader().load_from_file(str(path))
     desc = desc.to(device).eval()
 

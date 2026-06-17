@@ -67,8 +67,15 @@ class FaceRestorer:
             self._net = lm.net
         return self._net
 
-    def restore(self, image: Image.Image, strength: float = 1.0) -> Image.Image:
-        """Return ``image`` with detected faces restored. Unchanged if none."""
+    def restore(
+        self, image: Image.Image, strength: float = 1.0, fidelity: float = 0.5
+    ) -> Image.Image:
+        """Return ``image`` with detected faces restored. Unchanged if none.
+
+        ``strength`` blends the restored face back toward the original (likeness).
+        ``fidelity`` only applies to models that expose a per-call weight
+        (CodeFormer): higher = truer to the original, lower = stronger restoration.
+        """
         import torch
 
         cv2 = self._cv2
@@ -82,6 +89,8 @@ class FaceRestorer:
 
         net = self._gfpgan()
         strength = max(0.0, min(1.0, float(strength)))
+        wgt = max(0.0, min(1.0, float(fidelity)))
+        uses_fidelity = bool(getattr(self._spec, "fidelity", False))
         out = bgr.astype(np.float32)
         for f in faces:
             lm = f[4:14].reshape(5, 2).astype(np.float32)
@@ -93,7 +102,13 @@ class FaceRestorer:
                 cv2.cvtColor(aligned, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
             ).permute(2, 0, 1).unsqueeze(0).to(self._device)
             with torch.inference_mode():
-                r = net(t).clamp(0, 1)[0].permute(1, 2, 0).float().cpu().numpy()
+                if uses_fidelity:
+                    # Drive CodeFormer's native fidelity weight, then match
+                    # spandrel's own clamp(0,1) (its __call__ does this for us).
+                    out_t = net.model(t, weight=wgt)[0]
+                else:
+                    out_t = net(t)
+                r = out_t.clamp(0, 1)[0].permute(1, 2, 0).float().cpu().numpy()
             restored = cv2.cvtColor(
                 (r * 255.0).round().astype(np.uint8), cv2.COLOR_RGB2BGR
             ).astype(np.float32)
