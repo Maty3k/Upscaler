@@ -45,6 +45,9 @@ upscaler ./input_dir -o ./output_dir --scale 4
 # anime / illustration model
 upscaler art.png --model realesrgan-x4plus-anime
 
+# restore faces after upscaling (GFPGAN; needs the [face] extra)
+upscaler portrait.jpg --scale 4 --face --face-strength 0.8
+
 # upscale a video frame-by-frame (offline, keeps audio; needs ffmpeg)
 upscaler video clip.mp4 -o clip_2x.mp4 --scale 2
 
@@ -66,6 +69,21 @@ upscaler convert ./folder -o ./out -f WebP      # batch a directory
 
 Supports PNG / JPEG / WebP / AVIF / TIFF / GIF / BMP / ICO / TGA / PPM. Alpha is
 flattened onto a white background for formats that can't store it (JPEG/BMP/PPM).
+
+#### Remove background & batch
+
+```bash
+upscaler removebg photo.jpg -o cutout.png          # transparent PNG (needs [onnx])
+upscaler removebg ./folder -o ./out --feather 2     # batch a directory
+upscaler batch ./folder -o ./out --op upscale --scale 2     # upscale every image
+upscaler batch ./folder -o ./out --op convert -f WebP       # convert every image
+upscaler batch ./folder -o ./out --op removebg              # cut out every image
+```
+
+`batch` runs one operation over many images and skips unreadable files without
+aborting. The GUI also has **Colorize** (DDColor) and **Inpaint / object removal**
+(LaMa) tabs — both fully local; Colorize needs the `[face]` extra, Inpaint needs
+only torch.
 
 ### Video (frame-by-frame)
 

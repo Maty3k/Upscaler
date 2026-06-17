@@ -274,6 +274,75 @@ FACE_DETECTOR = FaceSpec(
 )
 
 
+# -- Colorization (optional, via the [face] extra) ---------------------------
+# DDColor predicts AB chroma and merges it with the source luminance, loaded via
+# spandrel. It needs a 2-output-channel (AB) checkpoint.
+
+@dataclass(frozen=True)
+class ColorizeSpec:
+    name: str
+    url: str
+    filename: str
+    sha256: Optional[str] = None
+    notes: str = ""
+
+
+COLORIZE_MODELS: dict[str, ColorizeSpec] = {
+    "ddcolor": ColorizeSpec(
+        name="ddcolor",
+        url="https://huggingface.co/piddnad/DDColor-models/resolve/main/ddcolor_modelscope.pth",
+        filename="ddcolor_modelscope.pth",
+        sha256="17c460d7e55b32a598370621d77173be59e03c24b0823f06821db23a50c263ce",
+        notes="DDColor — colorizes black-and-white / faded photos. ~870MB.",
+    ),
+}
+DEFAULT_COLORIZE_MODEL = "ddcolor"
+
+
+def resolve_colorize_model(model: Optional[str] = None) -> ColorizeSpec:
+    name = model or DEFAULT_COLORIZE_MODEL
+    if name not in COLORIZE_MODELS:
+        raise ValueError(
+            f"Unknown colorize model {name!r}. Available: {', '.join(sorted(COLORIZE_MODELS))}"
+        )
+    return COLORIZE_MODELS[name]
+
+
+# -- Inpainting / object removal (needs only torch) --------------------------
+# Big-LaMa shipped as a self-contained TorchScript model, called as
+# model(image, mask) — loaded with torch.jit.load (see upscaler.inpaint), so it
+# needs no extra packages beyond the core torch dependency.
+
+@dataclass(frozen=True)
+class InpaintSpec:
+    name: str
+    url: str
+    filename: str
+    sha256: Optional[str] = None
+    notes: str = ""
+
+
+INPAINT_MODELS: dict[str, InpaintSpec] = {
+    "big-lama": InpaintSpec(
+        name="big-lama",
+        url="https://github.com/enesmsahin/simple-lama-inpainting/releases/download/v0.1.0/big-lama.pt",
+        filename="big-lama.pt",
+        sha256="7ba7aa7ac37a4d41fdbbeba3a2af7ead18058552997e3a3cd1a3b2210c9e6b4c",
+        notes="Big-LaMa — removes objects / fills a painted region (Apache-2.0). ~196MB.",
+    ),
+}
+DEFAULT_INPAINT_MODEL = "big-lama"
+
+
+def resolve_inpaint_model(model: Optional[str] = None) -> InpaintSpec:
+    name = model or DEFAULT_INPAINT_MODEL
+    if name not in INPAINT_MODELS:
+        raise ValueError(
+            f"Unknown inpaint model {name!r}. Available: {', '.join(sorted(INPAINT_MODELS))}"
+        )
+    return INPAINT_MODELS[name]
+
+
 # -- Supply-chain guard ------------------------------------------------------
 
 def iter_pinned_specs():
@@ -290,5 +359,7 @@ def iter_pinned_specs():
     yield from MODELS.values()
     yield from DEBLUR_MODELS.values()
     yield from ARTIFACT_MODELS.values()
+    yield from COLORIZE_MODELS.values()
+    yield from INPAINT_MODELS.values()
     yield from FACE_MODELS.values()
     yield FACE_DETECTOR

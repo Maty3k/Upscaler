@@ -27,9 +27,13 @@ from upscaler.document import images_to_pdf, pdf_to_images
 from upscaler.deblur import Deblurrer
 from upscaler.engine import Upscaler, resolve_device
 from upscaler.models.registry import (
+    COLORIZE_MODELS,
     DEBLUR_MODELS,
+    DEFAULT_COLORIZE_MODEL,
     DEFAULT_FACE_MODEL,
+    DEFAULT_INPAINT_MODEL,
     FACE_MODELS,
+    INPAINT_MODELS,
     MODELS,
 )
 from upscaler.sharpen import unsharp_mask
@@ -40,6 +44,8 @@ _UP_CACHE: dict[tuple, object] = {}
 _DB_CACHE: dict[tuple, object] = {}
 _FACE_CACHE: dict[tuple, object] = {}
 _FBCNN_CACHE: dict[tuple, object] = {}
+_COLOR_CACHE: dict[tuple, object] = {}
+_INPAINT_CACHE: dict[tuple, object] = {}
 
 
 def _onnx_engines():
@@ -97,6 +103,26 @@ def _get_fbcnn(device: str):
         fr = ArtifactRemover(device=device)
         _FBCNN_CACHE[key] = fr
     return fr
+
+
+def _get_colorizer(model: str, device: str):
+    key = (model, device)
+    c = _COLOR_CACHE.get(key)
+    if c is None:
+        from upscaler.colorize import Colorizer  # optional dep, lazy import
+        c = Colorizer(model=model, device=device)
+        _COLOR_CACHE[key] = c
+    return c
+
+
+def _get_inpainter(model: str, device: str):
+    key = (model, device)
+    c = _INPAINT_CACHE.get(key)
+    if c is None:
+        from upscaler.inpaint import Inpainter  # lazy import
+        c = Inpainter(model=model, device=device)
+        _INPAINT_CACHE[key] = c
+    return c
 
 
 # -- File converter ----------------------------------------------------------
@@ -176,6 +202,78 @@ def remove_bg_ui(image, model, feather, progress=gr.Progress()):
         f"✅ Background removed — {cut.width}×{cut.height}px transparent PNG. "
         "Drop it into the Lian Li tab as a sticker."
     )
+
+
+# -- Colorize (DDColor) ------------------------------------------------------
+
+_COLORIZE_CHOICES = [(f"{s.name} — {s.notes}", s.name) for s in COLORIZE_MODELS.values()]
+
+
+def colorize_ui(image, model, strength, progress=gr.Progress()):
+    if image is None:
+        raise gr.Error("Upload a photo to colorize.")
+    img = image if isinstance(image, Image.Image) else Image.fromarray(image)
+    progress(0.2, desc="Loading model…")
+    try:
+        result = _get_colorizer(model, "auto").colorize(img, float(strength))
+    except RuntimeError as e:  # missing [face] deps → friendly install message
+        raise gr.Error(str(e)) from e
+    except (OSError, ValueError, AssertionError) as e:
+        raise gr.Error(
+            "Couldn't colorize. The model downloads on first use (~870MB), so "
+            "check your connection and try again."
+        ) from e
+    progress(0.9, desc="Saving…")
+    library.save_image(result, "colorize")  # auto-add to the Library
+    return (img.convert("RGB"), result), (
+        f"✅ Colorized — {result.width}×{result.height}px."
+    )
+
+
+# -- Inpaint / object removal (LaMa) -----------------------------------------
+
+_INPAINT_CHOICES = [(f"{s.name} — {s.notes}", s.name) for s in INPAINT_MODELS.values()]
+
+
+def _mask_from_editor(value):
+    """Return (background RGB, mask L) from a gr.ImageEditor value. The mask is
+    the union of the painted layers' alpha (anything the user drew). Returns
+    (bg, None) if nothing was painted, or (None, None) if there's no image."""
+    if not value:
+        return None, None
+    bg = value.get("background")
+    if bg is None:
+        return None, None
+    bg = bg.convert("RGB")
+    w, h = bg.size
+    acc = np.zeros((h, w), dtype=np.uint8)
+    for layer in value.get("layers") or []:
+        if layer is None:
+            continue
+        alpha = np.asarray(layer.convert("RGBA").resize((w, h)))[..., 3]
+        acc = np.maximum(acc, (alpha > 0).astype(np.uint8) * 255)
+    if acc.max() == 0:
+        return bg, None
+    return bg, Image.fromarray(acc, "L")
+
+
+def inpaint_ui(editor_value, model, progress=gr.Progress()):
+    bg, mask = _mask_from_editor(editor_value)
+    if bg is None:
+        raise gr.Error("Upload an image and paint over the object to remove.")
+    if mask is None:
+        raise gr.Error("Paint over the object you want to remove first (use the brush).")
+    progress(0.2, desc="Loading model…")
+    try:
+        result = _get_inpainter(model, "auto").inpaint(bg, mask)
+    except (RuntimeError, OSError, ValueError, AssertionError) as e:
+        raise gr.Error(
+            "Couldn't remove the object. The model downloads on first use (~196MB), "
+            "so check your connection and try again."
+        ) from e
+    progress(0.9, desc="Saving…")
+    library.save_image(result, "inpaint")  # auto-add to the Library
+    return (bg, result), f"✅ Object removed — {result.width}×{result.height}px."
 
 
 # -- Upscale & enhance -------------------------------------------------------
@@ -1713,6 +1811,96 @@ def build_demo() -> gr.Blocks:
                         bg_file = gr.File(label="Download transparent PNG")
                         bg_info = gr.Markdown()
 
+            # ---- Tab: Colorize (DDColor) ----
+            with gr.Tab("Colorize"):
+                gr.HTML(_section_head(
+                    "Color", "Colorize Photos",
+                    "Bring black-and-white or faded photos to life. DDColor predicts "
+                    "natural color and keeps every bit of the original detail.",
+                    icon=ICON_AI,
+                ))
+                with gr.Row(equal_height=True):
+                    with gr.Column(scale=1):
+                        col_in = gr.Image(
+                            label="Input", type="pil",
+                            sources=["upload", "clipboard"], height=300,
+                            elem_classes="drop", buttons=["download", "fullscreen"],
+                        )
+                        col_model = gr.Dropdown(
+                            _COLORIZE_CHOICES, value=DEFAULT_COLORIZE_MODEL,
+                            label="Model", filterable=False,
+                            info="DDColor predicts color from the brightness of your "
+                            "photo, so detail is never lost.",
+                        )
+                        col_strength = gr.Slider(
+                            0.0, 1.0, value=1.0, step=0.05, label="Color strength",
+                            info="1 = full color; lower keeps it subtler. 0 returns the "
+                            "original in grayscale.",
+                        )
+                        with gr.Accordion("Tips", open=False):
+                            gr.Markdown(
+                                "* **Any photo works** — black-and-white, sepia, or "
+                                "faded.\n"
+                                "* **Detail is preserved** — only color is added.\n"
+                                "* **Needs the \"face\" packages** (spandrel).\n"
+                                "* **First run downloads ~870MB**, then it's cached.",
+                                elem_classes="notes",
+                            )
+                        with gr.Row():
+                            col_btn = gr.Button("Colorize", variant="primary",
+                                                size="lg", scale=3)
+                            col_clear = gr.Button("↺ Clear", variant="secondary", scale=1)
+                    with gr.Column(scale=1):
+                        col_out = gr.ImageSlider(
+                            label="Before / after", type="pil", height=300,
+                            elem_classes=["loupe"],
+                        )
+                        col_info = gr.Markdown()
+
+            # ---- Tab: Inpaint / object removal (LaMa) ----
+            with gr.Tab("Inpaint"):
+                gr.HTML(_section_head(
+                    "Cleanup", "Remove Objects",
+                    "Paint over anything you want gone — a photobomber, a sign, a "
+                    "blemish — and LaMa fills the gap from the surroundings.",
+                    icon=ICON_AI,
+                ))
+                with gr.Row(equal_height=True):
+                    with gr.Column(scale=1):
+                        ip_editor = gr.ImageEditor(
+                            label="Paint over the object to remove", type="pil",
+                            height=360, sources=["upload", "clipboard"],
+                            layers=False, transforms=(),
+                            brush=gr.Brush(
+                                colors=["#ffffff"], color_mode="fixed", default_size=24
+                            ),
+                        )
+                        ip_model = gr.Dropdown(
+                            _INPAINT_CHOICES, value=DEFAULT_INPAINT_MODEL,
+                            label="Model", filterable=False,
+                            info="Big-LaMa fills the painted region from the "
+                            "surrounding image.",
+                        )
+                        with gr.Accordion("Tips", open=False):
+                            gr.Markdown(
+                                "* **Cover the whole object**, plus a little margin.\n"
+                                "* **Use a bigger brush** for bigger objects.\n"
+                                "* **Best on clutter / backgrounds** — wires, signs, "
+                                "blemishes, photobombers.\n"
+                                "* **First run downloads ~196MB**, then it's cached.",
+                                elem_classes="notes",
+                            )
+                        with gr.Row():
+                            ip_btn = gr.Button("Remove object", variant="primary",
+                                               size="lg", scale=3)
+                            ip_clear = gr.Button("↺ Clear", variant="secondary", scale=1)
+                    with gr.Column(scale=1):
+                        ip_out = gr.ImageSlider(
+                            label="Before / after", type="pil", height=360,
+                            elem_classes=["loupe"],
+                        )
+                        ip_info = gr.Markdown()
+
             # ---- Tab 4b: Batch (one operation over many images) ----
             with gr.Tab("Batch"):
                 gr.HTML(_section_head(
@@ -2123,6 +2311,16 @@ def build_demo() -> gr.Blocks:
         )
         bg_clear.click(lambda: (None, None, None, None), None,
                        [bg_in, bg_preview, bg_file, bg_info])
+        col_btn.click(
+            colorize_ui, [col_in, col_model, col_strength],
+            [col_out, col_info], show_progress_on=[col_out],
+        )
+        col_clear.click(lambda: (None, None, None), None, [col_in, col_out, col_info])
+        ip_btn.click(
+            inpaint_ui, [ip_editor, ip_model],
+            [ip_out, ip_info], show_progress_on=[ip_out],
+        )
+        ip_clear.click(lambda: (None, None, None), None, [ip_editor, ip_out, ip_info])
         pdf_extract_btn.click(
             extract_pdf, [pdf_in, pdf_dpi], [pdf_extract_out, pdf_gallery, pdf_extract_info]
         )

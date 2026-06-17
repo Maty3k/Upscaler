@@ -283,13 +283,164 @@ def run_video(argv: list[str]) -> int:
     return 1 if failures else 0
 
 
+_ONNX_HINT = 'background removal needs onnxruntime. Install it with: pip install -e ".[onnx]"'
+
+
+def _png_output_path(src: Path, out: Path | None) -> Path:
+    if out and out.suffix:  # explicit file target
+        return out
+    out_dir = out if out else src.parent
+    out_dir.mkdir(parents=True, exist_ok=True)
+    return out_dir / f"{src.stem}.png"
+
+
+def build_removebg_parser() -> argparse.ArgumentParser:
+    from upscaler.background import BG_MODELS, DEFAULT_BG_MODEL
+
+    p = argparse.ArgumentParser(
+        prog="upscaler removebg",
+        description="Remove the background — outputs a transparent PNG.",
+    )
+    p.add_argument("input", type=Path, nargs="?", help="Image file or directory.")
+    p.add_argument("-o", "--output", type=Path, help="Output .png file or directory.")
+    p.add_argument(
+        "-m", "--model", choices=sorted(BG_MODELS),
+        help=f"Background model (default: {DEFAULT_BG_MODEL}).",
+    )
+    p.add_argument(
+        "--feather", type=int, default=0,
+        help="Soften the cut-out edge by N px (default 0).",
+    )
+    return p
+
+
+def run_removebg(argv: list[str]) -> int:
+    args = build_removebg_parser().parse_args(argv)
+    if args.input is None or not args.input.exists():
+        print(f"error: input not found: {args.input}", file=sys.stderr)
+        return 2
+
+    inputs = _gather_inputs(args.input)
+    if not inputs:
+        print(f"error: no images found in {args.input}", file=sys.stderr)
+        return 2
+    if len(inputs) > 1 and args.output and args.output.suffix:
+        print("error: --output must be a directory when processing a folder",
+              file=sys.stderr)
+        return 2
+
+    from upscaler.background import remove_background
+
+    kw = {"model": args.model} if args.model else {}
+    failed = 0
+    for src in tqdm(inputs, disable=len(inputs) == 1, desc="removebg"):
+        try:
+            out = remove_background(Image.open(src), feather=args.feather, **kw)
+            dst = _png_output_path(src, args.output)
+            out.save(dst)
+        except ImportError:
+            print(f"error: {_ONNX_HINT}", file=sys.stderr)
+            return 2
+        except (Image.UnidentifiedImageError, OSError, ValueError, RuntimeError) as e:
+            print(f"error on {src.name}: {e}", file=sys.stderr)
+            failed += 1
+            continue
+        if len(inputs) == 1:
+            print(f"→ {dst}", file=sys.stderr)
+    return 0 if failed < len(inputs) else 2
+
+
+def build_batch_parser() -> argparse.ArgumentParser:
+    from upscaler.background import BG_MODELS
+
+    p = argparse.ArgumentParser(
+        prog="upscaler batch",
+        description="Run one operation over many images, writing results to a folder. "
+        "Unreadable files are skipped without aborting the batch.",
+    )
+    p.add_argument("input", type=Path, nargs="?", help="Directory or a single image.")
+    p.add_argument("-o", "--output", type=Path, required=True, help="Output directory.")
+    p.add_argument(
+        "--op", choices=("upscale", "convert", "removebg"), default="upscale",
+        help="Operation to run on each image (default: upscale).",
+    )
+    # upscale options
+    p.add_argument("-s", "--scale", type=int, default=4, choices=(2, 4))
+    p.add_argument("-m", "--model", choices=sorted(MODELS))
+    p.add_argument("--sharpen", nargs="?", type=float, const=1.0, default=0.0)
+    p.add_argument("--device", default="auto", choices=("auto", "cpu", "cuda", "mps"))
+    p.add_argument("--tile", type=int, default=512)
+    # convert options
+    p.add_argument("-f", "--format", choices=list(FORMATS))
+    p.add_argument("-q", "--quality", type=int, default=90)
+    # removebg options
+    p.add_argument("--bg-model", choices=sorted(BG_MODELS))
+    p.add_argument("--feather", type=int, default=0)
+    return p
+
+
+def run_batch(argv: list[str]) -> int:
+    args = build_batch_parser().parse_args(argv)
+    if args.input is None or not args.input.exists():
+        print(f"error: input not found: {args.input}", file=sys.stderr)
+        return 2
+    if args.output.suffix:
+        print("error: --output must be a directory", file=sys.stderr)
+        return 2
+    inputs = _gather_inputs(args.input)
+    if not inputs:
+        print(f"error: no images found in {args.input}", file=sys.stderr)
+        return 2
+    out_dir = args.output
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.op == "upscale":
+        up = Upscaler(model=args.model, scale=args.scale, device=args.device, tile=args.tile)
+
+        def do(src: Path) -> None:
+            res = up.upscale(Image.open(src))
+            if args.sharpen > 0:
+                res = unsharp_mask(res, strength=args.sharpen)
+            res.save(out_dir / f"{src.stem}_x{up.scale}.png")
+    elif args.op == "convert":
+        fmt = args.format or "png"
+
+        def do(src: Path) -> None:
+            convert_file(src, out_dir / f"{src.stem}.{extension_for(fmt)}",
+                         fmt=fmt, quality=args.quality)
+    else:  # removebg
+        from upscaler.background import remove_background
+        kw = {"model": args.bg_model} if args.bg_model else {}
+
+        def do(src: Path) -> None:
+            out = remove_background(Image.open(src), feather=args.feather, **kw)
+            out.save(out_dir / f"{src.stem}.png")
+
+    failed = 0
+    for src in tqdm(inputs, desc=f"batch {args.op}"):
+        try:
+            do(src)
+        except ImportError:
+            print(f"error: {_ONNX_HINT}", file=sys.stderr)
+            return 2
+        except (Image.UnidentifiedImageError, OSError, ValueError, RuntimeError) as e:
+            print(f"error on {src.name}: {e} (skipped)", file=sys.stderr)
+            failed += 1
+    n_ok = len(inputs) - failed
+    print(f"→ {out_dir}  ({n_ok}/{len(inputs)} ok)", file=sys.stderr)
+    return 0 if n_ok > 0 else 2
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="upscaler",
         description="Local image upscaling + sharpening (pretrained Real-ESRGAN).",
         epilog="Subcommands: `upscaler convert <input> -o out.webp` (format), "
         "`upscaler pdf build *.png -o out.pdf` / `upscaler pdf extract in.pdf`, "
-        "`upscaler video in.mp4 -o out.mp4`.",
+        "`upscaler video in.mp4 -o out.mp4`, "
+        "`upscaler removebg <input> -o out.png`, "
+        "`upscaler batch <dir> -o <dir> --op upscale|convert|removebg`. "
+        "Add --face to restore faces after upscaling.",
     )
     p.add_argument(
         "input", type=Path, nargs="?", help="Image file or a directory of images."
@@ -324,19 +475,32 @@ def build_parser() -> argparse.ArgumentParser:
         "--onnx", action="store_true",
         help="Use the ONNX Runtime backend (exports once, then torch-free).",
     )
+    p.add_argument(
+        "--face", action="store_true",
+        help="Restore faces after upscaling (GFPGAN; needs the [face] extra).",
+    )
+    p.add_argument(
+        "--face-strength", type=float, default=0.8,
+        help="Face restoration strength 0..1 (default 0.8).",
+    )
     p.add_argument("--list-models", action="store_true", help="List models and exit.")
     return p
 
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
-    # Optional subcommands; bare `upscaler <input>` stays the upscaler.
+    # Optional subcommands; bare `upscaler <input>` stays the upscaler. Dispatch
+    # is by argv[0] string (like a real filename can't be 'convert'/'batch'/…).
     if argv and argv[0] == "convert":
         return run_convert(argv[1:])
     if argv and argv[0] == "pdf":
         return run_pdf(argv[1:])
     if argv and argv[0] == "video":
         return run_video(argv[1:])
+    if argv and argv[0] == "removebg":
+        return run_removebg(argv[1:])
+    if argv and argv[0] == "batch":
+        return run_batch(argv[1:])
 
     args = build_parser().parse_args(argv)
 
@@ -386,9 +550,20 @@ def main(argv: list[str] | None = None) -> int:
         )
         backend = up.device.type
 
+    # Face restoration is lazy: only imported (and only pulls the [face] extra)
+    # when --face is given, so a plain torch-only install is unaffected.
+    face_restorer = None
+    if args.face:
+        try:
+            from upscaler.face import FaceRestorer
+            face_restorer = FaceRestorer(device=args.device)
+        except (ImportError, RuntimeError) as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 2
+
     stages = (f"deblur={deblurrer.spec.name} " if deblurrer else "") + (
         f"upscale={up.spec.name} ×{up.scale}"
-    )
+    ) + (" face=gfpgan" if face_restorer else "")
     print(f"{stages} backend={backend}", file=sys.stderr)
 
     failed = 0
@@ -398,6 +573,8 @@ def main(argv: list[str] | None = None) -> int:
             if deblurrer:
                 img = deblurrer.deblur(img)
             result = up.upscale(img)
+            if face_restorer is not None:
+                result = face_restorer.restore(result, args.face_strength)
             if args.sharpen > 0:
                 result = unsharp_mask(result, strength=args.sharpen)
             dst = _output_path(src, args.output, up.scale)
