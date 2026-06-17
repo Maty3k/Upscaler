@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Optional
 
 import numpy as np
@@ -28,13 +29,46 @@ def resolve_device(device: str = "auto") -> torch.device:
     return torch.device("cpu")
 
 
+def _convert_esrgan_oldarch(sd: dict) -> dict:
+    """Remap an *old-arch* ESRGAN state dict (xinntao/ESRGAN ``model.*`` keys, as
+    used by many community models — 4x-UltraSharp, Remacri, NMKD, …) to the
+    Real-ESRGAN RRDBNet naming the vendored generator expects. Only key names are
+    translated; the weights are untouched. A new-arch dict is returned unchanged.
+    """
+    if not any(k.startswith("model.") for k in sd):
+        return sd
+    rdb = re.compile(r"^model\.1\.sub\.(\d+)\.RDB(\d+)\.conv(\d+)\.0\.(weight|bias)$")
+    trunk = re.compile(r"^model\.1\.sub\.\d+\.(weight|bias)$")  # conv after the RRDBs
+    head = {"model.0.": "conv_first.", "model.3.": "conv_up1.",
+            "model.6.": "conv_up2.", "model.8.": "conv_hr.", "model.10.": "conv_last."}
+    out = {}
+    for k, v in sd.items():
+        m = rdb.match(k)
+        if m:
+            i, j, c, wb = m.groups()
+            out[f"body.{i}.rdb{j}.conv{c}.{wb}"] = v
+            continue
+        if trunk.match(k):
+            out[f"conv_body.{k.rsplit('.', 1)[1]}"] = v
+            continue
+        for old, new in head.items():
+            if k.startswith(old):
+                out[new + k[len(old):]] = v
+                break
+        else:
+            out[k] = v
+    return out
+
+
 def _load_state_dict(path) -> dict:
     ckpt = torch.load(path, map_location="cpu", weights_only=True)
     # Official Real-ESRGAN checkpoints wrap weights under params_ema / params.
     for key in ("params_ema", "params"):
         if isinstance(ckpt, dict) and key in ckpt:
-            return ckpt[key]
-    return ckpt
+            ckpt = ckpt[key]
+            break
+    # Community ESRGAN .pth often use the old `model.*` layer naming — translate.
+    return _convert_esrgan_oldarch(ckpt)
 
 
 class Upscaler:

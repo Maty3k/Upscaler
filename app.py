@@ -651,6 +651,10 @@ UPSCALE_PRESETS: dict[str, dict] = {
         model="realesrgan-x2plus", sharpen=0.0, restore=True, strength=0.7,
         hint="Smoother, softer look — more denoise, no sharpening. Good for portraits.",
     ),
+    "🖼️ Portrait": dict(
+        model="4x-remacri", sharpen=0.2, restore=True, strength=0.4,
+        hint="Remacri ×4 for natural skin & hair, with light denoise — great for people.",
+    ),
     "📱 Phone snap": dict(
         model="realesrgan-x2plus", sharpen=0.4, restore=True, strength=0.4,
         hint="Cleans the mild noise/compression in everyday phone photos, then ×2.",
