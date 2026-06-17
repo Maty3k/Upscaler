@@ -14,7 +14,7 @@ from __future__ import annotations
 import numpy as np
 from PIL import Image
 
-from upscaler.engine import resolve_device
+from upscaler.engine import load_spandrel, resolve_device
 from upscaler.models.registry import DEFAULT_FACE_MODEL, FACE_DETECTOR, FACE_MODELS
 from upscaler.models.weights import ensure_weights
 
@@ -49,8 +49,7 @@ class FaceRestorer:
     downloads/loads the first time a face is actually found."""
 
     def __init__(self, model: str = DEFAULT_FACE_MODEL, device: str = "auto"):
-        self._cv2, self._spandrel, _sea = _deps()
-        _sea.install()  # register GFPGAN/CodeFormer archs into spandrel's registry
+        self._cv2, _, _ = _deps()  # validate cv2 + spandrel are installed up front
         if model not in FACE_MODELS:
             raise ValueError(f"Unknown face model {model!r}. Available: {', '.join(FACE_MODELS)}")
         self._spec = FACE_MODELS[model]
@@ -60,8 +59,12 @@ class FaceRestorer:
 
     def _gfpgan(self):
         if self._net is None:
-            desc = self._spandrel.ModelLoader().load_from_file(str(ensure_weights(self._spec)))
-            self._net = desc.to(self._device).eval()
+            # Funnel through the one shared spandrel loader. Face models keep their
+            # own forward (detect/align/paste-back), so skip the channel guard.
+            lm = load_spandrel(
+                ensure_weights(self._spec), self._device, require_channels=None
+            )
+            self._net = lm.net
         return self._net
 
     def restore(self, image: Image.Image, strength: float = 1.0) -> Image.Image:

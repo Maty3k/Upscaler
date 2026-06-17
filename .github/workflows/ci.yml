@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      # Install a CPU-only torch first — it's the slow step, so it must be cached
+      # and kept off the GPU wheels. The PyTorch CPU wheel index is used on Linux;
+      # macOS PyPI wheels are already CPU-only, so plain pip is correct there.
+      - name: Install CPU torch (Linux)
+        if: runner.os == 'Linux'
+        run: pip install "torch>=2.0" --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Install CPU torch (macOS)
+        if: runner.os == 'macOS'
+        run: pip install "torch>=2.0"
+
+      - name: Install package
+        run: pip install -e ".[dev,gui]"
+
+      - name: Run tests
+        run: pytest -q
+
+      - name: Import app
+        run: python -c "import app"
+
+      - name: List models
+        run: upscaler --list-models

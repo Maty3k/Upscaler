@@ -13,9 +13,12 @@ from typing import Union
 
 from tqdm import tqdm
 
-from upscaler.models.registry import DeblurSpec, ModelSpec
+from upscaler.models.registry import DeblurSpec, FaceSpec, ModelSpec
 
-WeightSpec = Union[ModelSpec, DeblurSpec]
+# ensure_weights only ever touches .filename/.url/.sha256, so any spec dataclass
+# with those three fields works (FaceSpec, and the BG/restore specs added later
+# all duck-type through). The alias lists the concrete types we ship today.
+WeightSpec = Union[ModelSpec, DeblurSpec, FaceSpec]
 
 # Cache dir: env override, else alongside the package (gitignored).
 WEIGHTS_DIR = Path(

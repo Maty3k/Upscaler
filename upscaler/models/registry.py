@@ -27,6 +27,13 @@ class ModelSpec:
     # release for supply-chain integrity (see scripts/print_checksums.py).
     sha256: Optional[str] = None
     notes: str = ""
+    # How to build the network from these weights:
+    #   "rrdbnet"  – the vendored Real-ESRGAN generator (the default; covers
+    #                every official + community ESRGAN checkpoint here).
+    #   "spandrel" – load via spandrel.ModelLoader, which auto-detects the
+    #                architecture (HAT / DRCT / SwinIR / FBCNN / …). The scale
+    #                is then discovered from the loaded model, NOT from `scale`.
+    loader: str = "rrdbnet"
 
 
 _REL = "https://github.com/xinntao/Real-ESRGAN/releases/download"
@@ -218,3 +225,22 @@ FACE_DETECTOR = FaceSpec(
     sha256="8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4",
     notes="YuNet face detector (OpenCV Zoo).",
 )
+
+
+# -- Supply-chain guard ------------------------------------------------------
+
+def iter_pinned_specs():
+    """Yield every weight spec that MUST ship sha256-pinned over https.
+
+    This is the single source of truth for the CI registry guard
+    (``tests/test_registry_guard.py``). When a later batch adds a new model
+    registry (e.g. FBCNN artifact removal, DDColor colorize, LaMa inpaint),
+    append it here so the guard covers it automatically.
+
+    Background-removal weights (``upscaler.background.BG_MODELS``) are
+    deliberately excluded: they are served unpinned (sha256=None) today.
+    """
+    yield from MODELS.values()
+    yield from DEBLUR_MODELS.values()
+    yield from FACE_MODELS.values()
+    yield FACE_DETECTOR
