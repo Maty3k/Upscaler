@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Optional
+from typing import Callable, Optional
 
 import numpy as np
 import torch
@@ -14,6 +14,20 @@ from torch.nn import functional as F
 from upscaler.models.registry import ModelSpec, resolve_model
 from upscaler.models.rrdbnet import RRDBNet
 from upscaler.models.weights import ensure_weights
+
+
+class CancelledError(RuntimeError):
+    """Raised when a user cancels a running job. Subclasses RuntimeError so the
+    app's existing ``except RuntimeError`` handlers swallow it without a scary
+    traceback."""
+
+
+def tile_count(w: int, h: int, tile: int) -> int:
+    """How many tiles :meth:`Upscaler._run_tiled` will process for a ``w``×``h``
+    image. Returns 1 when tiling is off (``tile <= 0``)."""
+    if tile <= 0:
+        return 1
+    return ((w + tile - 1) // tile) * ((h + tile - 1) // tile)
 
 
 def resolve_device(device: str = "auto") -> torch.device:
@@ -222,15 +236,32 @@ class Upscaler:
     # -- public API -------------------------------------------------------
 
     @torch.inference_mode()
-    def upscale(self, image: Image.Image) -> Image.Image:
-        """Upscale a PIL RGB image by the model's native scale factor."""
+    def upscale(
+        self,
+        image: Image.Image,
+        progress_cb: Optional[Callable[[int, int], None]] = None,
+        should_cancel: Optional[Callable[[], bool]] = None,
+    ) -> Image.Image:
+        """Upscale a PIL RGB image by the model's native scale factor.
+
+        ``progress_cb(done, total)`` is called after each tile (or once, (1, 1),
+        when tiling is off). ``should_cancel()`` is polled at each tile boundary;
+        returning True raises :class:`CancelledError`.
+        """
         rgb = image.convert("RGB")
         x = torch.from_numpy(np.asarray(rgb, dtype=np.float32) / 255.0)
         x = x.permute(2, 0, 1).unsqueeze(0).to(self.device)
         if self.use_fp16:
             x = x.half()
 
-        out = self._run_tiled(x) if self.tile > 0 else self._net(x)
+        if self.tile > 0:
+            out = self._run_tiled(x, progress_cb=progress_cb, should_cancel=should_cancel)
+        else:
+            if should_cancel and should_cancel():
+                raise CancelledError("Cancelled.")
+            out = self._net(x)
+            if progress_cb:
+                progress_cb(1, 1)
 
         out = out.clamp_(0, 1).squeeze(0).permute(1, 2, 0).float().cpu().numpy()
         return Image.fromarray(np.round(out * 255.0).astype(np.uint8), mode="RGB")
@@ -260,7 +291,12 @@ class Upscaler:
 
     # -- tiling -----------------------------------------------------------
 
-    def _run_tiled(self, x: torch.Tensor) -> torch.Tensor:
+    def _run_tiled(
+        self,
+        x: torch.Tensor,
+        progress_cb: Optional[Callable[[int, int], None]] = None,
+        should_cancel: Optional[Callable[[], bool]] = None,
+    ) -> torch.Tensor:
         """Process a large image tile-by-tile to bound memory.
 
         Each tile is padded with surrounding context (``tile_pad``) to avoid seams,
@@ -271,9 +307,13 @@ class Upscaler:
         out = x.new_zeros((b, c, h * s, w * s))
         n_x = (w + self.tile - 1) // self.tile
         n_y = (h + self.tile - 1) // self.tile
+        total = n_x * n_y
+        done = 0
 
         for ty in range(n_y):
             for tx in range(n_x):
+                if should_cancel and should_cancel():
+                    raise CancelledError("Cancelled.")
                 x0, y0 = tx * self.tile, ty * self.tile
                 x1, y1 = min(x0 + self.tile, w), min(y0 + self.tile, h)
                 # input tile + padding, clamped to image bounds
@@ -286,4 +326,7 @@ class Upscaler:
                 ox0, oy0 = (x0 - px0) * s, (y0 - py0) * s
                 ox1, oy1 = ox0 + (x1 - x0) * s, oy0 + (y1 - y0) * s
                 out[:, :, y0 * s:y1 * s, x0 * s:x1 * s] = tile_out[:, :, oy0:oy1, ox0:ox1]
+                done += 1
+                if progress_cb:
+                    progress_cb(done, total)
         return out

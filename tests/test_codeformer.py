@@ -69,7 +69,7 @@ def test_enhance_threads_face_model_and_fidelity(monkeypatch):
         scale = 2
         device = types.SimpleNamespace(type="cpu")
 
-        def upscale(self, img):
+        def upscale(self, img, **kwargs):  # accepts progress_cb from enhance()
             return img
 
     def _fake_get_fr(model, device):

@@ -21,7 +21,7 @@ import gradio as gr
 import numpy as np
 from PIL import Image
 
-from upscaler import background, config, library, panel
+from upscaler import background, config, library, manage, panel
 from upscaler.convert import FORMATS, convert, extension_for
 from upscaler.document import images_to_pdf, pdf_to_images
 from upscaler.deblur import Deblurrer
@@ -325,7 +325,8 @@ def _restore_fbcnn(src_img, device):
 
 def enhance(image, model, device, deblur, deblur_model, restore_strength, sharpen,
             tile, onnx, out_size, face=False, face_strength=1.0,
-            face_model=DEFAULT_FACE_MODEL, face_fidelity=0.5, fbcnn=False):
+            face_model=DEFAULT_FACE_MODEL, face_fidelity=0.5, fbcnn=False,
+            progress=gr.Progress()):
     if image is None:
         raise gr.Error("Upload an image to enhance first.")
     original = image if isinstance(image, Image.Image) else Image.fromarray(image)
@@ -354,7 +355,14 @@ def enhance(image, model, device, deblur, deblur_model, restore_strength, sharpe
             else:
                 stages.append(f"⚠ clean-up skipped — `{deblur_model}` didn't suit this image")
         up = _get_upscaler(model, device, int(tile), onnx)
-        result = up.upscale(src)
+
+        def _tile_cb(done, total):
+            progress(done / max(total, 1), desc=f"Upscaling tile {done}/{total}")
+
+        if onnx:  # ONNX backend doesn't take a progress callback
+            result = up.upscale(src)
+        else:
+            result = up.upscale(src, progress_cb=_tile_cb)
     except (RuntimeError, AssertionError, OSError, ValueError) as e:
         raise gr.Error(
             "Couldn't run the enhancement. If you set a specific Device "
@@ -1339,6 +1347,40 @@ def save_settings(device, model, output_dir):
         return ("✅ Saved to `~/.upscaler/config.json`. Restart the app (or reload "
                 "the page) and these become the defaults.")
     return "⚠ Couldn't write the settings file — check the folder's permissions."
+
+
+# -- Model Manager (Settings) ------------------------------------------------
+
+def _mm_rows():
+    """(dataframe rows, total-usage markdown) for the Model Manager table."""
+    rows = []
+    for s in manage.list_specs():
+        status = "✓ downloaded" if s.present else "— not downloaded"
+        size = manage.human_size(s.size_bytes) if s.present else "—"
+        rows.append([s.group, s.name, s.filename, status, size])
+    total = f"**Total on disk:** {manage.human_size(manage.total_bytes())}"
+    return rows, total
+
+
+def _mm_refresh():
+    rows, total = _mm_rows()
+    return rows, total
+
+
+def _mm_download(filename):
+    if not filename:
+        return _mm_rows() + ("Pick a model to download first.",)
+    status = manage.download_one(filename)
+    rows, total = _mm_rows()
+    return rows, total, status
+
+
+def _mm_remove(filename):
+    if not filename:
+        return _mm_rows() + ("Pick a model to remove first.",)
+    status = manage.remove_one(filename)
+    rows, total = _mm_rows()
+    return rows, total, status
 ICON_LOGO = (
     '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" '
     'stroke="currentColor" stroke-width="2.1" stroke-linecap="round" '
@@ -1550,6 +1592,7 @@ def build_demo() -> gr.Blocks:
                             run = gr.Button(
                                 "Enhance", variant="primary", size="lg", scale=3
                             )
+                            enh_cancel = gr.Button("✕ Cancel", variant="stop", scale=1)
                             clear = gr.Button("↺ Clear", variant="secondary", scale=1)
                     with gr.Column(scale=1):
                         out = gr.ImageSlider(
@@ -1959,7 +2002,10 @@ def build_demo() -> gr.Blocks:
                                 0, 1024, value=512, step=64,
                                 label="Tile size (0 = off)",
                             )
-                        batch_run = gr.Button("Process all", variant="primary", size="lg")
+                        with gr.Row():
+                            batch_run = gr.Button("Process all", variant="primary",
+                                                  size="lg", scale=3)
+                            batch_cancel = gr.Button("✕ Cancel", variant="stop", scale=1)
                     with gr.Column(scale=1):
                         batch_gallery = gr.Gallery(
                             label="Results", columns=3, height=420,
@@ -1972,7 +2018,7 @@ def build_demo() -> gr.Blocks:
                     _switch_batch_op, batch_op,
                     [batch_grp_up, batch_grp_conv, batch_grp_bg],
                 )
-                batch_run.click(
+                batch_evt = batch_run.click(
                     batch_process,
                     [batch_in, batch_op, batch_model, batch_size, batch_sharpen,
                      batch_fmt, batch_quality, batch_bg_model, batch_feather,
@@ -1980,6 +2026,7 @@ def build_demo() -> gr.Blocks:
                     [batch_gallery, batch_zip, batch_info],
                     show_progress_on=[batch_gallery],
                 )
+                batch_cancel.click(None, None, None, cancels=[batch_evt])
 
             # ---- Tab 5: Lian Li 8.8" Screen builder ----
             with gr.Tab("Lian Li Screen"):
@@ -2289,6 +2336,38 @@ def build_demo() -> gr.Blocks:
                         set_open_lib = gr.Button(
                             "📂 Open library folder", variant="secondary", size="sm"
                         )
+                    with gr.Accordion("Models & downloads", open=False):
+                        _mm_init_rows, _mm_init_total = _mm_rows()
+                        mm_total = gr.Markdown(_mm_init_total)
+                        mm_table = gr.Dataframe(
+                            value=_mm_init_rows,
+                            headers=["Group", "Model", "File", "Status", "Size"],
+                            interactive=False, wrap=True,
+                        )
+                        mm_pick = gr.Dropdown(
+                            [s.filename for s in manage.list_specs()],
+                            label="Model file",
+                            info="Pre-download a model so the first use is instant, or "
+                            "remove it to reclaim disk space (it re-downloads on next "
+                            "use).",
+                        )
+                        with gr.Row():
+                            mm_dl = gr.Button("⬇ Download", variant="primary", scale=2)
+                            mm_rm = gr.Button("🗑 Remove", variant="secondary", scale=2)
+                            mm_refresh = gr.Button("↻ Refresh", variant="secondary",
+                                                   scale=1)
+                        mm_status = gr.Markdown()
+                    with gr.Accordion("Diagnostics", open=False):
+                        gr.Markdown(
+                            "*Nothing here is uploaded — copy it into a bug report "
+                            "yourself.*"
+                        )
+                        diag = gr.Code(
+                            value=manage.system_report(), label="System report",
+                            interactive=False,
+                        )
+                        diag_refresh = gr.Button("↻ Refresh report",
+                                                 variant="secondary", size="sm")
                     with gr.Accordion("About", open=False):
                         gr.Markdown(
                             f"**Upscaler** · running locally on **{device_name}** · "
@@ -2324,7 +2403,7 @@ def build_demo() -> gr.Blocks:
         pdf_extract_btn.click(
             extract_pdf, [pdf_in, pdf_dpi], [pdf_extract_out, pdf_gallery, pdf_extract_info]
         )
-        run.click(
+        run_evt = run.click(
             enhance,
             [inp, model, device, deblur, deblur_model, restore_strength, sharpen,
              tile, onnx, out_size, face, face_strength, face_model, face_fidelity,
@@ -2332,6 +2411,7 @@ def build_demo() -> gr.Blocks:
             [out, info],
             show_progress_on=[out],
         )
+        enh_cancel.click(None, None, None, cancels=[run_evt])
         restore_btn.click(
             restore_only,
             [inp, deblur_model, restore_strength, sharpen, device, onnx, fbcnn],
@@ -2414,6 +2494,10 @@ def build_demo() -> gr.Blocks:
         )
         set_save.click(save_settings, [set_device, set_model, set_outdir], set_status)
         set_open_lib.click(open_library_folder, None, None)
+        mm_dl.click(_mm_download, [mm_pick], [mm_table, mm_total, mm_status])
+        mm_rm.click(_mm_remove, [mm_pick], [mm_table, mm_total, mm_status])
+        mm_refresh.click(_mm_refresh, None, [mm_table, mm_total])
+        diag_refresh.click(lambda: manage.system_report(), None, diag)
     return demo
 
 
