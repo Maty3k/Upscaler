@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from typing import Optional
 
 import numpy as np
@@ -71,6 +72,82 @@ def _load_state_dict(path) -> dict:
     return _convert_esrgan_oldarch(ckpt)
 
 
+@dataclass(frozen=True)
+class LoadedModel:
+    """Everything a caller needs after loading a checkpoint through spandrel.
+
+    Bundling these means callers never re-derive ``scale``/``use_fp16``/padding
+    from the raw descriptor — they read them off here. ``net`` is the spandrel
+    ``ImageModelDescriptor``, already moved to the device and put in eval mode,
+    and is callable as ``net(tensor) -> tensor``.
+    """
+
+    net: object
+    scale: int
+    use_fp16: bool
+    pad_to: int
+    input_channels: int
+    output_channels: int
+
+
+def load_spandrel(
+    path,
+    device: torch.device,
+    *,
+    fp16: bool = False,
+    require_channels: Optional[int] = 3,
+) -> LoadedModel:
+    """Load any spandrel-supported checkpoint and wrap it in a ``LoadedModel``.
+
+    This is the single place in the codebase that imports spandrel, registers the
+    extra architectures, and runs ``ModelLoader().load_from_file(...).to().eval()``
+    — the engine, face restoration, colorize and inpaint all funnel through here
+    so there is exactly one spandrel-loading code path.
+
+    ``path`` is an already-resolved weights file (callers pass
+    ``ensure_weights(spec)``), and ``device`` is a concrete ``torch.device``.
+
+    ``require_channels`` guards the descriptor's input/output channel count: the
+    tiled RGB upscale path passes ``3``; pass ``None`` to accept any shape (a
+    1→3 colorizer, or a masked inpainter that is called with two tensors).
+    """
+    try:
+        import spandrel
+        import spandrel_extra_arches as _sea
+    except ImportError as e:
+        raise RuntimeError(
+            "This model needs extra packages. Install them with: "
+            'pip install -e ".[face]"'
+        ) from e
+    _sea.install()  # register GFPGAN/CodeFormer/HAT/DRCT/… into spandrel's registry
+    desc = spandrel.ModelLoader().load_from_file(str(path))
+    desc = desc.to(device).eval()
+
+    ic = getattr(desc, "input_channels", None)
+    oc = getattr(desc, "output_channels", None)
+    if require_channels is not None and (ic != require_channels or oc != require_channels):
+        raise RuntimeError(
+            f"This model expects {ic}→{oc} channels, but this feature needs "
+            f"{require_channels}-channel RGB. Pick a different model."
+        )
+
+    sr = getattr(desc, "size_requirements", None)
+    pad_to = max(int(getattr(sr, "multiple_of", 1) or 1), 1) if sr is not None else 1
+    use_fp16 = bool(
+        fp16
+        and getattr(device, "type", None) == "cuda"
+        and getattr(desc, "supports_half", False)
+    )
+    return LoadedModel(
+        net=desc,
+        scale=int(getattr(desc, "scale", 1) or 1),
+        use_fp16=use_fp16,
+        pad_to=pad_to,
+        input_channels=ic if ic is not None else (require_channels or 3),
+        output_channels=oc if oc is not None else (require_channels or 3),
+    )
+
+
 class Upscaler:
     """Wraps a pretrained Real-ESRGAN generator for inference.
 
@@ -95,25 +172,43 @@ class Upscaler:
         self.tile_pad = tile_pad
         # fp16 is a CUDA-only win; CPU/MPS stay fp32 for correctness.
         self.use_fp16 = fp16 and self.device.type == "cuda"
+        # Native RRDBNet computes its pad multiple from `scale`; the spandrel path
+        # overrides this with the loaded model's size requirement.
+        self._pad: Optional[int] = None
 
-        net = RRDBNet(
-            num_in_ch=3,
-            num_out_ch=3,
-            scale=self.spec.scale,
-            num_feat=self.spec.num_feat,
-            num_block=self.spec.num_block,
-            num_grow_ch=self.spec.num_grow_ch,
-        )
-        net.load_state_dict(_load_state_dict(ensure_weights(self.spec)), strict=True)
-        net.eval()
-        net.to(self.device)
-        if self.use_fp16:
-            net.half()
-        self.net = net
+        if getattr(self.spec, "loader", "rrdbnet") == "spandrel":
+            # Arch-agnostic path: spandrel auto-detects HAT/DRCT/SwinIR/… and the
+            # existing tiler drives it. Scale comes from the model, not the spec.
+            lm = load_spandrel(ensure_weights(self.spec), self.device, fp16=fp16)
+            self.net = lm.net
+            self._scale = lm.scale
+            self.use_fp16 = lm.use_fp16
+            self._pad = lm.pad_to
+            if self.use_fp16:
+                try:
+                    self.net = self.net.half()
+                except Exception:
+                    self.use_fp16 = False
+        else:
+            self._scale = self.spec.scale
+            net = RRDBNet(
+                num_in_ch=3,
+                num_out_ch=3,
+                scale=self.spec.scale,
+                num_feat=self.spec.num_feat,
+                num_block=self.spec.num_block,
+                num_grow_ch=self.spec.num_grow_ch,
+            )
+            net.load_state_dict(_load_state_dict(ensure_weights(self.spec)), strict=True)
+            net.eval()
+            net.to(self.device)
+            if self.use_fp16:
+                net.half()
+            self.net = net
 
     @property
     def scale(self) -> int:
-        return self.spec.scale
+        return self._scale
 
     # -- public API -------------------------------------------------------
 
@@ -137,7 +232,10 @@ class Upscaler:
         cropping the result back — so odd-sized images/tiles don't trip the
         ``spatial dims must be divisible by scale`` assert. (×4 needs no padding.)
         """
-        m = 2 if self.scale == 2 else 4 if self.scale == 1 else 1
+        if self._pad is not None:  # spandrel path: pad to the model's requirement
+            m = self._pad
+        else:  # native RRDBNet: pixel_unshuffle needs 2 (×2) / 4 (×1); ×4 none
+            m = 2 if self.scale == 2 else 4 if self.scale == 1 else 1
         if m == 1:
             return self.net(t)
         _, _, h, w = t.shape

@@ -44,6 +44,8 @@ def test_tiled_matches_untiled_on_random_weights():
     up.spec = resolve_model(scale=4)
     up.device = torch.device("cpu")
     up.use_fp16 = False
+    up._scale = up.spec.scale  # set by __init__ normally; bypassed here
+    up._pad = None  # native RRDBNet padding path
     up.tile_pad = 8
     torch.manual_seed(0)
     up.net = RRDBNet(scale=4, num_block=2).eval()  # tiny net, real weights not needed
