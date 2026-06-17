@@ -1234,6 +1234,23 @@ def build_demo() -> gr.Blocks:
                             "already-good photos, ×4 for small or soft ones, or the "
                             "anime model for drawings and line art.",
                         )
+                        with gr.Accordion("Which model for what? (best → worst)", open=False):
+                            gr.Markdown(
+                                "* **Everyday photos** — UltraSharp › ×4 default › "
+                                "NMKD-Siax › NMKD-Superscale\n"
+                                "* **Portraits / skin** — Remacri › NMKD-Superscale › "
+                                "×2 default\n"
+                                "* **JPEG / compressed** — UltraSharp › NMKD-Siax › "
+                                "×4 default\n"
+                                "* **Anime / line art** — Anime (×4) › UltraSharp\n"
+                                "* **Already sharp (be gentle)** — ×2 default › "
+                                "NMKD-Superscale\n"
+                                "* **Max texture & detail** — UltraSharp › ×4 default "
+                                "› Remacri\n\n"
+                                "*Starting points — results vary by image, so try a "
+                                "couple. UltraSharp/Remacri are non-commercial.*",
+                                elem_classes="notes",
+                            )
                         out_size = gr.Dropdown(
                             list(_SIZE_PRESETS), value="Model default (×2/×4)",
                             label="Output size", filterable=False,
