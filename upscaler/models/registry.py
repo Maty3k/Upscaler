@@ -30,6 +30,9 @@ class ModelSpec:
 
 
 _REL = "https://github.com/xinntao/Real-ESRGAN/releases/download"
+# Community ESRGAN weights (old-arch `model.*` layout, auto-converted on load by
+# engine._convert_esrgan_oldarch). Mirror: huggingface.co/uwg/upscaler.
+_HF = "https://huggingface.co/uwg/upscaler/resolve/main/ESRGAN"
 
 MODELS: dict[str, ModelSpec] = {
     "realesrgan-x4plus": ModelSpec(
@@ -58,6 +61,39 @@ MODELS: dict[str, ModelSpec] = {
         num_block=6,
         sha256="f872d837d3c90ed2e05227bed711af5671a6fd1c9f7d7e91c911a61f155e99da",
         notes="Lighter 6-block model tuned for anime / illustration / line art.",
+    ),
+    # -- Community ESRGAN models (old-arch, converted transparently on load) --
+    "4x-ultrasharp": ModelSpec(
+        name="4x-ultrasharp",
+        url=f"{_HF}/4x-UltraSharp.pth",
+        filename="4x-UltraSharp.pth",
+        scale=4,
+        sha256="a5812231fc936b42af08a5edba784195495d303d5b3248c24489ef0c4021fe01",
+        notes="Crisper, more detailed than the ×4 default — great on JPEG (non-commercial).",
+    ),
+    "4x-remacri": ModelSpec(
+        name="4x-remacri",
+        url=f"{_HF}/4x_foolhardy_Remacri.pth",
+        filename="4x_foolhardy_Remacri.pth",
+        scale=4,
+        sha256="e1a73bd89c2da1ae494774746398689048b5a892bd9653e146713f9df8bca86a",
+        notes="Natural skin & textures (less waxy) — good for portraits (non-commercial).",
+    ),
+    "4x-nmkd-siax": ModelSpec(
+        name="4x-nmkd-siax",
+        url=f"{_HF}/4x_NMKD-Siax_200k.pth",
+        filename="4x_NMKD-Siax_200k.pth",
+        scale=4,
+        sha256="560424d9f68625713fc47e9e7289a98aabe1d744e1cd6a9ae5a35e9957fd127e",
+        notes="Detailed restore for clean / lightly-compressed photos.",
+    ),
+    "4x-nmkd-superscale": ModelSpec(
+        name="4x-nmkd-superscale",
+        url=f"{_HF}/4x_NMKD-Superscale-SP_178000_G.pth",
+        filename="4x_NMKD-Superscale-SP_178000_G.pth",
+        scale=4,
+        sha256="1d1b0078fe71446e0469d8d4df59e96baa80d83cda600d68237d655830821bcc",
+        notes="Conservative, natural restore for everyday photos.",
     ),
 }
 
