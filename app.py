@@ -33,6 +33,7 @@ from upscaler.sharpen import unsharp_mask
 # Keyed by (model, device, onnx) so torch and ONNX engines are cached separately.
 _UP_CACHE: dict[tuple, object] = {}
 _DB_CACHE: dict[tuple, object] = {}
+_FACE_CACHE: dict[tuple, object] = {}
 
 
 def _onnx_engines():
@@ -70,6 +71,16 @@ def _get_deblurrer(model: str, device: str, onnx: bool):
             db = Deblurrer(model=model, device=device)
         _DB_CACHE[key] = db
     return db
+
+
+def _get_face_restorer(device: str):
+    key = (device,)
+    fr = _FACE_CACHE.get(key)
+    if fr is None:
+        from upscaler.face import FaceRestorer  # optional dep, imported lazily
+        fr = FaceRestorer(device=device)
+        _FACE_CACHE[key] = fr
+    return fr
 
 
 # -- File converter ----------------------------------------------------------
@@ -188,7 +199,7 @@ def _restore(src_img, deblur_model, device, onnx, strength):
 
 
 def enhance(image, model, device, deblur, deblur_model, restore_strength, sharpen,
-            tile, onnx, out_size):
+            tile, onnx, out_size, face=False, face_strength=1.0):
     if image is None:
         raise gr.Error("Upload an image to enhance first.")
     original = image if isinstance(image, Image.Image) else Image.fromarray(image)
@@ -211,6 +222,18 @@ def enhance(image, model, device, deblur, deblur_model, restore_strength, sharpe
             "also download on first use, so check your connection."
         ) from e
     stages.append(f"upscale ×{up.scale}")
+    if face:
+        try:
+            result = _get_face_restorer(device).restore(result, face_strength)
+        except RuntimeError as e:  # missing [face] deps → friendly install message
+            raise gr.Error(str(e)) from e
+        except (OSError, AssertionError, ValueError) as e:
+            raise gr.Error(
+                "Couldn't restore faces. The model downloads on first use, so "
+                "check your connection and try again."
+            ) from e
+        fpct = "" if face_strength >= 0.999 else f" @{int(round(face_strength * 100))}%"
+        stages.append(f"faces (GFPGAN){fpct}")
     if sharpen > 0:
         result = unsharp_mask(result, strength=float(sharpen))
         stages.append(f"sharpen {sharpen:g}")
@@ -1272,6 +1295,20 @@ def build_demo() -> gr.Blocks:
                                 "✨ Clean up only (deblur / denoise · no upscale)",
                                 variant="secondary",
                             )
+                        with gr.Accordion("Restore faces (GFPGAN)", open=False):
+                            face = gr.Checkbox(
+                                value=False, label="Enhance faces",
+                                info="After upscaling, detect faces and restore them "
+                                "with GFPGAN — big improvement on photos of people. "
+                                "Needs the optional \"face\" packages.",
+                            )
+                            face_strength = gr.Slider(
+                                0.0, 1.0, value=0.8, step=0.05,
+                                label="Face strength",
+                                info="How strongly faces are restored. 1 = full "
+                                "GFPGAN; lower blends the original face back in to "
+                                "keep more likeness.",
+                            )
                         with gr.Accordion("Advanced", open=False):
                             device = gr.Dropdown(
                                 _DEVICES, value=_cfg_device, label="Device",
@@ -1988,7 +2025,7 @@ def build_demo() -> gr.Blocks:
         run.click(
             enhance,
             [inp, model, device, deblur, deblur_model, restore_strength, sharpen,
-             tile, onnx, out_size],
+             tile, onnx, out_size, face, face_strength],
             [out, info],
             show_progress_on=[out],
         )

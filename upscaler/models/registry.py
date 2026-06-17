@@ -186,3 +186,35 @@ def resolve_deblur_model(model: Optional[str] = None) -> DeblurSpec:
             f"Unknown deblur model {name!r}. Available: {', '.join(sorted(DEBLUR_MODELS))}"
         )
     return DEBLUR_MODELS[name]
+
+
+# -- Face restoration (optional, via the [face] extra) -----------------------
+
+@dataclass(frozen=True)
+class FaceSpec:
+    name: str
+    url: str
+    filename: str
+    sha256: Optional[str] = None
+    notes: str = ""
+
+
+FACE_MODELS: dict[str, FaceSpec] = {
+    "gfpgan-v1.4": FaceSpec(
+        name="gfpgan-v1.4",
+        url="https://github.com/TencentARC/GFPGAN/releases/download/v1.3.4/GFPGANv1.4.pth",
+        filename="GFPGANv1.4.pth",
+        sha256="e2cd4703ab14f4d01fd1383a8a8b266f9a5833dacee8e6a79d3bf21a1b6be5ad",
+        notes="GFPGAN v1.4 — restores faces in photos (Apache-2.0). ~349MB.",
+    ),
+}
+DEFAULT_FACE_MODEL = "gfpgan-v1.4"
+
+# OpenCV YuNet face detector (gives the 5 landmarks used to align each face).
+FACE_DETECTOR = FaceSpec(
+    name="yunet",
+    url="https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx",
+    filename="face_detection_yunet_2023mar.onnx",
+    sha256="8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4",
+    notes="YuNet face detector (OpenCV Zoo).",
+)
