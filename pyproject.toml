@@ -27,6 +27,9 @@ pdf = ["pypdfium2>=4"]
 onnx = ["onnxruntime>=1.16", "onnx>=1.15", "onnxscript>=0.1"]
 # Video needs an ffmpeg binary: a system install, or this bundled fallback.
 video = ["imageio-ffmpeg>=0.4"]
+# Face restoration: spandrel loads GFPGAN (no basicsr), opencv-python provides
+# the YuNet detector. Old-arch GFPGAN lives in spandrel_extra_arches.
+face = ["spandrel>=0.4", "spandrel_extra_arches>=0.2", "opencv-python-headless>=4.9"]
 
 [project.scripts]
 upscaler = "upscaler.cli:main"
