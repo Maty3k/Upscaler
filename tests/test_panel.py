@@ -123,3 +123,109 @@ def test_media_kind_and_hex():
     assert panel.media_kind("a.mp4") == "animated"
     assert panel._hex("#ff0000") == (255, 0, 0)
     assert panel._hex("#abc") == (170, 187, 204)
+
+
+# ── Batch 5: clock + animated text ────────────────────────────────────────────
+from datetime import datetime  # noqa: E402
+
+import numpy as np  # noqa: E402
+
+
+def _full_canvas(overlays, **frame_kw):
+    p = panel.PanelParams(fit="cover", bg_type="solid", bg_color="#000000",
+                          overlays=overlays)
+    blank = Image.new("RGB", (10, 10), (0, 0, 0))
+    return panel.compose_frame(blank, p, **frame_kw)
+
+
+def _clock(**kw):
+    base = dict(type="clock", content="%H:%M:%S", font=panel.DEFAULT_FONT,
+                size=200, color="#ffffff", align="center", x=0, y=0,
+                rotation=0, stroke="#000000", stroke_w=0)
+    base.update(kw)
+    return base
+
+
+def _white_pixels(img):
+    return int((np.asarray(img.convert("L")) > 200).sum())
+
+
+def test_clock_overlay_renders_template():
+    out = _full_canvas([_clock()], now=datetime(2020, 1, 1, 13, 37, 42))
+    assert _white_pixels(out) > 0  # digits drawn
+
+
+def test_clock_advances_with_elapsed():
+    fixed = datetime(2020, 1, 1, 0, 0, 0)
+    a = _full_canvas([_clock(content="%M")], now=fixed, elapsed=0)
+    b = _full_canvas([_clock(content="%M")], now=fixed, elapsed=60)
+    assert not np.array_equal(np.asarray(a), np.asarray(b))  # minute changed
+
+
+def test_clock_bad_template_does_not_crash():
+    out = _full_canvas([_clock(content="%Q nonsense")], now=datetime(2020, 1, 1))
+    assert out.size == (1920, 480)  # rendered the literal, no exception
+
+
+def test_compose_frame_backcompat_signature():
+    p = panel.PanelParams(fit="cover")
+    src = Image.new("RGB", (40, 40), (10, 20, 30))
+    assert panel.compose_frame(src, p).size == (1920, 480)
+    assert panel.compose_frame(src, p, fast=True).size == (1920, 480)
+
+
+def _text(**kw):
+    base = dict(type="text", content="SCROLLING", font=panel.DEFAULT_FONT,
+                size=120, color="#ffffff", align="center", x=0, y=0,
+                rotation=0, stroke="#000000", stroke_w=0)
+    base.update(kw)
+    return base
+
+
+def _white_centroid_x(img):
+    a = (np.asarray(img.convert("L")) > 200)
+    xs = np.where(a.any(axis=0))[0]
+    return float(xs.mean()) if xs.size else None
+
+
+def test_text_static_when_motion_none():
+    ov = [_text()]
+    a = _full_canvas(ov, frame_index=0, total_frames=60, fps=30)
+    b = _full_canvas(ov, frame_index=30, total_frames=60, fps=30)
+    assert np.array_equal(np.asarray(a), np.asarray(b))  # unchanged across frames
+
+
+def test_text_scroll_offsets_by_frame():
+    ov = [_text(motion="scroll-left", speed=200)]
+    a = _full_canvas(ov, frame_index=0, total_frames=60, fps=30)
+    b = _full_canvas(ov, frame_index=30, total_frames=60, fps=30)
+    cx_a, cx_b = _white_centroid_x(a), _white_centroid_x(b)
+    assert cx_a is not None and cx_b is not None
+    assert cx_b < cx_a  # scrolled left
+
+
+def test_typewriter_reveals_chars():
+    ov = lambda fi: _full_canvas(  # noqa: E731
+        [_text(content="ABCDE", motion="typewriter", cps=5)],
+        frame_index=fi, total_frames=60, fps=30,
+    )
+    early = _white_pixels(ov(0))
+    mid = _white_pixels(ov(30))   # 1.0s * 5cps = 5 chars
+    assert early < mid
+
+
+def test_fade_alpha_cycles():
+    ov = [_text(content="FADE", motion="fade")]
+    first = _white_pixels(_full_canvas(ov, frame_index=0, total_frames=60, fps=30))
+    middle = _white_pixels(_full_canvas(ov, frame_index=30, total_frames=60, fps=30))
+    last = _white_pixels(_full_canvas(ov, frame_index=60, total_frames=60, fps=30))
+    assert middle > first          # brightest in the middle
+    assert abs(last - first) <= 2  # returns to the start for a seamless loop
+
+
+def test_scroll_seamless_wrap():
+    ov = [_text(motion="scroll-left", speed=200)]
+    a = _full_canvas(ov, frame_index=0, total_frames=60, fps=30)
+    b = _full_canvas(ov, frame_index=60, total_frames=60, fps=30)  # one past last
+    diff = np.abs(np.asarray(a).astype(int) - np.asarray(b).astype(int)).mean()
+    assert diff < 1.0  # offset wraps to the start → near-identical
