@@ -12,11 +12,13 @@ is what you get.
 
 from __future__ import annotations
 
+import math
 import os
 import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from functools import lru_cache
 
 import numpy as np
@@ -94,8 +96,14 @@ DEFAULT_FONT = next((n for n in ("Arial Bold", "Impact", "Helvetica") if n in FO
 
 # An overlay is a plain dict so it round-trips through Gradio state easily:
 #   text:    {type:'text', content, font, size, color, align, x, y, rotation,
-#             stroke, stroke_w}
+#             stroke, stroke_w, motion, speed, cps}
 #   sticker: {type:'sticker', image(PIL), scale, x, y, rotation, opacity}
+#   clock:   {type:'clock', content(<strftime template>), font, size, color,
+#             align, x, y, rotation, stroke, stroke_w, motion, speed, cps}
+# motion (text/clock) is one of: none | scroll-left | scroll-right | scroll-up |
+#   scroll-down | fade | typewriter. It only animates across an exported clip;
+#   a still preview shows the starting frame. All motion fields are optional and
+#   default to static, so older/loaded layouts render unchanged.
 Overlay = dict
 
 
@@ -233,11 +241,26 @@ def _paste_pos(dw: int, dh: int, cw: int, ch: int, p: PanelParams) -> tuple[int,
 
 
 # ── Compositing ───────────────────────────────────────────────────────────────
-def compose_frame(src: Image.Image, p: PanelParams, fast: bool = False) -> Image.Image:
+def compose_frame(
+    src: Image.Image,
+    p: PanelParams,
+    fast: bool = False,
+    *,
+    frame_index: int = 0,
+    elapsed: float = 0.0,
+    now: datetime | None = None,
+    total_frames: int = 1,
+    fps: int = 30,
+) -> Image.Image:
     """Composite a single source frame onto the exact panel canvas.
 
     `fast=True` uses bilinear resampling for the live preview (cheaper, still
     crisp on screen); exports leave it False for export-grade LANCZOS.
+
+    The keyword-only frame context drives animation: ``frame_index`` /
+    ``total_frames`` / ``fps`` position scrolling/fading/typewriter text, and
+    ``elapsed`` / ``now`` set the time a clock overlay shows. All default so the
+    preview and still exports render a static start frame unchanged.
     """
     cw, ch = canvas_size(p.orientation)
     canvas = _background(cw, ch, p).convert("RGB")
@@ -250,25 +273,27 @@ def compose_frame(src: Image.Image, p: PanelParams, fast: bool = False) -> Image
         px, py = _paste_pos(dw, dh, cw, ch, p)
         canvas.paste(resized, (px, py), resized)
 
+    ctx = {"frame_index": frame_index, "total_frames": max(1, total_frames),
+           "fps": max(1, fps)}
     for ov in p.overlays:
         kind = ov.get("type")
         if kind == "text":
-            _draw_text_overlay(canvas, ov)
+            _render_text_layer(canvas, ov.get("content", ""), ov, ctx)
         elif kind == "sticker":
             _draw_sticker(canvas, ov, resample)
+        elif kind == "clock":
+            _draw_clock_overlay(canvas, ov, elapsed=elapsed, now=now, ctx=ctx)
     return canvas
 
 
-def _draw_text_overlay(canvas: Image.Image, ov: Overlay) -> None:
-    content = (ov.get("content") or "").strip("\n")
-    if not content.strip():
-        return
-    cw, ch = canvas.size
+def _text_layer(content: str, ov: Overlay) -> Image.Image:
+    """Render `content` in ov's style onto its own RGBA layer (no positioning).
+    Kept separate so text and clock overlays share one glyph/stroke/rotation
+    path."""
     font = _load_font(ov.get("font", DEFAULT_FONT), int(ov.get("size", 180)))
     align = ov.get("align", "center")
     sw = int(ov.get("stroke_w", 0) or 0)
 
-    # Render onto its own RGBA layer so rotation pivots around the text centre.
     probe = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
     bbox = probe.multiline_textbbox((0, 0), content, font=font, align=align,
                                     stroke_width=sw)
@@ -285,10 +310,84 @@ def _draw_text_overlay(canvas: Image.Image, ov: Overlay) -> None:
     rot = float(ov.get("rotation", 0) or 0)
     if rot:
         layer = layer.rotate(-rot, expand=True, resample=Image.BICUBIC)
+    return layer
+
+
+def _render_text_layer(canvas: Image.Image, content: str, ov: Overlay, ctx=None) -> None:
+    """Draw `content` (text or a clock string) onto `canvas`, honouring ov's
+    optional motion. `ctx` carries frame_index/total_frames/fps; None (or no
+    motion) renders the static start frame, byte-identical to the old path."""
+    content = (content or "").strip("\n")
+    if not content.strip():
+        return
+    cw, ch = canvas.size
+    motion = (ov.get("motion") or "none") if ctx else "none"
+    fi = ctx["frame_index"] if ctx else 0
+    fps = max(1, ctx["fps"]) if ctx else 30
+    total = max(1, ctx["total_frames"]) if ctx else 1
+    t = fi / fps  # seconds into the clip
+
+    if motion == "typewriter":  # reveal characters over time, then hold full
+        cps = float(ov.get("cps", 10) or 10)
+        content = content[: max(0, int(t * cps))]
+        if not content:
+            return
+
+    layer = _text_layer(content, ov)
+
+    if motion == "fade":  # 0→1→0 over the clip so a looped clip has no seam pop
+        mul = max(0.0, math.sin(math.pi * (fi / total)))
+        layer.putalpha(layer.split()[3].point(lambda v: int(v * mul)))
 
     x = cw / 2 + (float(ov.get("x", 0)) / 100.0) * cw
     y = ch / 2 + (float(ov.get("y", 0)) / 100.0) * ch
-    canvas.paste(layer, (int(x - layer.width / 2), int(y - layer.height / 2)), layer)
+
+    if motion in ("scroll-left", "scroll-right", "scroll-up", "scroll-down"):
+        _paste_scrolling(canvas, layer, motion, x, y,
+                         speed=float(ov.get("speed", 120) or 120), t=t, total=total, fps=fps)
+    else:
+        canvas.paste(layer, (int(x - layer.width / 2), int(y - layer.height / 2)), layer)
+
+
+def _paste_scrolling(canvas, layer, motion, cx, cy, *, speed, t, total, fps) -> None:
+    """Tile `layer` along the scroll axis and paste it at a time-wrapped offset,
+    so as one copy exits an edge the next enters. The offset completes a whole
+    number of cycles over the clip, so the loop is seamless (offset(0)==offset(end))."""
+    cw, ch = canvas.size
+    lw, lh = layer.size
+    horizontal = motion in ("scroll-left", "scroll-right")
+    span = lw if horizontal else lh
+    canvas_span = cw if horizontal else ch
+    period = span + max(int(canvas_span * 0.25), 40)  # text length + a gap
+    # snap to whole cycles per clip → seamless loop; ~honours the requested speed
+    cycles = max(1, round(speed * (total / fps) / period))
+    offset = ((fi_frac := (t * fps) / total) * cycles * period) % period
+    sign = -1 if motion in ("scroll-left", "scroll-up") else 1
+
+    if horizontal:
+        anchor = cx - lw / 2 + sign * offset
+        k0 = int(math.floor((0 - anchor) / period)) - 1
+        k1 = int(math.ceil((cw - anchor) / period)) + 1
+        for k in range(k0, k1 + 1):
+            canvas.paste(layer, (int(anchor + k * period), int(cy - lh / 2)), layer)
+    else:
+        anchor = cy - lh / 2 + sign * offset
+        k0 = int(math.floor((0 - anchor) / period)) - 1
+        k1 = int(math.ceil((ch - anchor) / period)) + 1
+        for k in range(k0, k1 + 1):
+            canvas.paste(layer, (int(cx - lw / 2), int(anchor + k * period)), layer)
+
+
+def _draw_clock_overlay(canvas: Image.Image, ov: Overlay, *, elapsed=0.0,
+                        now: datetime | None = None, ctx=None) -> None:
+    base = now or datetime.now()
+    ts = base + timedelta(seconds=elapsed)
+    template = ov.get("content") or "%H:%M:%S"
+    try:
+        text = ts.strftime(template)
+    except (ValueError, TypeError):
+        text = template  # malformed strftime → render the literal template
+    _render_text_layer(canvas, text, ov, ctx)
 
 
 def _draw_sticker(canvas: Image.Image, ov: Overlay, resample) -> None:
@@ -588,9 +687,14 @@ def export_animated(
         files = sorted(f for f in os.listdir(raw) if f.startswith("frame_"))
         if not files:
             raise ValueError("No frames could be extracted from the source.")
+        n_files = len(files)
         for i, fn in enumerate(files, 1):
             with Image.open(os.path.join(raw, fn)) as fr:
-                out = compose_frame(fr.convert("RGB"), p)
+                out = compose_frame(
+                    fr.convert("RGB"), p,
+                    frame_index=i - 1, elapsed=(i - 1) / fps,
+                    total_frames=n_files, fps=fps,
+                )
             out.save(os.path.join(comp, f"c_{i:05d}.png"))
             if progress:
                 progress(0.1 + 0.6 * i / len(files), desc=f"Compositing frame {i}/{len(files)}")

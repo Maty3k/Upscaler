@@ -11,11 +11,13 @@ Two tools on one page:
 from __future__ import annotations
 
 import io
+import json
 import os
 import shutil
 import tempfile
 import zipfile
 from datetime import datetime
+from pathlib import Path
 
 import gradio as gr
 import numpy as np
@@ -665,28 +667,37 @@ def batch_process(files, op, model, out_size, sharpen, fmt, quality,
 
 # -- Lian Li 8.8" panel builder ----------------------------------------------
 
-# Overlay slots: up to N_TEXT styled text layers + N_STICKER image stickers.
+# Overlay slots: N_TEXT styled text layers + N_STICKER stickers + N_CLOCK clock.
+# The slot order here (text, sticker, clock) is the single source of truth for
+# the flat Gradio component list — _panel_params, the UI builder, and
+# _fan_layout_to_components (layout load) MUST all agree on it.
 N_TEXT = 3
 N_STICKER = 2
-_TEXT_FIELDS = 11   # enabled, content, font, size, color, align, x, y, rot, stroke, stroke_w
+N_CLOCK = 1
+# enabled, content, font, size, color, align, x, y, rot, stroke, stroke_w, motion, speed, cps
+_TEXT_FIELDS = 14
 _STICKER_FIELDS = 7  # enabled, image, scale, x, y, rot, opacity
-N_OVERLAY_VALS = N_TEXT * _TEXT_FIELDS + N_STICKER * _STICKER_FIELDS
+# enabled, template, font, size, color, align, x, y, rot, stroke, stroke_w
+_CLOCK_FIELDS = 11
+N_OVERLAY_VALS = N_TEXT * _TEXT_FIELDS + N_STICKER * _STICKER_FIELDS + N_CLOCK * _CLOCK_FIELDS
 
 
 def _panel_params(orientation, fit, zoom, off_x, off_y, bg_type, bg_color,
                   bg_color2, bg_angle, *ov):
     """Build PanelParams from the base controls plus the flat overlay-slot
-    values (text slots first, then sticker slots)."""
+    values (text slots, then sticker slots, then the clock slot)."""
     overlays = []
     i = 0
     for _ in range(N_TEXT):
-        en, content, font, size, color, align, x, y, rot, stroke, stroke_w = ov[i:i + _TEXT_FIELDS]
+        (en, content, font, size, color, align, x, y, rot, stroke, stroke_w,
+         motion, speed, cps) = ov[i:i + _TEXT_FIELDS]
         i += _TEXT_FIELDS
         if en and (content or "").strip():
             overlays.append(dict(
                 type="text", content=content, font=font, size=int(size),
                 color=color, align=align, x=float(x), y=float(y),
                 rotation=float(rot), stroke=stroke, stroke_w=int(stroke_w),
+                motion=motion, speed=float(speed), cps=float(cps),
             ))
     for _ in range(N_STICKER):
         en, image, scale, x, y, rot, opacity = ov[i:i + _STICKER_FIELDS]
@@ -695,6 +706,16 @@ def _panel_params(orientation, fit, zoom, off_x, off_y, bg_type, bg_color,
             overlays.append(dict(
                 type="sticker", image=image, scale=float(scale), x=float(x),
                 y=float(y), rotation=float(rot), opacity=float(opacity),
+            ))
+    for _ in range(N_CLOCK):
+        (en, template, font, size, color, align, x, y, rot,
+         stroke, stroke_w) = ov[i:i + _CLOCK_FIELDS]
+        i += _CLOCK_FIELDS
+        if en and (template or "").strip():
+            overlays.append(dict(
+                type="clock", content=template, font=font, size=int(size),
+                color=color, align=align, x=float(x), y=float(y),
+                rotation=float(rot), stroke=stroke, stroke_w=int(stroke_w),
             ))
     return panel.PanelParams(
         orientation=orientation, fit=fit, zoom=float(zoom),
@@ -714,6 +735,71 @@ def panel_mockup_ui(media, *vals):
     if not media:
         raise gr.Error("Upload an image, GIF or video first.")
     return panel.mockup(media, _panel_params(*vals))
+
+
+def _fan_layout_to_components(p):
+    """Inverse of _panel_params: spread a PanelParams back across the flat list
+    of [9 base controls] + _overlay_inputs (text slots, sticker slots, clock
+    slot). Empties fill with disabled defaults. Order MUST match _panel_params."""
+    vals = [p.orientation, p.fit, p.zoom, p.off_x, p.off_y, p.bg_type,
+            p.bg_color, p.bg_color2, p.bg_angle]
+    texts = [o for o in p.overlays if o.get("type") == "text"]
+    stickers = [o for o in p.overlays if o.get("type") == "sticker"]
+    clocks = [o for o in p.overlays if o.get("type") == "clock"]
+    for j in range(N_TEXT):
+        o = texts[j] if j < len(texts) else None
+        if o:
+            vals += [True, o.get("content", ""), o.get("font", panel.DEFAULT_FONT),
+                     o.get("size", 180), o.get("color", "#ffffff"),
+                     o.get("align", "center"), o.get("x", 0), o.get("y", 0),
+                     o.get("rotation", 0), o.get("stroke", "#000000"),
+                     o.get("stroke_w", 0), o.get("motion", "none"),
+                     o.get("speed", 120), o.get("cps", 10)]
+        else:
+            vals += [False, "", panel.DEFAULT_FONT, 180, "#ffffff", "center",
+                     0, 0, 0, "#000000", 0, "none", 120, 10]
+    for j in range(N_STICKER):
+        o = stickers[j] if j < len(stickers) else None
+        if o:
+            vals += [True, o.get("image"), o.get("scale", 40), o.get("x", 0),
+                     o.get("y", 0), o.get("rotation", 0), o.get("opacity", 1.0)]
+        else:
+            vals += [False, None, 40, 0, 0, 0, 1.0]
+    for j in range(N_CLOCK):
+        o = clocks[j] if j < len(clocks) else None
+        if o:
+            vals += [True, o.get("content", "%H:%M:%S"),
+                     o.get("font", panel.DEFAULT_FONT), o.get("size", 180),
+                     o.get("color", "#ffffff"), o.get("align", "center"),
+                     o.get("x", 0), o.get("y", 0), o.get("rotation", 0),
+                     o.get("stroke", "#000000"), o.get("stroke_w", 0)]
+        else:
+            vals += [False, "%H:%M:%S", panel.DEFAULT_FONT, 180, "#ffffff",
+                     "center", 0, 0, 0, "#000000", 0]
+    return vals
+
+
+def panel_layout_download(*vals):
+    """Serialize the current layout to a shareable .json tempfile for download."""
+    from upscaler import panel_presets
+    p = _panel_params(*vals)
+    fd, path = tempfile.mkstemp(suffix=".json")
+    os.close(fd)
+    Path(path).write_text(json.dumps(panel_presets.to_dict(p), indent=2))
+    return path
+
+
+def panel_layout_upload(file):
+    """Load a layout .json and spread it back across every panel control."""
+    from upscaler import panel_presets
+    if not file:
+        return _fan_layout_to_components(panel.PanelParams())
+    path = file.name if hasattr(file, "name") else file
+    try:
+        p = panel_presets.load_layout(path)
+    except (OSError, ValueError, json.JSONDecodeError) as e:
+        raise gr.Error(f"Couldn't read that layout file: {e}") from e
+    return _fan_layout_to_components(p)
 
 
 def panel_on_media(media):
@@ -2156,8 +2242,23 @@ def build_demo() -> gr.Blocks:
                                                               label="Stroke width",
                                                               info="Outline thickness — "
                                                               "0 = no outline.")
+                                    t_motion = gr.Dropdown(
+                                        ["none", "scroll-left", "scroll-right",
+                                         "scroll-up", "scroll-down", "fade", "typewriter"],
+                                        value="none", label="Motion", filterable=False,
+                                        info="Animates in the exported GIF/MP4 — the "
+                                        "editor preview shows the starting frame.")
+                                    with gr.Row():
+                                        t_speed = gr.Slider(10, 600, value=120, step=10,
+                                                            label="Scroll speed (px/s)",
+                                                            info="How fast scrolling text "
+                                                            "moves (snapped to loop cleanly).")
+                                        t_cps = gr.Slider(1, 40, value=10, step=1,
+                                                          label="Type speed (chars/s)",
+                                                          info="Typewriter reveal rate.")
                                 _text_slots.append([t_en, t_content, t_font, t_size, t_color,
-                                                    t_align, t_x, t_y, t_rot, t_stroke, t_strokew])
+                                                    t_align, t_x, t_y, t_rot, t_stroke, t_strokew,
+                                                    t_motion, t_speed, t_cps])
                         _sticker_slots = []
                         with gr.Accordion("Stickers (image overlays)", open=False):
                             for _s in range(N_STICKER):
@@ -2188,8 +2289,58 @@ def build_demo() -> gr.Blocks:
                                                       label="Rotation (°)",
                                                       info="Tilt the sticker (0 = straight).")
                                 _sticker_slots.append([s_en, s_img, s_scale, s_x, s_y, s_rot, s_op])
+                        _clock_slots = []
+                        with gr.Accordion("Clock / date", open=False):
+                            gr.Markdown(
+                                "*The time is **baked in at export** — a clip replays "
+                                "the moments captured when you exported, it isn't a live "
+                                "wall-clock in L-Connect.*", elem_classes="notes",
+                            )
+                            for _k in range(N_CLOCK):
+                                k_en = gr.Checkbox(value=False, label="Show a clock / date",
+                                                   info="Tick to overlay the time/date.")
+                                k_tmpl = gr.Dropdown(
+                                    ["%H:%M:%S", "%H:%M", "%I:%M %p", "%a %d %b",
+                                     "%Y-%m-%d", "%d/%m %H:%M"],
+                                    value="%H:%M:%S", label="Format", allow_custom_value=True,
+                                    info="strftime template — %H hour %M min %S sec, "
+                                    "%a day %d date %b month %Y year. Type your own too.")
+                                with gr.Row():
+                                    k_font = gr.Dropdown(panel.FONT_NAMES,
+                                                         value=panel.DEFAULT_FONT,
+                                                         label="Font", filterable=True)
+                                    k_size = gr.Slider(16, 900, value=180, step=2,
+                                                       label="Size (px)")
+                                with gr.Row():
+                                    k_color = gr.ColorPicker(value="#ffffff", label="Color")
+                                    k_align = gr.Radio(["left", "center", "right"],
+                                                       value="center", label="Align")
+                                with gr.Row():
+                                    k_x = gr.Slider(-100, 100, value=0, step=1, label="X (%)")
+                                    k_y = gr.Slider(-100, 100, value=0, step=1, label="Y (%)")
+                                k_rot = gr.Slider(-180, 180, value=0, step=1,
+                                                  label="Rotation (°)")
+                                with gr.Row():
+                                    k_stroke = gr.ColorPicker(value="#000000", label="Stroke")
+                                    k_strokew = gr.Slider(0, 40, value=0, step=1,
+                                                          label="Stroke width")
+                                _clock_slots.append([k_en, k_tmpl, k_font, k_size, k_color,
+                                                     k_align, k_x, k_y, k_rot, k_stroke, k_strokew])
                         _overlay_inputs = [c for slot in _text_slots for c in slot] + \
-                                          [c for slot in _sticker_slots for c in slot]
+                                          [c for slot in _sticker_slots for c in slot] + \
+                                          [c for slot in _clock_slots for c in slot]
+                        with gr.Accordion("Layouts (save / share)", open=False):
+                            gr.Markdown(
+                                "*Saves your composition + overlays (stickers are "
+                                "embedded, so the file is self-contained) — **not** the "
+                                "source media. Re-upload your image/video after "
+                                "loading a layout.*", elem_classes="notes",
+                            )
+                            pn_layout_save = gr.Button("💾 Save layout (.json)",
+                                                       variant="secondary", size="sm")
+                            pn_layout_file = gr.File(label="Download layout")
+                            pn_layout_upload = gr.File(label="Load a layout (.json)",
+                                                       file_types=[".json"], height=90)
                         with gr.Group(visible=False) as pn_anim_group:
                             gr.Markdown("**Animation** — for GIF / MP4 export.")
                             with gr.Row():
@@ -2475,6 +2626,12 @@ def build_demo() -> gr.Blocks:
             panel_mockup_ui, _pn_preview_inputs, pn_mockup,
             show_progress_on=[pn_mockup],
         )
+        pn_layout_save.click(
+            panel_layout_download, _pn_preview_inputs[1:], pn_layout_file,
+        )
+        pn_layout_upload.upload(
+            panel_layout_upload, pn_layout_upload, _pn_preview_inputs[1:],
+        ).then(panel_preview_ui, _pn_preview_inputs, pn_preview)
 
         # ---- Library tab ----
         _lib_outputs = [lib_gallery, lib_video_pick, lib_video, lib_count]
