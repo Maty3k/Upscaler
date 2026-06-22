@@ -52,7 +52,7 @@ def test_enhance_threads_fbcnn_flag(monkeypatch):
         scale = 2
         device = types.SimpleNamespace(type="cpu")
 
-        def upscale(self, img):
+        def upscale(self, img, **kwargs):  # accepts progress_cb from enhance()
             return img
 
     monkeypatch.setattr(app, "_get_fbcnn", lambda device: _StubFBCNN())
