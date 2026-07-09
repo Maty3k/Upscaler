@@ -1,11 +1,14 @@
-"""Registry of pretrained Real-ESRGAN models and how to build/load each one.
+"""Registry of pretrained models and how to build/load each one.
 
 Weights are downloaded lazily on first use (see ``upscaler.models.weights``) and
 cached under ``upscaler/weights/``. They are NOT committed to the repo: they are
 large and carry their own upstream license terms.
 
-All weights here are from the official Real-ESRGAN releases (BSD-3-Clause):
-https://github.com/xinntao/Real-ESRGAN
+The core upscalers are official Real-ESRGAN releases (BSD-3-Clause,
+https://github.com/xinntao/Real-ESRGAN), but this registry also carries
+community and third-party models with different terms — several are
+non-commercial (flagged in their ``notes``). Check a spec's URL/notes before
+assuming its license.
 """
 
 from __future__ import annotations

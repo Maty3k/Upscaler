@@ -42,6 +42,26 @@ FORMATS: dict[str, tuple[str, str, bool]] = {
 if _HEIF_OK:
     FORMATS["HEIC"] = ("HEIF", "heic", True)
 
+# AVIF needs a codec: built into Pillow 11.2+ wheels, else the pillow-heif
+# plugin. Without one, offering it would end in an opaque KeyError at save time
+# — drop it from the menu instead.
+try:
+    from PIL import features as _pil_features
+
+    _AVIF_OK = bool(_pil_features.check("avif"))
+except Exception:  # pragma: no cover - very old Pillow
+    _AVIF_OK = False
+if not _AVIF_OK:
+    try:  # pragma: no cover - depends on installed pillow-heif build
+        from pillow_heif import register_avif_opener
+
+        register_avif_opener()
+        _AVIF_OK = True
+    except Exception:
+        pass
+if not _AVIF_OK:  # pragma: no cover
+    FORMATS.pop("AVIF", None)
+
 # Formats that cannot store an alpha channel — alpha is flattened onto a bg.
 _NO_ALPHA = {"JPEG", "BMP", "PPM", "PCX"}
 

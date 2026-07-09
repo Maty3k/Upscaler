@@ -19,12 +19,20 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=7.0", "onnxruntime>=1.16", "onnx>=1.15", "onnxscript>=0.1", "pypdfium2>=4", "pillow-heif>=0.13", "imageio-ffmpeg>=0.4"]
-gui = ["gradio>=4.0", "pypdfium2>=4", "pillow-heif>=0.13", "onnxruntime>=1.16"]
+# gradio is required: several tests import app.py at collection time, so a
+# plain `pip install -e ".[dev]" && pytest` (the documented flow) needs it.
+dev = ["pytest>=7.0", "gradio>=6.0", "onnxruntime>=1.16", "onnx>=1.15", "onnxscript>=0.1", "pypdfium2>=4", "pillow-heif>=0.13", "imageio-ffmpeg>=0.4"]
+# app.py uses Gradio 6 APIs (ImageSlider, buttons=, launch(theme=…)) — older
+# majors fail at startup, so the floor must match.
+gui = ["gradio>=6.0", "pypdfium2>=4", "pillow-heif>=0.13", "onnxruntime>=1.16"]
 pdf = ["pypdfium2>=4"]
 # onnxscript is only needed to *export* (torch's modern exporter); pure
 # inference needs just onnxruntime.
 onnx = ["onnxruntime>=1.16", "onnx>=1.15", "onnxscript>=0.1"]
+# AMD/Intel GPU on native Windows for the ONNX engine (DirectML). NOTE: this
+# provides the same `onnxruntime` module as the CPU package — uninstall
+# `onnxruntime` first, then install this extra on its own.
+directml = ["onnxruntime-directml>=1.17", "onnx>=1.15", "onnxscript>=0.1"]
 # Video needs an ffmpeg binary: a system install, or this bundled fallback.
 video = ["imageio-ffmpeg>=0.4"]
 # Face restoration: spandrel loads GFPGAN (no basicsr), opencv-python provides

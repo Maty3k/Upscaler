@@ -11,6 +11,7 @@ optional ``imageio-ffmpeg`` package. Audio from the source is preserved.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import tempfile
@@ -19,10 +20,11 @@ from typing import Callable, Optional
 
 from PIL import Image
 
-from upscaler.engine import Upscaler
+from upscaler.engine import CancelledError, Upscaler
 from upscaler.sharpen import unsharp_mask
 
 ProgressCb = Optional[Callable[[int, int], None]]
+CancelCb = Optional[Callable[[], bool]]
 
 
 def _ffmpeg() -> str:
@@ -51,7 +53,16 @@ def _probe(src: Path) -> tuple[str, bool]:
     """Return (fps as an 'num/den' string for ffmpeg, has_audio)."""
     ffprobe = shutil.which("ffprobe")
     if not ffprobe:
-        return "30", True  # reasonable fallback when only ffmpeg is present
+        # Only ffmpeg present (e.g. the bundled imageio-ffmpeg binary, which
+        # ships no ffprobe): parse the `-i` banner instead of assuming 30 fps —
+        # re-encoding a 24/60 fps clip at 30 changes its speed and desyncs audio.
+        info = subprocess.run(
+            [_ffmpeg(), "-hide_banner", "-i", str(src)],
+            capture_output=True, text=True,
+        )
+        err = info.stderr or ""
+        m = re.search(r"(\d+(?:\.\d+)?)\s*fps\b", err)
+        return (m.group(1) if m else "30"), ("Audio:" in err)
     info = subprocess.run(
         [ffprobe, "-v", "error", "-select_streams", "v:0", "-show_entries",
          "stream=r_frame_rate", "-of", "json", str(src)],
@@ -86,6 +97,8 @@ def upscale_video(
     trim_start: Optional[float] = None,
     trim_end: Optional[float] = None,
     progress_cb: ProgressCb = None,
+    should_cancel: CancelCb = None,
+    onnx: bool = False,
 ) -> Path:
     """Upscale every frame of ``src`` and write the result to ``dst`` (keeps audio).
 
@@ -101,7 +114,16 @@ def upscale_video(
     if not src.exists():
         raise FileNotFoundError(src)
     ff = _ffmpeg()
-    up = upscaler or Upscaler(model=model, scale=scale, device=device, tile=tile)
+    if upscaler is not None:
+        up = upscaler
+    elif onnx:
+        # ONNX Runtime backend — with the DirectML build this is the way to an
+        # AMD/Intel GPU on native Windows, where torch is CPU-only.
+        from upscaler.onnx_engine import OnnxUpscaler
+
+        up = OnnxUpscaler(model=model, scale=scale, device=device, tile=tile)
+    else:
+        up = Upscaler(model=model, scale=scale, device=device, tile=tile)
     fps, has_audio = _probe(src)
 
     with tempfile.TemporaryDirectory() as td:
@@ -126,9 +148,11 @@ def upscale_video(
                 "an unsupported format."
             )
 
-        # 2. upscale each frame
+        # 2. upscale each frame (both engines accept should_cancel)
         for i, fr in enumerate(frames, 1):
-            result = up.upscale(Image.open(fr))
+            if should_cancel and should_cancel():
+                raise CancelledError("Cancelled.")
+            result = up.upscale(Image.open(fr), should_cancel=should_cancel)
             if sharpen > 0:
                 result = unsharp_mask(result, strength=sharpen)
             result.save(out_dir / fr.name)

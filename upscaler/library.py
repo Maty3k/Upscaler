@@ -21,8 +21,10 @@ LIBRARY_DIR = Path(
     os.environ.get("UPSCALER_LIBRARY", str(Path.home() / ".upscaler" / "library"))
 )
 
-# What counts as a browsable image vs. a video in the Library tab.
-IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".avif", ".heic", ".gif",
+# What counts as a browsable image vs. a video in the Library tab. HEIC is
+# deliberately absent: browsers can't render it in an <img>, so a saved .heic
+# would show as a broken tile (it stays in the folder — use "Open folder").
+IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".avif", ".gif",
               ".tif", ".tiff", ".bmp"}
 VIDEO_EXTS = {".mp4", ".mov", ".webm", ".mkv", ".m4v", ".avi"}
 

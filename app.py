@@ -14,10 +14,22 @@ import io
 import json
 import os
 import shutil
+import sys
 import tempfile
+import threading
+import time
 import zipfile
 from datetime import datetime
 from pathlib import Path
+
+# Windows: a redirected stdout/stderr defaults to cp1252, and libraries print
+# emoji status lines (torch's ONNX exporter, tqdm) — never let a glyph that
+# cp1252 can't encode crash a running job.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(errors="replace")
+    except (AttributeError, OSError, ValueError):
+        pass
 
 import gradio as gr
 import numpy as np
@@ -27,7 +39,7 @@ from upscaler import background, config, library, manage, panel
 from upscaler.convert import FORMATS, convert, extension_for
 from upscaler.document import images_to_pdf, pdf_to_images
 from upscaler.deblur import Deblurrer
-from upscaler.engine import Upscaler, resolve_device
+from upscaler.engine import CancelledError, Upscaler, resolve_device
 from upscaler.models.registry import (
     COLORIZE_MODELS,
     DEBLUR_MODELS,
@@ -49,6 +61,75 @@ _FBCNN_CACHE: dict[tuple, object] = {}
 _COLOR_CACHE: dict[tuple, object] = {}
 _INPAINT_CACHE: dict[tuple, object] = {}
 
+# Cooperative cancel flags for long jobs. Gradio's `cancels=` only stops the
+# event stream — the compute would keep running to completion server-side, so
+# the Cancel buttons also set these and the tile/file loops poll them.
+_ENHANCE_CANCEL = threading.Event()
+_BATCH_CANCEL = threading.Event()
+_VIDEO_CANCEL = threading.Event()
+
+# One-shot download files (converted images, ZIPs, video/panel exports) go in
+# this dedicated dir instead of loose in the OS temp dir, and anything older
+# than a day is purged at startup — otherwise every export leaks a file that
+# lives until the OS cleans the temp dir.
+_EXPORT_DIR = Path(tempfile.gettempdir()) / "upscaler-exports"
+
+
+def _ensure_export_dir() -> str:
+    _EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+    return str(_EXPORT_DIR)
+
+
+def _purge_old_exports(max_age_hours: int = 24) -> None:
+    cutoff = time.time() - max_age_hours * 3600
+    try:
+        for p in _EXPORT_DIR.glob("*"):
+            try:
+                if p.is_file() and p.stat().st_mtime < cutoff:
+                    p.unlink()
+            except OSError:
+                continue
+    except OSError:
+        pass
+
+
+def _fmt_mmss(sec: float) -> str:
+    """0:07 · 3:24 · 1:02:09 — humans read minutes, not '204 seconds'."""
+    sec = max(0, int(round(sec)))
+    m, s = divmod(sec, 60)
+    if m >= 60:
+        h, m = divmod(m, 60)
+        return f"{h}:{m:02d}:{s:02d}"
+    return f"{m}:{s:02d}"
+
+
+class _JobProgress:
+    """A (done, total) callback that renders a rich progress line on a
+    gr.Progress bar: percent, m:ss elapsed, and an m:ss ETA once there's
+    enough signal to extrapolate from."""
+
+    def __init__(self, progress, label: str):
+        self._p = progress
+        self._label = label
+        self._t0 = time.perf_counter()
+
+    def __call__(self, done: int, total: int) -> None:
+        total = max(int(total), 1)
+        frac = min(max(done / total, 0.0), 1.0)
+        elapsed = time.perf_counter() - self._t0
+        desc = f"{self._label} {done}/{total} · {frac:.0%} · {_fmt_mmss(elapsed)} elapsed"
+        if 0 < done < total:
+            eta = elapsed / done * (total - done)
+            desc += f" · ~{_fmt_mmss(eta)} left"
+        self._p(frac, desc=desc)
+
+
+def _torch_dev_key(device: str) -> str:
+    """Cache key for a torch engine: the *resolved* device, so 'auto' and the
+    device it resolves to share one cached engine instead of loading the same
+    weights twice."""
+    return resolve_device(device).type
+
 
 def _onnx_engines():
     try:
@@ -62,20 +143,25 @@ def _onnx_engines():
 
 
 def _get_upscaler(model: str, device: str, tile: int, onnx: bool):
-    key = (model, device, onnx)
+    # ONNX picks its execution provider from the raw string ('auto' may mean
+    # CUDA even when torch is CPU-only), so only torch engines key on the
+    # resolved device.
+    key = (model, device if onnx else _torch_dev_key(device), onnx)
     up = _UP_CACHE.get(key)
-    if up is None or getattr(up, "tile", None) != tile:
+    if up is None:
         if onnx:
             OnnxUpscaler, _ = _onnx_engines()
             up = OnnxUpscaler(model=model, device=device, tile=tile)
         else:
             up = Upscaler(model=model, device=device, tile=tile)
         _UP_CACHE[key] = up
+    elif getattr(up, "tile", None) != tile:
+        up.tile = tile  # both engines read .tile per run — no weight reload
     return up
 
 
 def _get_deblurrer(model: str, device: str, onnx: bool):
-    key = (model, device, onnx)
+    key = (model, device if onnx else _torch_dev_key(device), onnx)
     db = _DB_CACHE.get(key)
     if db is None:
         if onnx:
@@ -88,7 +174,7 @@ def _get_deblurrer(model: str, device: str, onnx: bool):
 
 
 def _get_face_restorer(model: str, device: str):
-    key = (model, device)  # keyed by model too, so switching models isn't stale
+    key = (model, _torch_dev_key(device))  # keyed by model too, so switching models isn't stale
     fr = _FACE_CACHE.get(key)
     if fr is None:
         from upscaler.face import FaceRestorer  # optional dep, imported lazily
@@ -98,7 +184,7 @@ def _get_face_restorer(model: str, device: str):
 
 
 def _get_fbcnn(device: str):
-    key = (device,)
+    key = (_torch_dev_key(device),)
     fr = _FBCNN_CACHE.get(key)
     if fr is None:
         from upscaler.restore import ArtifactRemover  # optional dep, lazy import
@@ -133,14 +219,22 @@ def convert_image(image, fmt, quality, lossless):
     if image is None:
         raise gr.Error("Upload an image to convert first.")
     img = image if isinstance(image, Image.Image) else Image.fromarray(image)
-    data = convert(img, fmt, quality=int(quality), lossless=bool(lossless))
+    try:
+        data = convert(img, fmt, quality=int(quality), lossless=bool(lossless))
+    except (ValueError, OSError, KeyError) as e:
+        raise gr.Error(f"Couldn't convert to {fmt}: {e}") from e
 
-    fd, path = tempfile.mkstemp(suffix=f".{extension_for(fmt)}")
+    fd, path = tempfile.mkstemp(dir=_ensure_export_dir(), suffix=f".{extension_for(fmt)}")
     with os.fdopen(fd, "wb") as f:
         f.write(data)
 
     kb = len(data) / 1024
-    note = "lossless" if (lossless and fmt == "WebP") or not FORMATS[fmt][2] else f"q{int(quality)}"
+    if fmt == "GIF":
+        note = "256-color palette"  # GIF quantizes; calling it lossless would mislead
+    elif (lossless and fmt == "WebP") or not FORMATS[fmt][2]:
+        note = "lossless"
+    else:
+        note = f"q{int(quality)}"
     library.save_path(path, "convert")  # auto-add to the Library
     return path, f"✅ Converted to **{fmt}** ({note}) · {kb:,.1f} KB · {img.width}×{img.height}px"
 
@@ -152,7 +246,7 @@ def build_pdf(files):
         raise gr.Error("Add at least one image to build a PDF.")
     images = [Image.open(f) for f in files]
     data = images_to_pdf(images)
-    fd, path = tempfile.mkstemp(suffix=".pdf")
+    fd, path = tempfile.mkstemp(dir=_ensure_export_dir(), suffix=".pdf")
     with os.fdopen(fd, "wb") as f:
         f.write(data)
     library.save_path(path, "pdf")  # auto-add to the Library
@@ -166,13 +260,19 @@ def extract_pdf(pdf_file, dpi):
         pages = pdf_to_images(pdf_file, dpi=int(dpi))
     except ImportError as e:
         raise gr.Error(str(e)) from e
+    except Exception as e:  # pdfium raises its own error types
+        raise gr.Error(
+            "Couldn't read that PDF — it may be corrupt or password-protected. "
+            f"({e})"
+        ) from e
 
-    fd, zpath = tempfile.mkstemp(suffix=".zip")
+    fd, zpath = tempfile.mkstemp(dir=_ensure_export_dir(), suffix=".zip")
     with os.fdopen(fd, "wb") as fh, zipfile.ZipFile(fh, "w") as z:
         for i, im in enumerate(pages, 1):
             buf = io.BytesIO()
             im.save(buf, format="PNG")
             z.writestr(f"page_{i:03d}.png", buf.getvalue())
+    library.save_path(zpath, "pdf-pages")  # auto-add to the Library
     return zpath, pages, f"✅ {len(pages)} page(s) → PNG · {int(dpi)} dpi (zip)"
 
 
@@ -195,7 +295,7 @@ def remove_bg_ui(image, model, feather, progress=gr.Progress()):
             "check your internet connection and try again."
         ) from e
     progress(0.9, desc="Saving transparent PNG…")
-    fd, path = tempfile.mkstemp(suffix=".png")
+    fd, path = tempfile.mkstemp(dir=_ensure_export_dir(), suffix=".png")
     os.close(fd)
     cut.save(path, "PNG")  # PNG keeps the alpha channel
     library.save_path(path, "removebg")  # auto-add to the Library
@@ -331,6 +431,7 @@ def enhance(image, model, device, deblur, deblur_model, restore_strength, sharpe
             progress=gr.Progress()):
     if image is None:
         raise gr.Error("Upload an image to enhance first.")
+    _ENHANCE_CANCEL.clear()
     original = image if isinstance(image, Image.Image) else Image.fromarray(image)
     src = original
     stages = []
@@ -358,13 +459,11 @@ def enhance(image, model, device, deblur, deblur_model, restore_strength, sharpe
                 stages.append(f"⚠ clean-up skipped — `{deblur_model}` didn't suit this image")
         up = _get_upscaler(model, device, int(tile), onnx)
 
-        def _tile_cb(done, total):
-            progress(done / max(total, 1), desc=f"Upscaling tile {done}/{total}")
-
-        if onnx:  # ONNX backend doesn't take a progress callback
-            result = up.upscale(src)
-        else:
-            result = up.upscale(src, progress_cb=_tile_cb)
+        # Both engines share the signature (per-tile progress + cooperative cancel).
+        result = up.upscale(src, progress_cb=_JobProgress(progress, "Upscaling tile"),
+                            should_cancel=_ENHANCE_CANCEL.is_set)
+    except CancelledError:
+        raise gr.Error("Cancelled — nothing was saved.") from None
     except (RuntimeError, AssertionError, OSError, ValueError) as e:
         raise gr.Error(
             "Couldn't run the enhancement. If you set a specific Device "
@@ -402,7 +501,11 @@ def enhance(image, model, device, deblur, deblur_model, restore_strength, sharpe
             )
             stages.append(f"→ {target}px")
 
-    backend = "onnx" if onnx else getattr(up, "device", None) and up.device.type
+    if onnx:
+        prov = getattr(up, "provider", "")
+        backend = "onnx · GPU (DirectML)" if prov.startswith("Dml") else "onnx · CPU"
+    else:
+        backend = getattr(up, "device", None) and up.device.type
     info = (
         "✅ " + " → ".join(stages)
         + f" · backend `{backend}` · {result.width}×{result.height}px"
@@ -447,8 +550,10 @@ def restore_only(image, deblur_model, restore_strength, sharpen, device, onnx,
         pct = "" if restore_strength >= 0.999 else f" @{int(round(restore_strength * 100))}%"
         stages.append(f"clean up `{deblur_model}`{pct}")
     elif fbcnn:
-        # NAFNet didn't suit the image, but FBCNN already cleaned it — keep that.
+        # NAFNet didn't suit the image, but FBCNN already cleaned it — keep that
+        # and still tell the user the deblur/denoise pass was skipped.
         result = src
+        stages.append(f"⚠ clean-up skipped — `{deblur_model}` didn't suit this image")
     else:
         return (original, original), (
             f"⚠ The `{deblur_model}` clean-up didn't suit this image, so it was "
@@ -494,16 +599,19 @@ def _on_video_change(path):
     return gr.update(value=0), gr.update(value=dur, maximum=dur or None)
 
 
-def _first_frame(video_path):
-    """Grab the first frame of a video as a PIL image (for the comparison)."""
+def _first_frame(video_path, at: float = 0.0):
+    """Grab a frame of a video as a PIL image (for the comparison). ``at``
+    seeks that many seconds in first — so a trimmed render can be compared
+    against the matching source frame, not always the clip's very first."""
     import subprocess
 
     from upscaler.video import _ffmpeg
 
-    fd, p = tempfile.mkstemp(suffix=".png")
+    fd, p = tempfile.mkstemp(dir=_ensure_export_dir(), suffix=".png")
     os.close(fd)
+    seek = ["-ss", str(at)] if at and at > 0 else []
     subprocess.run(
-        [_ffmpeg(), "-y", "-i", str(video_path), "-frames:v", "1", p],
+        [_ffmpeg(), "-y", *seek, "-i", str(video_path), "-frames:v", "1", p],
         capture_output=True,
     )
     img = Image.open(p)
@@ -516,28 +624,45 @@ def _first_frame(video_path):
 
 
 def upscale_video_ui(video_path, model, out_size, sharpen, smooth, trim_start,
-                     trim_end, device, tile, progress=gr.Progress()):
+                     trim_end, device, tile, onnx=False, progress=gr.Progress()):
     if not video_path:
         raise gr.Error("Upload a video first.")
+    _VIDEO_CANCEL.clear()
     from upscaler.video import upscale_video
 
-    fd, out = tempfile.mkstemp(suffix=".mp4")
+    fd, out = tempfile.mkstemp(dir=_ensure_export_dir(), suffix=".mp4")
     os.close(fd)
     fps = None if smooth in (None, "Off") else int(smooth)
     target = _SIZE_PRESETS.get(out_size)
     start = float(trim_start) if trim_start and trim_start > 0 else None
     end = float(trim_end) if trim_end and trim_end > 0 else None
+    # End auto-fills to the (0.1s-rounded) clip length on upload — treat "at or
+    # past the end" as no trim, so a default render can't clip tail frames or
+    # misreport itself as trimmed.
+    dur = _video_duration(video_path)
+    if end is not None and dur and end >= dur:
+        end = None
 
-    def cb(i, n):
-        progress(i / n, desc=f"Upscaling frame {i}/{n}")
+    cb = _JobProgress(progress, "Upscaling frame")
 
     try:
         upscale_video(
             video_path, out, model=model, device=device, tile=int(tile),
             sharpen=float(sharpen), interpolate_fps=fps, target_long_edge=target,
             trim_start=start, trim_end=end, progress_cb=cb,
+            should_cancel=_VIDEO_CANCEL.is_set, onnx=bool(onnx),
         )
+    except CancelledError:
+        try:
+            os.remove(out)
+        except OSError:
+            pass
+        raise gr.Error("Cancelled — nothing was saved.") from None
     except (RuntimeError, FileNotFoundError) as e:
+        try:  # don't leave the pre-created output tempfile behind on failure
+            os.remove(out)
+        except OSError:
+            pass
         raise gr.Error(
             "Couldn't process the video. Make sure ffmpeg is installed (e.g. "
             '"brew install ffmpeg" on macOS) and the file is a standard video, '
@@ -545,7 +670,7 @@ def upscale_video_ui(video_path, model, out_size, sharpen, smooth, trim_start,
         ) from e
 
     try:
-        compare = (_first_frame(video_path), _first_frame(out))
+        compare = (_first_frame(video_path, at=start or 0), _first_frame(out))
     except Exception:
         compare = None
     extra = (f" · {target}px" if target else "") + (f" · {fps} fps" if fps else "")
@@ -602,18 +727,32 @@ def batch_process(files, op, model, out_size, sharpen, fmt, quality,
     """
     if not files:
         raise gr.Error("Add at least one image to process.")
+    _BATCH_CANCEL.clear()
     work = tempfile.mkdtemp()
     saved: list[str] = []
     gallery: list = []
     failed = 0
+    cancelled = False
+    seen_stems: dict[str, int] = {}
     n = len(files)
+    jp = _JobProgress(progress, f"{op} · image")
     for i, f in enumerate(files):
-        progress(i / n, desc=f"{op} · {i + 1}/{n}")
+        if _BATCH_CANCEL.is_set():
+            cancelled = True
+            break
+        jp(i, n)
         try:
             src = Image.open(str(f))
             base = os.path.splitext(os.path.basename(str(f)))[0]
+            # Same-named files from different folders must not clobber each
+            # other in the work dir / ZIP — suffix repeats: photo, photo_2, …
+            count = seen_stems.get(base, 0)
+            seen_stems[base] = count + 1
+            if count:
+                base = f"{base}_{count + 1}"
             if op == "Upscale":
-                res = _get_upscaler(model, device, int(tile), False).upscale(src.convert("RGB"))
+                res = _get_upscaler(model, device, int(tile), False).upscale(
+                    src.convert("RGB"), should_cancel=_BATCH_CANCEL.is_set)
                 if sharpen > 0:
                     res = unsharp_mask(res, strength=float(sharpen))
                 target = _SIZE_PRESETS.get(out_size)
@@ -645,22 +784,28 @@ def batch_process(files, op, model, out_size, sharpen, fmt, quality,
                 gallery.append(background.on_checkerboard(cut))
                 library.save_path(out, "removebg")
             saved.append(out)
+        except CancelledError:
+            cancelled = True
+            break
         except Exception:  # noqa: BLE001 — batch must survive a single bad file
             failed += 1
             continue
 
     if not saved:
         shutil.rmtree(work, ignore_errors=True)
+        if cancelled:
+            raise gr.Error("Cancelled before any image finished.")
         raise gr.Error("None of those files could be processed as images.")
-    fd, zpath = tempfile.mkstemp(suffix=".zip")
+    fd, zpath = tempfile.mkstemp(dir=_ensure_export_dir(), suffix=".zip")
     with os.fdopen(fd, "wb") as fh, zipfile.ZipFile(fh, "w") as z:
         for sp in saved:
             z.write(sp, arcname=os.path.basename(sp))
     shutil.rmtree(work, ignore_errors=True)  # zipped + in the Library; don't leak
-    progress(1.0, desc="Done")
+    jp(n, n)
     skipped = f" · {failed} skipped" if failed else ""
+    head = "⚠ Cancelled — finished" if cancelled else "✅ Processed"
     return gallery, zpath, (
-        f"✅ Processed **{len(saved)}** of {n} image(s) · {op}{skipped}. "
+        f"{head} **{len(saved)}** of {n} image(s) · {op}{skipped}. "
         "Download the ZIP below — results are also saved to your Library."
     )
 
@@ -783,7 +928,7 @@ def panel_layout_download(*vals):
     """Serialize the current layout to a shareable .json tempfile for download."""
     from upscaler import panel_presets
     p = _panel_params(*vals)
-    fd, path = tempfile.mkstemp(suffix=".json")
+    fd, path = tempfile.mkstemp(dir=_ensure_export_dir(), suffix=".json")
     os.close(fd)
     Path(path).write_text(json.dumps(panel_presets.to_dict(p), indent=2))
     return path
@@ -854,6 +999,15 @@ def panel_export_ui(media, orientation, fit, zoom, off_x, off_y, bg_type,
             "otherwise check your source file and settings, then try again."
         ) from e
 
+    # panel.py writes to the OS temp dir — move the export into the purged
+    # exports dir so one-shot files don't accumulate there forever.
+    try:
+        dest = os.path.join(_ensure_export_dir(), os.path.basename(f))
+        shutil.move(f, dest)
+        f = dest
+    except OSError:
+        pass
+
     library.save_path(f, "lianli")  # auto-add to the Library
 
     # Optionally drop a timestamped copy into a chosen folder (e.g. the
@@ -878,14 +1032,19 @@ def panel_enhance_source(media, up_model, *vals, progress=gr.Progress()):
     if not media:
         raise gr.Error("Upload an image, GIF or video first.")
     kind = panel.media_kind(media)
+    # Honor the saved device preference like every other tab (read fresh so a
+    # settings change doesn't need a rebuild of this handler's defaults).
+    dev = config.load().get("device", "auto")
+    if dev not in _DEVICES:
+        dev = "auto"
     progress(0.1, desc="Loading model…")
     try:
         if kind == "image":
             img = Image.open(media).convert("RGB")
-            up = _get_upscaler(up_model, "auto", 512, False)
+            up = _get_upscaler(up_model, dev, 512, False)
             progress(0.4, desc="Upscaling…")
             result = up.upscale(img)
-            fd, out = tempfile.mkstemp(suffix=".png")
+            fd, out = tempfile.mkstemp(dir=_ensure_export_dir(), suffix=".png")
             os.close(fd)
             result.save(out, "PNG")
             note = (f"✨ Source upscaled ×{up.scale} → {result.width}×{result.height}px. "
@@ -893,21 +1052,18 @@ def panel_enhance_source(media, up_model, *vals, progress=gr.Progress()):
         elif kind == "animated":
             from upscaler.video import upscale_video
 
-            fd, out = tempfile.mkstemp(suffix=".mp4")
+            fd, out = tempfile.mkstemp(dir=_ensure_export_dir(), suffix=".mp4")
             os.close(fd)
 
-            def cb(i, n):
-                progress(i / n, desc=f"Upscaling frame {i}/{n}")
-
-            upscale_video(media, out, model=up_model, device="auto", tile=512,
-                          progress_cb=cb)
+            upscale_video(media, out, model=up_model, device=dev, tile=512,
+                          progress_cb=_JobProgress(progress, "Upscaling frame"))
             note = "✨ Video source upscaled. Re-fit and export."
         else:
             raise gr.Error("That file type can't be enhanced — use an image, GIF or video.")
-    except (RuntimeError, FileNotFoundError) as e:
+    except (RuntimeError, OSError) as e:  # OSError covers unreadable/corrupt uploads
         raise gr.Error(
-            "Couldn't enhance the source. The model downloads on first use, so "
-            "check your internet connection and try again."
+            "Couldn't enhance the source. Check the file is a valid image or "
+            "video; models also download on first use, so check your connection."
         ) from e
     return gr.update(value=out), panel.preview(out, _panel_params(*vals)), note
 
@@ -915,7 +1071,22 @@ def panel_enhance_source(media, up_model, *vals, progress=gr.Progress()):
 _MODEL_CHOICES = [(f"{s.name}  (×{s.scale}) — {s.notes}", s.name) for s in MODELS.values()]
 _DEBLUR_CHOICES = [(f"{s.name} — {s.notes}", s.name) for s in DEBLUR_MODELS.values()]
 _FACE_CHOICES = [(f"{s.name} — {s.notes}", s.name) for s in FACE_MODELS.values()]
-_DEVICES = ["auto", "cpu", "cuda", "mps"]
+
+
+def _available_devices() -> "list[str]":
+    """Only devices this machine can actually run — offering cuda/mps that
+    isn't installed just hands the user an error toast."""
+    import torch
+
+    devs = ["auto", "cpu"]
+    if torch.cuda.is_available():
+        devs.append("cuda")
+    if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+        devs.append("mps")
+    return devs
+
+
+_DEVICES = _available_devices()
 
 # One-click starting points for the Upscale tab. Each tunes the model + denoise
 # + sharpen for a use-case; restoration always uses SIDD (denoise) since GoPro
@@ -1132,11 +1303,27 @@ _MAGNIFIER_HEAD = """
     return lens;
   }
   function hide(){ if(lens) lens.style.display='none'; }
+  function drawnRect(img){
+    // The bitmap rarely fills the <img> box: Gradio letterboxes with
+    // object-fit contain/cover/scale-down. Compute the actually-painted
+    // rectangle so the lens zooms what's under the cursor, undistorted.
+    const r = img.getBoundingClientRect();
+    const nw = img.naturalWidth, nh = img.naturalHeight;
+    if(!nw || !nh) return r;
+    const fit = getComputedStyle(img).objectFit;
+    if(fit !== 'contain' && fit !== 'cover' && fit !== 'scale-down') return r;
+    let s = (fit === 'cover') ? Math.max(r.width/nw, r.height/nh)
+                              : Math.min(r.width/nw, r.height/nh);
+    if(fit === 'scale-down') s = Math.min(s, 1);
+    const w = nw*s, h = nh*s;
+    return { left: r.left + (r.width - w)/2, top: r.top + (r.height - h)/2,
+             width: w, height: h };
+  }
   function onMove(e){
     if(!document.body.classList.contains('loupe-on')){ hide(); return; }
     const img = e.target;
     if(!(img && img.tagName==='IMG' && img.closest('.loupe') && img.src)){ hide(); return; }
-    const r = img.getBoundingClientRect();
+    const r = drawnRect(img);
     const x = e.clientX - r.left, y = e.clientY - r.top;
     if(x<0||y<0||x>r.width||y>r.height){ hide(); return; }
     const L = lensEl();
@@ -1155,12 +1342,15 @@ _MAGNIFIER_HEAD = """
 """
 
 _CSS = """
-@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap');
+/* (No font @import here — THEME's GoogleFont already loads Manrope, and it
+   falls back to system-ui when offline.) */
 
 /* Hover magnifier (loupe) */
 .mag-lens { position: fixed; pointer-events: none; display: none;
     width: 220px; height: 220px; border-radius: 50%;
-    border: 3px solid var(--ac); background-color: #000; background-repeat: no-repeat;
+    /* the lens is appended to <body>, outside the .gradio-container scope that
+       defines --ac — so give the accent a literal fallback */
+    border: 3px solid var(--ac, #0F766E); background-color: #000; background-repeat: no-repeat;
     box-shadow: 0 6px 24px rgba(0,0,0,.45); transform: translate(-50%,-50%);
     z-index: 99999; }
 body.loupe-on .loupe img { cursor: crosshair; }
@@ -1210,8 +1400,24 @@ button, .tab-nav button, .drop, .item, .dropdown-arrow {
 @keyframes ddOpen { from { opacity: 0; } to { opacity: 1; } }
 ul.options, .options { animation: ddOpen .12s ease-out; z-index: 200 !important;
     box-shadow: 0 8px 28px rgba(28,25,23,.16) !important;
-    background: var(--block-background-fill) !important; }
-ul.options .item, .options .item { transition: background-color .12s ease; }
+    background: var(--block-background-fill) !important;
+    border: 1px solid var(--border-color-primary) !important;
+    border-radius: 12px !important; padding: 5px !important;
+    max-height: 340px !important; }
+/* Roomy, rounded option rows with a clear hover / keyboard-active state and an
+   accent tint + weight on the currently-selected value. */
+ul.options .item, .options .item { transition: background-color .12s ease;
+    padding: 9px 12px !important; border-radius: 8px !important;
+    line-height: 1.4; margin: 1px 0; }
+ul.options .item:hover, .options .item:hover,
+ul.options .item.active, .options .item.active {
+    background: var(--ac-weak) !important; }
+ul.options .item.selected, .options .item.selected {
+    color: var(--ac) !important; font-weight: 600; }
+ul.options::-webkit-scrollbar { width: 8px; }
+ul.options::-webkit-scrollbar-thumb { background: var(--border-color-primary);
+    border-radius: 8px; }
+ul.options::-webkit-scrollbar-track { background: transparent; }
 .dropdown-arrow { transition: transform .25s cubic-bezier(.22,.61,.36,1); }
 
 /* --- Smooth, purposeful micro-interactions (opacity / tiny transform only,
@@ -1266,6 +1472,26 @@ ul.options .item, .options .item { transition: background-color .12s ease; }
 .toolbar button { flex: 0 0 auto !important; width: auto !important;
     min-width: 0 !important; }
 
+/* quick-preset chips: content-sized buttons that wrap onto as many lines as
+   they need, instead of stretching to fill fixed-count rows */
+.preset-row { flex-wrap: wrap; gap: 8px; row-gap: 8px; }
+.preset-row button { flex: 0 0 auto !important; width: auto !important;
+    min-width: 0 !important; white-space: nowrap; }
+
+/* On long tabs the output column sticks while the settings column scrolls, so
+   the result/preview is always in view. */
+.sticky-col { position: sticky; top: 16px; align-self: flex-start; }
+
+/* Active magnifier chip: white text fails contrast on the bright dark-mode
+   accent — use the same dark ink as primary buttons there. */
+.dark body.loupe-on #mag-btn, body.loupe-on .dark #mag-btn {
+    color: #06231F !important; }
+
+/* Narrow viewports: the absolute top-right cluster would overlap the hero —
+   let it flow in the layout instead. */
+@media (max-width: 720px) {
+    #topbar { position: static; justify-content: flex-end; margin-top: 4px; } }
+
 /* tab bar: accent the selected tab */
 .tabitem { padding-top: 28px !important; }
 .tab-nav { gap: 2px; }
@@ -1277,7 +1503,7 @@ ul.options .item, .options .item { transition: background-color .12s ease; }
 
 /* section heads: accent eyebrow w/ icon + underlined title */
 .sec-head { margin-bottom: 8px; }
-.sec-head .eyebrow { display: inline-flex; align-items: center; gap: 6px;
+.sec-head .eyebrow { display: flex; align-items: center; gap: 6px;
     font-size: 0.72rem; font-weight: 700; letter-spacing: 0.13em;
     text-transform: uppercase; color: var(--ac); }
 .sec-head .eyebrow .ic { display: inline-flex; align-items: center; }
@@ -1315,12 +1541,15 @@ button.preset-active, .preset-active > button {
    (e.g. the Settings "Where your files live" paths in a half-width column).
    Gradio's own `.md :not(pre)>code` uses word-break:normal + display:inline-flex
    at higher specificity, so override forcefully so long path tokens break. */
-.gradio-container .md :not(pre) > code, .gradio-container code,
+.gradio-container .md :not(pre) > code, .gradio-container :not(pre) > code,
 .gradio-container kbd {
     white-space: normal !important; overflow-wrap: anywhere !important;
     word-break: break-word !important; display: inline !important;
     max-width: 100%; }
+/* Fenced blocks keep their line breaks (the bare `code` selector above used to
+   catch pre > code too, collapsing multi-line commands onto one line). */
 .gradio-container pre { overflow-wrap: anywhere; max-width: 100%; }
+.gradio-container pre > code { white-space: pre-wrap !important; display: block !important; }
 
 /* Markdown prose must wrap and not be clipped at the block edge — this was
    shaving the first letter off wrapped lines (e.g. the About text). overflow
@@ -1425,14 +1654,24 @@ Open **http://127.0.0.1:7860** in your browser. Press **Ctrl+C** in PowerShell t
 
 
 def save_settings(device, model, output_dir):
-    """Persist the Settings-tab preferences to ~/.upscaler/config.json."""
-    ok = config.save(
-        device=device, model=model, output_dir=(output_dir or "").strip()
-    )
+    """Persist the Settings-tab preferences to ~/.upscaler/config.json AND apply
+    them to the live controls (returned as updates), so no restart is needed."""
+    out_dir = (output_dir or "").strip()
+    ok = config.save(device=device, model=model, output_dir=out_dir)
     if ok:
-        return ("✅ Saved to `~/.upscaler/config.json`. Restart the app (or reload "
-                "the page) and these become the defaults.")
-    return "⚠ Couldn't write the settings file — check the folder's permissions."
+        status = "✅ Saved — applied now, and used as the defaults from here on."
+    else:
+        status = "⚠ Couldn't write the settings file — check the folder's permissions."
+        return (status,) + (gr.update(),) * 6
+    return (
+        status,
+        gr.update(value=model),    # Upscale tab model
+        gr.update(value=device),   # Upscale tab device
+        gr.update(value=model),    # Batch model
+        gr.update(value=device),   # Batch device
+        gr.update(value=device),   # Video device
+        gr.update(value=out_dir),  # Lian Li save-to folder
+    )
 
 
 # -- Model Manager (Settings) ------------------------------------------------
@@ -1484,10 +1723,11 @@ def _section_head(eyebrow: str, title: str, desc: str, icon: str = "") -> str:
 
 
 def build_demo() -> gr.Blocks:
+    _purge_old_exports()
     device_name = resolve_device("auto").type
     # Saved preferences seed the defaults (guarded against stale/invalid values).
     cfg = config.load()
-    _cfg_model = cfg["model"] if cfg["model"] in MODELS else "realesrgan-x4plus"
+    _cfg_model = cfg["model"] if cfg["model"] in MODELS else "realesrgan-x2plus"
     _cfg_device = cfg["device"] if cfg["device"] in _DEVICES else "auto"
     with gr.Blocks(title="Upscaler") as demo:
         gr.HTML(
@@ -1516,7 +1756,7 @@ def build_demo() -> gr.Blocks:
         mag_btn.click(None, js="() => document.body.classList.toggle('loupe-on')")
 
         with gr.Tabs() as main_tabs:
-            # ---- Tab 1: Upscale & Enhance ----
+            # ---- Tab: Upscale & Enhance ----
             with gr.Tab("Upscale"):
                 gr.HTML(_section_head(
                     "Enhance", "Upscale & Enhance",
@@ -1526,7 +1766,7 @@ def build_demo() -> gr.Blocks:
                     "images. Start with a preset, then fine-tune.",
                     icon=ICON_AI,
                 ))
-                with gr.Row(equal_height=True):
+                with gr.Row(equal_height=False):
                     with gr.Column(scale=1):
                         inp = gr.Image(
                             label="Input", type="pil",
@@ -1534,21 +1774,21 @@ def build_demo() -> gr.Blocks:
                             elem_classes="drop", buttons=["download", "fullscreen"],
                         )
                         gr.Markdown("**Quick presets** — a starting point; tweak anything after.")
-                        _preset_names = list(UPSCALE_PRESETS)
-                        _preset_buttons = []
-                        for _i in range(0, len(_preset_names), 3):
-                            with gr.Row():
-                                for _pname in _preset_names[_i:_i + 3]:
-                                    _preset_buttons.append(
-                                        gr.Button(_pname, size="sm", variant="secondary")
-                                    )
+                        # One wrapping chip row: buttons size to their label and
+                        # flow onto as many lines as needed (fixed-count rows
+                        # wrap unevenly at narrow widths).
+                        with gr.Row(elem_classes="preset-row"):
+                            _preset_buttons = [
+                                gr.Button(_pname, size="sm", variant="secondary")
+                                for _pname in UPSCALE_PRESETS
+                            ]
                         preset_info = gr.Markdown()
                         model = gr.Dropdown(
                             _MODEL_CHOICES, value=_cfg_model,
-                            label="Upscale model", filterable=False,
+                            label="Upscale model", filterable=True,
                             info="Picks the AI that enlarges your image. Use ×2 for "
                             "already-good photos, ×4 for small or soft ones, or the "
-                            "anime model for drawings and line art.",
+                            "anime model for drawings and line art. Type to filter.",
                         )
                         with gr.Accordion("Which model for what? (best → worst)", open=False):
                             gr.Markdown(
@@ -1680,7 +1920,7 @@ def build_demo() -> gr.Blocks:
                             )
                             enh_cancel = gr.Button("✕ Cancel", variant="stop", scale=1)
                             clear = gr.Button("↺ Clear", variant="secondary", scale=1)
-                    with gr.Column(scale=1):
+                    with gr.Column(scale=1, elem_classes="sticky-col"):
                         out = gr.ImageSlider(
                             label="Before / after — drag the divider to compare",
                             type="pil", height=300, buttons=["download", "fullscreen"],
@@ -1688,7 +1928,149 @@ def build_demo() -> gr.Blocks:
                         )
                         info = gr.Markdown()
 
-            # ---- Tab 2: Video (frame-by-frame) ----
+            # ---- Tab: Colorize (DDColor) ----
+            with gr.Tab("Colorize"):
+                gr.HTML(_section_head(
+                    "Color", "Colorize Photos",
+                    "Bring black-and-white or faded photos to life. DDColor predicts "
+                    "natural color and keeps every bit of the original detail.",
+                    icon=ICON_AI,
+                ))
+                with gr.Row(equal_height=False):
+                    with gr.Column(scale=1):
+                        col_in = gr.Image(
+                            label="Input", type="pil",
+                            sources=["upload", "clipboard"], height=300,
+                            elem_classes="drop", buttons=["download", "fullscreen"],
+                        )
+                        col_model = gr.Dropdown(
+                            _COLORIZE_CHOICES, value=DEFAULT_COLORIZE_MODEL,
+                            label="Model", filterable=False,
+                            info="DDColor predicts color from the brightness of your "
+                            "photo, so detail is never lost.",
+                        )
+                        col_strength = gr.Slider(
+                            0.0, 1.0, value=1.0, step=0.05, label="Color strength",
+                            info="1 = full color; lower keeps it subtler. 0 returns the "
+                            "original in grayscale.",
+                        )
+                        with gr.Accordion("Tips", open=False):
+                            gr.Markdown(
+                                "* **Any photo works** — black-and-white, sepia, or "
+                                "faded.\n"
+                                "* **Detail is preserved** — only color is added.\n"
+                                "* **Needs the \"face\" packages** (spandrel).\n"
+                                "* **First run downloads ~870MB**, then it's cached.",
+                                elem_classes="notes",
+                            )
+                        with gr.Row():
+                            col_btn = gr.Button("Colorize", variant="primary",
+                                                size="lg", scale=3)
+                            col_clear = gr.Button("↺ Clear", variant="secondary", scale=1)
+                    with gr.Column(scale=1):
+                        col_out = gr.ImageSlider(
+                            label="Before / after", type="pil", height=300,
+                            elem_classes=["loupe"],
+                        )
+                        col_info = gr.Markdown()
+
+            # ---- Tab: Remove objects / inpaint (LaMa) ----
+            with gr.Tab("Remove Objects"):
+                gr.HTML(_section_head(
+                    "Erase", "Remove Objects",
+                    "Paint over anything you want gone — a photobomber, a sign, a "
+                    "blemish — and LaMa fills the gap from the surroundings.",
+                    icon=ICON_AI,
+                ))
+                with gr.Row(equal_height=False):
+                    with gr.Column(scale=1):
+                        ip_editor = gr.ImageEditor(
+                            label="Paint over the object to remove", type="pil",
+                            height=360, sources=["upload", "clipboard"],
+                            layers=False, transforms=(),
+                            brush=gr.Brush(
+                                colors=["#ffffff"], color_mode="fixed", default_size=24
+                            ),
+                        )
+                        ip_model = gr.Dropdown(
+                            _INPAINT_CHOICES, value=DEFAULT_INPAINT_MODEL,
+                            label="Model", filterable=False,
+                            info="Big-LaMa fills the painted region from the "
+                            "surrounding image.",
+                        )
+                        with gr.Accordion("Tips", open=False):
+                            gr.Markdown(
+                                "* **Cover the whole object**, plus a little margin.\n"
+                                "* **Use a bigger brush** for bigger objects.\n"
+                                "* **Best on clutter / backgrounds** — wires, signs, "
+                                "blemishes, photobombers.\n"
+                                "* **First run downloads ~196MB**, then it's cached.",
+                                elem_classes="notes",
+                            )
+                        with gr.Row():
+                            ip_btn = gr.Button("Remove object", variant="primary",
+                                               size="lg", scale=3)
+                            ip_clear = gr.Button("↺ Clear", variant="secondary", scale=1)
+                    with gr.Column(scale=1):
+                        ip_out = gr.ImageSlider(
+                            label="Before / after", type="pil", height=360,
+                            elem_classes=["loupe"],
+                        )
+                        ip_info = gr.Markdown()
+
+            # ---- Tab: Remove background ----
+            with gr.Tab("Remove BG"):
+                gr.HTML(_section_head(
+                    "Cut-out", "Remove Background",
+                    "Lift the subject cleanly off its background with AI and save a "
+                    "transparent PNG. It drops straight into the Lian Li Screen tab "
+                    "as a sticker.",
+                    icon=ICON_AI,
+                ))
+                with gr.Row(equal_height=False):
+                    with gr.Column(scale=1):
+                        bg_in = gr.Image(
+                            label="Input", type="pil",
+                            sources=["upload", "clipboard"], height=300,
+                            elem_classes="drop", buttons=["download", "fullscreen"],
+                        )
+                        bg_model = gr.Dropdown(
+                            _BG_CHOICES, value=background.DEFAULT_BG_MODEL,
+                            label="Model", filterable=False,
+                            info="The AI that finds your subject. u2net is the best "
+                            "all-rounder; u2netp is lighter and faster but a bit "
+                            "less precise.",
+                        )
+                        bg_feather = gr.Slider(
+                            0, 10, value=1, step=1, label="Edge feather (px)",
+                            info="Softens the cut-out edge so it blends in. 0 = a "
+                            "hard, crisp edge.",
+                        )
+                        with gr.Accordion("Tips", open=False):
+                            gr.Markdown(
+                                "* **Try u2net first** — best all-rounder; u2netp "
+                                "is lighter and faster.\n"
+                                "* **1–2px of edge feather** looks most natural; use "
+                                "0 for a crisp, hard edge.\n"
+                                "* **The result is a transparent PNG** — the "
+                                "checkerboard just shows where it's see-through.\n"
+                                "* **Pairs with the Lian Li tab** — drop the cut-out "
+                                "in as a sticker.",
+                                elem_classes="notes",
+                            )
+                        with gr.Row():
+                            bg_btn = gr.Button("Remove background", variant="primary",
+                                               size="lg", scale=3)
+                            bg_clear = gr.Button("↺ Clear", variant="secondary", scale=1)
+                    with gr.Column(scale=1):
+                        bg_preview = gr.Image(
+                            label="Cut-out (checkerboard = transparent)",
+                            height=300, buttons=["fullscreen"], elem_classes=["loupe"],
+                        )
+                        bg_file = gr.File(label="Download transparent PNG")
+                        bg_info = gr.Markdown()
+
+            # ---- Tab: Video upscaler (frame-by-frame) ----
             with gr.Tab("Video"):
                 gr.HTML(_section_head(
                     "Video", "Video Upscaler",
@@ -1697,15 +2079,15 @@ def build_demo() -> gr.Blocks:
                     "×4. Longer clips take a while, and ffmpeg must be installed.",
                     icon=ICON_AI,
                 ))
-                with gr.Row(equal_height=True):
+                with gr.Row(equal_height=False):
                     with gr.Column(scale=1):
                         vid_in = gr.Video(label="Input video", sources=["upload"])
                         vid_model = gr.Dropdown(
                             _MODEL_CHOICES, value="realesrgan-x2plus",
-                            label="Upscale model", filterable=False,
+                            label="Upscale model", filterable=True,
                             info="The AI that enlarges each frame. ×2 is recommended "
                             "for video — it's faster and flickers less between frames "
-                            "than ×4.",
+                            "than ×4. Type to filter.",
                         )
                         vid_size = gr.Dropdown(
                             list(_SIZE_PRESETS), value="Model default (×2/×4)",
@@ -1758,6 +2140,13 @@ def build_demo() -> gr.Blocks:
                                 "memory. Lower this if a render crashes with an "
                                 "out-of-memory error; 0 turns it off.",
                             )
+                            vid_onnx = gr.Checkbox(
+                                value=False, label="Alternative speed engine (ONNX)",
+                                info="Runs frames without PyTorch. With the "
+                                "DirectML runtime installed this uses your "
+                                "graphics card (AMD included) — much faster than "
+                                "CPU. The first run exports the model.",
+                            )
                         with gr.Accordion("Tips", open=False):
                             gr.Markdown(
                                 "* **Use the ×2 model for video** — faster, and "
@@ -1774,8 +2163,9 @@ def build_demo() -> gr.Blocks:
                             vid_btn = gr.Button(
                                 "Upscale video", variant="primary", size="lg", scale=3
                             )
+                            vid_cancel = gr.Button("✕ Cancel", variant="stop", scale=1)
                             vid_clear = gr.Button("↺ Clear", variant="secondary", scale=1)
-                    with gr.Column(scale=1):
+                    with gr.Column(scale=1, elem_classes="sticky-col"):
                         vid_out = gr.Video(label="Result", buttons=["download"])
                         vid_compare = gr.ImageSlider(
                             label="First frame — before / after (drag to compare)",
@@ -1784,7 +2174,7 @@ def build_demo() -> gr.Blocks:
                         )
                         vid_info = gr.Markdown()
 
-            # ---- Tab 3: Convert (all conversions, picked via dropdown) ----
+            # ---- Tab: Convert & documents (format / PDF) ----
             with gr.Tab("Convert"):
                 gr.HTML(_section_head(
                     "Convert", "Convert & Documents",
@@ -1813,10 +2203,10 @@ def build_demo() -> gr.Blocks:
 
                 # -- Method A: change image format --
                 with gr.Column(visible=True) as grp_format:
-                    with gr.Row(equal_height=True):
+                    with gr.Row(equal_height=False):
                         with gr.Column(scale=1):
                             conv_in = gr.Image(
-                                label="Image", type="pil",
+                                label="Image", type="pil", image_mode=None,
                                 sources=["upload", "clipboard"], height=300,
                                 elem_classes="drop", buttons=["download", "fullscreen"],
                             )
@@ -1845,7 +2235,7 @@ def build_demo() -> gr.Blocks:
 
                 # -- Method B: images -> PDF --
                 with gr.Column(visible=False) as grp_topdf:
-                    with gr.Row(equal_height=True):
+                    with gr.Row(equal_height=False):
                         with gr.Column(scale=1):
                             pdf_imgs_in = gr.File(
                                 label="Images (multiple = multi-page, in order)",
@@ -1861,7 +2251,7 @@ def build_demo() -> gr.Blocks:
 
                 # -- Method C: PDF -> images --
                 with gr.Column(visible=False) as grp_frompdf:
-                    with gr.Row(equal_height=True):
+                    with gr.Row(equal_height=False):
                         with gr.Column(scale=1):
                             pdf_in = gr.File(
                                 label="PDF", file_count="single",
@@ -1885,152 +2275,11 @@ def build_demo() -> gr.Blocks:
                             pdf_extract_info = gr.Markdown()
 
                 method.change(
-                    _switch_method, method, [grp_format, grp_topdf, grp_frompdf]
+                    _switch_method, method, [grp_format, grp_topdf, grp_frompdf],
+                    show_progress="hidden",  # instant visibility toggle, no flash
                 )
 
-            # ---- Tab 4: Remove background ----
-            with gr.Tab("Remove BG"):
-                gr.HTML(_section_head(
-                    "Cut-out", "Remove Background",
-                    "Lift the subject cleanly off its background with AI and save a "
-                    "transparent PNG. It drops straight into the Lian Li Screen tab "
-                    "as a sticker.",
-                    icon=ICON_AI,
-                ))
-                with gr.Row(equal_height=True):
-                    with gr.Column(scale=1):
-                        bg_in = gr.Image(
-                            label="Input", type="pil",
-                            sources=["upload", "clipboard"], height=300,
-                            elem_classes="drop", buttons=["download", "fullscreen"],
-                        )
-                        bg_model = gr.Dropdown(
-                            _BG_CHOICES, value=background.DEFAULT_BG_MODEL,
-                            label="Model", filterable=False,
-                            info="The AI that finds your subject. u2net is the best "
-                            "all-rounder; u2netp is lighter and faster but a bit "
-                            "less precise.",
-                        )
-                        bg_feather = gr.Slider(
-                            0, 10, value=1, step=1, label="Edge feather (px)",
-                            info="Softens the cut-out edge so it blends in. 0 = a "
-                            "hard, crisp edge.",
-                        )
-                        with gr.Accordion("Tips", open=False):
-                            gr.Markdown(
-                                "* **Try u2net first** — best all-rounder; u2netp "
-                                "is lighter and faster.\n"
-                                "* **1–2px of edge feather** looks most natural; use "
-                                "0 for a crisp, hard edge.\n"
-                                "* **The result is a transparent PNG** — the "
-                                "checkerboard just shows where it's see-through.\n"
-                                "* **Pairs with the Lian Li tab** — drop the cut-out "
-                                "in as a sticker.",
-                                elem_classes="notes",
-                            )
-                        with gr.Row():
-                            bg_btn = gr.Button("Remove background", variant="primary",
-                                               size="lg", scale=3)
-                            bg_clear = gr.Button("↺ Clear", variant="secondary", scale=1)
-                    with gr.Column(scale=1):
-                        bg_preview = gr.Image(
-                            label="Cut-out (checkerboard = transparent)",
-                            height=300, buttons=["fullscreen"], elem_classes=["loupe"],
-                        )
-                        bg_file = gr.File(label="Download transparent PNG")
-                        bg_info = gr.Markdown()
-
-            # ---- Tab: Colorize (DDColor) ----
-            with gr.Tab("Colorize"):
-                gr.HTML(_section_head(
-                    "Color", "Colorize Photos",
-                    "Bring black-and-white or faded photos to life. DDColor predicts "
-                    "natural color and keeps every bit of the original detail.",
-                    icon=ICON_AI,
-                ))
-                with gr.Row(equal_height=True):
-                    with gr.Column(scale=1):
-                        col_in = gr.Image(
-                            label="Input", type="pil",
-                            sources=["upload", "clipboard"], height=300,
-                            elem_classes="drop", buttons=["download", "fullscreen"],
-                        )
-                        col_model = gr.Dropdown(
-                            _COLORIZE_CHOICES, value=DEFAULT_COLORIZE_MODEL,
-                            label="Model", filterable=False,
-                            info="DDColor predicts color from the brightness of your "
-                            "photo, so detail is never lost.",
-                        )
-                        col_strength = gr.Slider(
-                            0.0, 1.0, value=1.0, step=0.05, label="Color strength",
-                            info="1 = full color; lower keeps it subtler. 0 returns the "
-                            "original in grayscale.",
-                        )
-                        with gr.Accordion("Tips", open=False):
-                            gr.Markdown(
-                                "* **Any photo works** — black-and-white, sepia, or "
-                                "faded.\n"
-                                "* **Detail is preserved** — only color is added.\n"
-                                "* **Needs the \"face\" packages** (spandrel).\n"
-                                "* **First run downloads ~870MB**, then it's cached.",
-                                elem_classes="notes",
-                            )
-                        with gr.Row():
-                            col_btn = gr.Button("Colorize", variant="primary",
-                                                size="lg", scale=3)
-                            col_clear = gr.Button("↺ Clear", variant="secondary", scale=1)
-                    with gr.Column(scale=1):
-                        col_out = gr.ImageSlider(
-                            label="Before / after", type="pil", height=300,
-                            elem_classes=["loupe"],
-                        )
-                        col_info = gr.Markdown()
-
-            # ---- Tab: Inpaint / object removal (LaMa) ----
-            with gr.Tab("Inpaint"):
-                gr.HTML(_section_head(
-                    "Cleanup", "Remove Objects",
-                    "Paint over anything you want gone — a photobomber, a sign, a "
-                    "blemish — and LaMa fills the gap from the surroundings.",
-                    icon=ICON_AI,
-                ))
-                with gr.Row(equal_height=True):
-                    with gr.Column(scale=1):
-                        ip_editor = gr.ImageEditor(
-                            label="Paint over the object to remove", type="pil",
-                            height=360, sources=["upload", "clipboard"],
-                            layers=False, transforms=(),
-                            brush=gr.Brush(
-                                colors=["#ffffff"], color_mode="fixed", default_size=24
-                            ),
-                        )
-                        ip_model = gr.Dropdown(
-                            _INPAINT_CHOICES, value=DEFAULT_INPAINT_MODEL,
-                            label="Model", filterable=False,
-                            info="Big-LaMa fills the painted region from the "
-                            "surrounding image.",
-                        )
-                        with gr.Accordion("Tips", open=False):
-                            gr.Markdown(
-                                "* **Cover the whole object**, plus a little margin.\n"
-                                "* **Use a bigger brush** for bigger objects.\n"
-                                "* **Best on clutter / backgrounds** — wires, signs, "
-                                "blemishes, photobombers.\n"
-                                "* **First run downloads ~196MB**, then it's cached.",
-                                elem_classes="notes",
-                            )
-                        with gr.Row():
-                            ip_btn = gr.Button("Remove object", variant="primary",
-                                               size="lg", scale=3)
-                            ip_clear = gr.Button("↺ Clear", variant="secondary", scale=1)
-                    with gr.Column(scale=1):
-                        ip_out = gr.ImageSlider(
-                            label="Before / after", type="pil", height=360,
-                            elem_classes=["loupe"],
-                        )
-                        ip_info = gr.Markdown()
-
-            # ---- Tab 4b: Batch (one operation over many images) ----
+            # ---- Tab: Batch (one operation over many images) ----
             with gr.Tab("Batch"):
                 gr.HTML(_section_head(
                     "Batch", "Batch Processing",
@@ -2053,7 +2302,7 @@ def build_demo() -> gr.Blocks:
                         with gr.Column(visible=True) as batch_grp_up:
                             batch_model = gr.Dropdown(
                                 _MODEL_CHOICES, value=_cfg_model,
-                                label="Upscale model", filterable=False,
+                                label="Upscale model", filterable=True,
                             )
                             batch_size = gr.Dropdown(
                                 list(_SIZE_PRESETS), value="Model default (×2/×4)",
@@ -2092,7 +2341,7 @@ def build_demo() -> gr.Blocks:
                             batch_run = gr.Button("Process all", variant="primary",
                                                   size="lg", scale=3)
                             batch_cancel = gr.Button("✕ Cancel", variant="stop", scale=1)
-                    with gr.Column(scale=1):
+                    with gr.Column(scale=1, elem_classes="sticky-col"):
                         batch_gallery = gr.Gallery(
                             label="Results", columns=3, height=420,
                             object_fit="cover", buttons=["download", "fullscreen"],
@@ -2103,6 +2352,7 @@ def build_demo() -> gr.Blocks:
                 batch_op.change(
                     _switch_batch_op, batch_op,
                     [batch_grp_up, batch_grp_conv, batch_grp_bg],
+                    show_progress="hidden",  # instant visibility toggle, no flash
                 )
                 batch_evt = batch_run.click(
                     batch_process,
@@ -2112,9 +2362,10 @@ def build_demo() -> gr.Blocks:
                     [batch_gallery, batch_zip, batch_info],
                     show_progress_on=[batch_gallery],
                 )
-                batch_cancel.click(None, None, None, cancels=[batch_evt])
+                batch_cancel.click(lambda: _BATCH_CANCEL.set(), None, None,
+                                   cancels=[batch_evt])
 
-            # ---- Tab 5: Lian Li 8.8" Screen builder ----
+            # ---- Tab: Lian Li 8.8" Screen builder ----
             with gr.Tab("Lian Li Screen"):
                 gr.HTML(_section_head(
                     "Panel", "Lian Li 8.8″ Screen",
@@ -2124,7 +2375,7 @@ def build_demo() -> gr.Blocks:
                     "cropped — then export a PNG, looping GIF or MP4.",
                     icon=ICON_PANEL,
                 ))
-                with gr.Row(equal_height=True):
+                with gr.Row(equal_height=False):
                     with gr.Column(scale=1):
                         pn_media = gr.File(
                             label="Image, GIF or video",
@@ -2142,7 +2393,7 @@ def build_demo() -> gr.Blocks:
                             )
                             pn_up_model = gr.Dropdown(
                                 _MODEL_CHOICES, value="realesrgan-x2plus",
-                                label="Upscale model", filterable=False,
+                                label="Upscale model", filterable=True,
                                 info="The AI that enlarges your source before it's "
                                 "fitted. ×2 is plenty for 1920×480; use ×4 for very "
                                 "small sources, or the anime model for line art.",
@@ -2399,7 +2650,7 @@ def build_demo() -> gr.Blocks:
                         with gr.Row():
                             pn_export = gr.Button("Export", variant="primary", size="lg", scale=3)
                             pn_clear = gr.Button("↺ Clear", variant="secondary", scale=1)
-                    with gr.Column(scale=1):
+                    with gr.Column(scale=1, elem_classes="sticky-col"):
                         pn_preview = gr.Image(
                             label="Preview — bright = kept, dim = cropped out",
                             height=300, buttons=["fullscreen"], elem_classes=["loupe"],
@@ -2416,7 +2667,7 @@ def build_demo() -> gr.Blocks:
                         pn_file = gr.File(label="Download export")
                         pn_info = gr.Markdown()
 
-            # ---- Tab 6: Library (everything you export, saved automatically) ----
+            # ---- Tab: Library (everything you export, saved automatically) ----
             with gr.Tab("Library") as lib_tab:
                 gr.HTML(_section_head(
                     "Library", "Your Library",
@@ -2444,7 +2695,8 @@ def build_demo() -> gr.Blocks:
 
         # ---- Settings: its own page, opened by the ⚙ gear (hidden by default) ----
         with gr.Column(visible=False) as settings_view:
-            set_back = gr.Button("← Back to the app", variant="secondary", size="sm")
+            with gr.Row(elem_classes="toolbar"):
+                set_back = gr.Button("← Back to the app", variant="secondary", size="sm")
             gr.HTML(_section_head(
                 "Settings", "Settings & Setup",
                 "Set your defaults once, see where your files live, and follow the "
@@ -2462,7 +2714,7 @@ def build_demo() -> gr.Blocks:
                         )
                         set_model = gr.Dropdown(
                             _MODEL_CHOICES, value=_cfg_model,
-                            label="Default upscale model", filterable=False,
+                            label="Default upscale model", filterable=True,
                             info="The model pre-selected on the Upscale tab when "
                             "the app starts.",
                         )
@@ -2474,8 +2726,8 @@ def build_demo() -> gr.Blocks:
                         set_save = gr.Button("Save preferences", variant="primary")
                         set_status = gr.Markdown()
                         gr.Markdown(
-                            "*Stored in `~/.upscaler/config.json` · applied the "
-                            "next time you start the app.*"
+                            "*Stored in `~/.upscaler/config.json` · applied "
+                            "immediately, and used as the defaults on every start.*"
                         )
                     with gr.Accordion("Where your files live", open=False):
                         gr.Markdown(
@@ -2522,8 +2774,10 @@ def build_demo() -> gr.Blocks:
                     with gr.Accordion("About", open=False):
                         gr.Markdown(
                             f"**Upscaler** · running locally on **{device_name}** · "
-                            "powered by Real-ESRGAN + NAFNet. 100% offline — no "
-                            "cloud, no API keys, nothing uploaded."
+                            "powered by Real-ESRGAN + NAFNet. All processing happens "
+                            "on this machine — no cloud, no API keys, your files are "
+                            "never uploaded. (Model weights and the UI font are the "
+                            "only things fetched from the web.)"
                         )
                 with gr.Column(scale=1):
                     with gr.Accordion("Install on Windows — step by step", open=True):
@@ -2562,7 +2816,10 @@ def build_demo() -> gr.Blocks:
             [out, info],
             show_progress_on=[out],
         )
-        enh_cancel.click(None, None, None, cancels=[run_evt])
+        # Set the cooperative flag (stops the tile loop) AND cancel the Gradio
+        # event (stops the progress stream) — either alone leaves work running.
+        enh_cancel.click(lambda: _ENHANCE_CANCEL.set(), None, None,
+                         cancels=[run_evt])
         restore_btn.click(
             restore_only,
             [inp, deblur_model, restore_strength, sharpen, device, onnx, fbcnn],
@@ -2573,15 +2830,18 @@ def build_demo() -> gr.Blocks:
             model, sharpen, deblur, deblur_model, restore_strength, preset_info,
         ] + _preset_buttons
         for _btn, _name in zip(_preset_buttons, UPSCALE_PRESETS):
-            _btn.click(lambda n=_name: apply_preset(n), None, _preset_outputs)
+            _btn.click(lambda n=_name: apply_preset(n), None, _preset_outputs,
+                       show_progress="hidden")
         clear.click(lambda: (None, None, None), None, [inp, out, info])
-        vid_btn.click(
+        vid_evt = vid_btn.click(
             upscale_video_ui,
             [vid_in, vid_model, vid_size, vid_sharpen, vid_smooth, vid_start,
-             vid_end, vid_device, vid_tile],
+             vid_end, vid_device, vid_tile, vid_onnx],
             [vid_out, vid_compare, vid_info],
             show_progress_on=[vid_out],
         )
+        vid_cancel.click(lambda: _VIDEO_CANCEL.set(), None, None,
+                         cancels=[vid_evt])
         vid_clear.click(
             lambda: (None, None, None, None), None,
             [vid_in, vid_out, vid_compare, vid_info],
@@ -2595,13 +2855,21 @@ def build_demo() -> gr.Blocks:
             pn_media, pn_orient, pn_fit, pn_zoom, pn_offx, pn_offy, pn_bgtype,
             pn_bgcol, pn_bgcol2, pn_bgang,
         ] + _overlay_inputs
-        for _c in _pn_preview_inputs:
-            # show_progress="hidden" removes the loading flash on every slider
-            # tick; the source frame is cached and the preview composites at
-            # display resolution, so the re-render is ~25 ms.
-            _c.change(
+        # pn_media is a gr.File (no .input event) and must re-render on upload
+        # and when "Enhance source" swaps the file in — .change covers both.
+        pn_media.change(
+            panel_preview_ui, _pn_preview_inputs, pn_preview,
+            show_progress="hidden",
+        )
+        for _c in _pn_preview_inputs[1:]:
+            # .input (not .change) so only USER edits re-render: programmatic
+            # updates — e.g. loading a layout writes all 76 components at once —
+            # would otherwise fire 76 queued re-renders. show_progress="hidden"
+            # removes the loading flash on every slider tick, and
+            # trigger_mode="always_last" collapses a drag storm to one render.
+            _c.input(
                 panel_preview_ui, _pn_preview_inputs, pn_preview,
-                show_progress="hidden",
+                show_progress="hidden", trigger_mode="always_last",
             )
         pn_media.change(
             panel_on_media, pn_media, [pn_end, pn_anim_group, pn_info]
@@ -2637,7 +2905,8 @@ def build_demo() -> gr.Blocks:
         _lib_outputs = [lib_gallery, lib_video_pick, lib_video, lib_count]
         lib_tab.select(refresh_library, None, _lib_outputs)   # load on open
         lib_refresh.click(refresh_library, None, _lib_outputs)
-        lib_video_pick.change(lambda v: v, lib_video_pick, lib_video)
+        lib_video_pick.change(lambda v: v, lib_video_pick, lib_video,
+                              show_progress="hidden")
         lib_open.click(open_library_folder, None, None)
 
         # ---- Settings page (opened by the ⚙ gear, closed by Back) ----
@@ -2649,7 +2918,11 @@ def build_demo() -> gr.Blocks:
             lambda: (gr.update(visible=True), gr.update(visible=False)),
             None, [main_tabs, settings_view],
         )
-        set_save.click(save_settings, [set_device, set_model, set_outdir], set_status)
+        set_save.click(
+            save_settings, [set_device, set_model, set_outdir],
+            [set_status, model, device, batch_model, batch_device, vid_device,
+             pn_outdir],
+        )
         set_open_lib.click(open_library_folder, None, None)
         mm_dl.click(_mm_download, [mm_pick], [mm_table, mm_total, mm_status])
         mm_rm.click(_mm_remove, [mm_pick], [mm_table, mm_total, mm_status])

@@ -38,7 +38,9 @@ def _download(url: str, dest: Path) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     req = urllib.request.Request(url, headers={"User-Agent": "upscaler/0.1"})
     try:
-        with urllib.request.urlopen(req) as resp:  # noqa: S310 (trusted release URL)
+        # timeout so a stalled connection errors out instead of hanging the
+        # CLI/GUI job forever (it applies per socket op, not the whole download)
+        with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310 (trusted release URL)
             total = int(resp.headers.get("Content-Length", 0))
             # Download to a temp file first so an interrupted download never
             # leaves a corrupt file in the cache.
@@ -68,21 +70,32 @@ def _download(url: str, dest: Path) -> None:
         ) from e
 
 
+# Files already hash-verified this process — re-hashing a multi-hundred-MB .pth
+# on every engine construction is pure waste once it has checked out.
+_VERIFIED: "set[Path]" = set()
+
+
 def ensure_weights(spec: WeightSpec) -> Path:
     """Return a local path to the weights for ``spec``, downloading if needed.
 
-    If ``spec.sha256`` is set it is verified; a mismatch deletes the file and raises.
+    If ``spec.sha256`` is set it is verified (once per process); a mismatch
+    deletes the file and raises.
     """
     dest = WEIGHTS_DIR / spec.filename
     if not dest.exists():
         _download(spec.url, dest)
+        _VERIFIED.discard(dest)
 
-    if spec.sha256:
+    if spec.sha256 and dest not in _VERIFIED:
         digest = _sha256(dest)
         if digest != spec.sha256:
             dest.unlink(missing_ok=True)
             raise RuntimeError(
                 f"Checksum mismatch for {spec.filename}: expected {spec.sha256}, "
-                f"got {digest}. The file was removed; re-run to retry."
+                f"got {digest}. The file was removed. If this repeats, the "
+                "upstream file has changed (or the download is being tampered "
+                "with) — re-pin with scripts/print_checksums.py after verifying "
+                "the source, or report it as a bug."
             )
+        _VERIFIED.add(dest)
     return dest

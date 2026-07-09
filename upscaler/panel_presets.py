@@ -42,7 +42,9 @@ def to_dict(p: PanelParams) -> dict:
     """Serialize to a JSON-safe dict (sticker PIL images → base64 PNG)."""
     overlays = []
     for ov in p.overlays:
-        o = dict(ov)
+        # Drop private (underscore) keys — per-export caches like _scroll_span
+        # must not leak into shared layout files.
+        o = {k: v for k, v in ov.items() if not str(k).startswith("_")}
         img = o.pop("image", None)
         if img is not None:
             o["image_b64"] = _img_to_b64(img)
@@ -54,12 +56,28 @@ def to_dict(p: PanelParams) -> dict:
     }
 
 
+# Numeric overlay fields and their expected types — hand-edited layouts often
+# quote numbers ("size": "180"), which would load fine and then crash every
+# preview render. Coerce here; unparseable values fall back to the default.
+_OVERLAY_NUM_FIELDS = {
+    "size": int, "x": float, "y": float, "rotation": float, "stroke_w": int,
+    "speed": float, "cps": float, "scale": float, "opacity": float,
+}
+
+
 def from_dict(d: dict) -> PanelParams:
     """Rebuild a PanelParams, tolerant of missing/unknown keys (best-effort)."""
     d = d or {}
     params = d.get("params") or {}
     defaults = PanelParams()
-    kw = {k: params.get(k, getattr(defaults, k)) for k in _PARAM_KEYS}
+    kw = {}
+    for k in _PARAM_KEYS:
+        dv = getattr(defaults, k)
+        v = params.get(k, dv)
+        try:
+            kw[k] = type(dv)(v)
+        except (TypeError, ValueError):
+            kw[k] = dv
     overlays = []
     for raw in d.get("overlays") or []:
         o = dict(raw)
@@ -69,6 +87,12 @@ def from_dict(d: dict) -> PanelParams:
                 o["image"] = _b64_to_img(b64)
             except Exception:
                 continue  # skip a corrupt sticker rather than fail the whole load
+        for key, cast in _OVERLAY_NUM_FIELDS.items():
+            if key in o:
+                try:
+                    o[key] = cast(float(o[key]))
+                except (TypeError, ValueError):
+                    o.pop(key)  # downstream .get(key, default) fills it in
         overlays.append(o)
     return PanelParams(overlays=overlays, **kw)
 

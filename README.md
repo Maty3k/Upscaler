@@ -67,8 +67,10 @@ upscaler convert photo.png -o out.webp --lossless
 upscaler convert ./folder -o ./out -f WebP      # batch a directory
 ```
 
-Supports PNG / JPEG / WebP / AVIF / TIFF / GIF / BMP / ICO / TGA / PPM. Alpha is
-flattened onto a white background for formats that can't store it (JPEG/BMP/PPM).
+Supports PNG / JPEG / WebP / AVIF / HEIC / JPEG 2000 / TIFF / GIF / BMP / ICO /
+ICNS / TGA / PCX / DIB / SGI / PPM (AVIF needs Pillow ≥ 11.2 or pillow-heif;
+HEIC needs pillow-heif). Alpha is flattened onto a white background for formats
+that can't store it (JPEG/BMP/PPM/PCX).
 
 #### Remove background & batch
 
@@ -121,11 +123,14 @@ pip install -e ".[gui]"
 python app.py            # opens a local web UI at http://127.0.0.1:7860
 ```
 
-A full-width local web app with three tools: **File Converter** (PNG/JPEG/WebP/
-BMP/TIFF), **Image ⇄ PDF** (combine images into a PDF, or extract a PDF's pages
-to PNGs), and **Upscale & Enhance**. Runs entirely on your machine — nothing is
-uploaded anywhere. (PDF support uses `pypdfium2`, included in the `.[gui]` extra
-or installable on its own via `.[pdf]`.)
+A full local web app with a tab per tool: **Upscale & Enhance** (with deblur /
+denoise, JPEG de-blocking, face restore), **Colorize** (DDColor), **Remove
+Objects** (LaMa inpainting), **Remove BG**, **Video** upscaling, **Convert &
+Documents** (formats + image ⇄ PDF), **Batch**, a **Lian Li Screen** composer
+for the 8.8″ case panel, and a **Library** of everything you export. Runs
+entirely on your machine — nothing is uploaded anywhere. (PDF support uses
+`pypdfium2`, included in the `.[gui]` extra or installable on its own via
+`.[pdf]`.)
 
 ### Library
 
@@ -166,6 +171,11 @@ result.save("out.png")
 - **CPU works** but is slow on large images; keep `--tile` at 512 or lower.
 - **Apple Silicon:** `--device mps` is much faster than CPU.
 - **CUDA:** add `--fp16` for a speed/memory win.
+- **AMD / Intel GPU on native Windows:** torch can't reach these, but the ONNX
+  engine can via DirectML — `pip uninstall onnxruntime` then
+  `pip install -e ".[directml]"`, and add `--onnx` (CLI) or tick the ONNX
+  checkbox (GUI Upscale/Video → Advanced). For maximum AMD speed use WSL2 +
+  ROCm instead: see `docs/SETUP-WINDOWS-AMD.md`.
 
 ## Testing
 
@@ -184,9 +194,12 @@ pytest        # architecture + tiling tests; run on CPU, no weights download
 
 ## Licensing
 
-This project is **Apache-2.0** (see `LICENSE`). The pretrained weights are from
-the official Real-ESRGAN releases and carry their own (BSD-3-Clause) terms; they
-are downloaded at runtime and never redistributed in this repo. Credit to
+This project is **Apache-2.0** (see `LICENSE`). Pretrained weights are
+downloaded at runtime and never redistributed in this repo; each carries its own
+upstream terms. The core Real-ESRGAN weights are BSD-3-Clause, but several
+optional models are **not**: the community upscalers (4x-UltraSharp, Remacri,
+NMKD) and the CodeFormer face restorer are non-commercial — their dropdown
+entries say so; check upstream terms before commercial use. Credit to
 Xintao Wang et al. for Real-ESRGAN and to BasicSR for the RRDBNet architecture,
 and to Chen et al. / megvii-research for NAFNet (MIT). NAFNet deblur weights are
 mirrored on Hugging Face (`nyanko7/nafnet-models`); the upstream originals are on

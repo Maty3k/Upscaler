@@ -116,9 +116,13 @@ class FaceRestorer:
                 restored = restored * strength + aligned.astype(np.float32) * (1 - strength)
             inv = cv2.invertAffineTransform(M)
             back = cv2.warpAffine(restored, inv, (w, h), flags=cv2.INTER_LINEAR)
-            mask = cv2.warpAffine(np.full((_SIZE, _SIZE), 255, np.uint8), inv, (w, h))
-            mask = cv2.erode(mask, np.ones((13, 13), np.uint8))
-            mask = (cv2.GaussianBlur(mask, (0, 0), 9).astype(np.float32) / 255.0)[..., None]
+            quad = cv2.warpAffine(np.full((_SIZE, _SIZE), 255, np.uint8), inv, (w, h))
+            mask = cv2.erode(quad, np.ones((13, 13), np.uint8))
+            mask = cv2.GaussianBlur(mask, (0, 0), 9).astype(np.float32) / 255.0
+            # The blur spreads farther than the erosion pulled in, so without
+            # this clamp the mask bleeds past the crop, where `back` is black —
+            # compositing a dark halo box around every restored face.
+            mask = (mask * (quad.astype(np.float32) / 255.0))[..., None]
             out = back * mask + out * (1 - mask)
         return Image.fromarray(
             cv2.cvtColor(out.round().astype(np.uint8), cv2.COLOR_BGR2RGB), "RGB"

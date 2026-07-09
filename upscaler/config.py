@@ -18,7 +18,9 @@ CONFIG_PATH = Path(
 
 DEFAULTS: "dict[str, str]" = {
     "device": "auto",
-    "model": "realesrgan-x4plus",
+    # ×2 out of the box: the app's own guidance says ×4 over-processes typical
+    # already-decent photos — first-run results should match the advice.
+    "model": "realesrgan-x2plus",
     "output_dir": "",
 }
 
@@ -42,7 +44,11 @@ def save(**values: str) -> bool:
     cfg.update({k: v for k, v in values.items() if k in DEFAULTS})
     try:
         CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        CONFIG_PATH.write_text(json.dumps(cfg, indent=2))
+        # Atomic: write a sibling temp file, then rename over the target, so a
+        # crash mid-write can't leave a half-written (silently reset) config.
+        tmp = CONFIG_PATH.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(cfg, indent=2))
+        tmp.replace(CONFIG_PATH)
         return True
     except OSError:
         return False

@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: ["**"]
+    branches: [main]  # PRs are covered by pull_request; '**' ran everything twice
   pull_request:
 
 jobs:
@@ -12,7 +12,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
 
     steps:
       - uses: actions/checkout@v4
@@ -25,17 +25,27 @@ jobs:
 
       # Install a CPU-only torch first — it's the slow step, so it must be cached
       # and kept off the GPU wheels. The PyTorch CPU wheel index is used on Linux;
-      # macOS PyPI wheels are already CPU-only, so plain pip is correct there.
+      # macOS/Windows PyPI wheels are already CPU-only, so plain pip is correct there.
       - name: Install CPU torch (Linux)
         if: runner.os == 'Linux'
         run: pip install "torch>=2.0" --index-url https://download.pytorch.org/whl/cpu
 
-      - name: Install CPU torch (macOS)
-        if: runner.os == 'macOS'
+      - name: Install CPU torch (macOS / Windows)
+        if: runner.os != 'Linux'
         run: pip install "torch>=2.0"
 
+      # [face] included so face-restoration / CodeFormer / colorize / spandrel
+      # tests actually run instead of silently skipping.
       - name: Install package
-        run: pip install -e ".[dev,gui]"
+        run: pip install -e ".[dev,gui,face,video]"
+
+      # Model weights are immutable once pinned — cache them instead of pulling
+      # ~330MB from third-party hosts on every run. Keyed on the registries.
+      - name: Cache model weights
+        uses: actions/cache@v4
+        with:
+          path: upscaler/weights
+          key: weights-${{ hashFiles('upscaler/models/registry.py', 'upscaler/background.py') }}
 
       - name: Run tests
         run: pytest -q
