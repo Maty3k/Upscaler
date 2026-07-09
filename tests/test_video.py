@@ -2,11 +2,18 @@
 
 import shutil
 import subprocess
+import types
 
 import pytest
 
 ffmpeg = shutil.which("ffmpeg")
 pytestmark = pytest.mark.skipif(ffmpeg is None, reason="ffmpeg not installed")
+
+
+@pytest.fixture(autouse=True)
+def _isolated_resume_dir(tmp_path, monkeypatch):
+    """Keep render checkpoints out of the repo's upscaler/resume/ during tests."""
+    monkeypatch.setenv("UPSCALER_RESUME_DIR", str(tmp_path / "resume"))
 
 
 def _probe_wh(path):
@@ -134,3 +141,62 @@ def test_missing_input_raises(tmp_path):
 
     with pytest.raises(FileNotFoundError):
         upscale_video(tmp_path / "nope.mp4", tmp_path / "o.mp4", device="cpu")
+
+
+class _CountingUpscaler:
+    """Engine stand-in: ×2 nearest resize, counts how many frames it was fed."""
+
+    scale = 2
+
+    def __init__(self):
+        self.calls = 0
+        self.spec = types.SimpleNamespace(name="fake-x2")
+
+    def upscale(self, image, progress_cb=None, should_cancel=None):
+        self.calls += 1
+        return image.resize((image.width * 2, image.height * 2))
+
+
+def test_resume_skips_finished_frames(tiny_video, tmp_path):
+    """Cancel mid-render, re-run: only the unfinished frames are upscaled."""
+    from upscaler.engine import CancelledError
+    from upscaler.video import upscale_video
+
+    dst = tmp_path / "r.mp4"
+    up = _CountingUpscaler()
+    done = []
+    with pytest.raises(CancelledError):
+        upscale_video(tiny_video, dst, upscaler=up,
+                      progress_cb=lambda i, n: done.append(i),
+                      should_cancel=lambda: len(done) >= 2)
+    assert up.calls == 2  # 4-frame clip, stopped after 2
+
+    up2 = _CountingUpscaler()
+    upscale_video(tiny_video, dst, upscaler=up2)
+    assert up2.calls == 2  # resumed: the other 2, not all 4
+    assert _probe_wh(dst) == (80, 64)
+
+
+def test_resume_checkpoint_removed_on_success(tiny_video, tmp_path):
+    from upscaler.video import upscale_video
+
+    root = tmp_path / "resume"
+    upscale_video(tiny_video, tmp_path / "ok.mp4", upscaler=_CountingUpscaler())
+    assert not (root.exists() and any(root.iterdir()))
+
+
+def test_resume_off_starts_over(tiny_video, tmp_path):
+    from upscaler.engine import CancelledError
+    from upscaler.video import upscale_video
+
+    dst = tmp_path / "n.mp4"
+    done = []
+    with pytest.raises(CancelledError):
+        upscale_video(tiny_video, dst, upscaler=_CountingUpscaler(), resume=False,
+                      progress_cb=lambda i, n: done.append(i),
+                      should_cancel=lambda: len(done) >= 2)
+    assert not (tmp_path / "resume").exists()  # nothing checkpointed
+
+    up = _CountingUpscaler()
+    upscale_video(tiny_video, dst, upscaler=up, resume=False)
+    assert up.calls == 4  # no checkpoint to resume from → all frames again

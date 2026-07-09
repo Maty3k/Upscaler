@@ -13,6 +13,9 @@ upscaler/weights/
 *.pth
 *.onnx
 
+# Interrupted-video-render checkpoints (resumable work dirs, per machine)
+upscaler/resume/
+
 # OS / IDE
 .DS_Store
 .idea/

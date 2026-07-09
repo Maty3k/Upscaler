@@ -23,21 +23,40 @@ def onnx_path(filename: str) -> Path:
 
 
 def _export(module, dummy, dest: Path) -> Path:
+    import contextlib
+    import io
+    import os
+    import tempfile
+
     import torch
 
     module.eval()
     dest.parent.mkdir(parents=True, exist_ok=True)
-    # Let the exporter choose a supported opset — forcing a low one triggers a
-    # fragile down-conversion of the Resize/upsample ops.
-    torch.onnx.export(
-        module,
-        dummy,
-        str(dest),
-        input_names=["input"],
-        output_names=["output"],
-        dynamic_axes=_DYNAMIC_AXES,
-        do_constant_folding=True,
-    )
+    # Export to a temp file, then rename into place: an interrupted/failed
+    # export must never leave a truncated .onnx that `dest.exists()` would
+    # treat as a valid cache forever after.
+    fd, tmp_name = tempfile.mkstemp(dir=dest.parent, suffix=".onnx.part")
+    os.close(fd)
+    tmp = Path(tmp_name)
+    try:
+        # Mute the exporter's console chatter: torch prints status lines with
+        # emoji (✅), and on Windows a redirected stdout defaults to cp1252 —
+        # the *print* would raise UnicodeEncodeError and kill the export.
+        # Let the exporter choose a supported opset — forcing a low one triggers
+        # a fragile down-conversion of the Resize/upsample ops.
+        with contextlib.redirect_stdout(io.StringIO()):
+            torch.onnx.export(
+                module,
+                dummy,
+                str(tmp),
+                input_names=["input"],
+                output_names=["output"],
+                dynamic_axes=_DYNAMIC_AXES,
+                do_constant_folding=True,
+            )
+        tmp.replace(dest)
+    finally:
+        tmp.unlink(missing_ok=True)
     return dest
 
 

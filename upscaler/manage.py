@@ -121,7 +121,10 @@ def remove_one(filename: str) -> str:
         return "⚠ Refused: path is outside the weights folder."
     if not dest.exists():
         return f"{filename} isn't downloaded — nothing to remove."
-    dest.unlink(missing_ok=True)
+    try:
+        dest.unlink(missing_ok=True)
+    except OSError as e:  # locked/permission — report it, don't raise a toast
+        return f"⚠ Couldn't remove {filename}: {e}"
     return f"🗑 Removed {filename}."
 
 

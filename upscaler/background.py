@@ -61,7 +61,13 @@ _sessions: dict[str, object] = {}
 def _session(spec: BGSpec):
     sess = _sessions.get(spec.name)
     if sess is None:
-        import onnxruntime as ort  # local import: only when removing a background
+        try:
+            import onnxruntime as ort  # local import: only when removing a background
+        except ImportError as e:
+            raise RuntimeError(
+                "Background removal needs onnxruntime. Install it with: "
+                'pip install -e ".[onnx]" (or ".[gui]")'
+            ) from e
 
         path = ensure_weights(spec)
         sess = ort.InferenceSession(str(path), providers=["CPUExecutionProvider"])

@@ -17,6 +17,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from functools import lru_cache
@@ -325,6 +326,11 @@ def _render_text_layer(canvas: Image.Image, content: str, ov: Overlay, ctx=None)
     fi = ctx["frame_index"] if ctx else 0
     fps = max(1, ctx["fps"]) if ctx else 30
     total = max(1, ctx["total_frames"]) if ctx else 1
+    # Single-frame renders (live preview, PNG/JPG stills) must show the text:
+    # fade's first frame is alpha 0 and typewriter's is zero characters, which
+    # would make the overlay invisible everywhere except mid-export.
+    if total <= 1 and motion in ("fade", "typewriter"):
+        motion = "none"
     t = fi / fps  # seconds into the clip
 
     if motion == "typewriter":  # reveal characters over time, then hold full
@@ -343,20 +349,26 @@ def _render_text_layer(canvas: Image.Image, content: str, ov: Overlay, ctx=None)
     y = ch / 2 + (float(ov.get("y", 0)) / 100.0) * ch
 
     if motion in ("scroll-left", "scroll-right", "scroll-up", "scroll-down"):
-        _paste_scrolling(canvas, layer, motion, x, y,
+        # Pin the scroll period to the first frame's text size: a clock's text
+        # width changes as digits tick over ("9:59"→"10:00"), and recomputing
+        # the period from each frame's width makes the scroll teleport/jitter.
+        horiz = motion in ("scroll-left", "scroll-right")
+        span = layer.width if horiz else layer.height
+        span = ov.setdefault("_scroll_span", span)
+        _paste_scrolling(canvas, layer, motion, x, y, span=span,
                          speed=float(ov.get("speed", 120) or 120), t=t, total=total, fps=fps)
     else:
         canvas.paste(layer, (int(x - layer.width / 2), int(y - layer.height / 2)), layer)
 
 
-def _paste_scrolling(canvas, layer, motion, cx, cy, *, speed, t, total, fps) -> None:
+def _paste_scrolling(canvas, layer, motion, cx, cy, *, span, speed, t, total, fps) -> None:
     """Tile `layer` along the scroll axis and paste it at a time-wrapped offset,
     so as one copy exits an edge the next enters. The offset completes a whole
-    number of cycles over the clip, so the loop is seamless (offset(0)==offset(end))."""
+    number of cycles over the clip, so the loop is seamless (offset(0)==offset(end)).
+    ``span`` is the (stable) layer extent along the scroll axis."""
     cw, ch = canvas.size
     lw, lh = layer.size
     horizontal = motion in ("scroll-left", "scroll-right")
-    span = lw if horizontal else lh
     canvas_span = cw if horizontal else ch
     period = span + max(int(canvas_span * 0.25), 40)  # text length + a gap
     # snap to whole cycles per clip → seamless loop; ~honours the requested speed
@@ -429,8 +441,9 @@ def preview(src_path: str | None, p: PanelParams, frame: Image.Image | None = No
     pad_y = round(disp_fh * 0.16) if cw >= ch else round(disp_fw * 0.16)
     pw, ph = disp_fw + 2 * pad_x, disp_fh + 2 * pad_y
 
-    # Composite the bright frame directly at display resolution (fast resample,
-    # no full-1920 intermediate) — the preview never needs export resolution.
+    # Composite at canvas resolution with the fast (bilinear) resample, then
+    # scale down to display size — text/sticker geometry stays identical to the
+    # export while the preview stays cheap.
     comp = compose_frame(src, p, fast=True).resize((disp_fw, disp_fh), Image.BILINEAR)
 
     prev = Image.new("RGB", (pw, ph), (22, 22, 26))
@@ -447,11 +460,13 @@ def preview(src_path: str | None, p: PanelParams, frame: Image.Image | None = No
 
     d = ImageDraw.Draw(prev)
     d.rectangle([pad_x, pad_y, pad_x + disp_fw - 1, pad_y + disp_fh - 1], outline=(255, 255, 255), width=2)
+    # The canvas is RGB, so an RGBA fill would render fully opaque — use a mid
+    # grey to keep the thirds guides subtle instead.
     for i in (1, 2):
         gx = pad_x + disp_fw * i // 3
         gy = pad_y + disp_fh * i // 3
-        d.line([(gx, pad_y), (gx, pad_y + disp_fh)], fill=(255, 255, 255, 60), width=1)
-        d.line([(pad_x, gy), (pad_x + disp_fw, gy)], fill=(255, 255, 255, 60), width=1)
+        d.line([(gx, pad_y), (gx, pad_y + disp_fh)], fill=(128, 128, 132), width=1)
+        d.line([(pad_x, gy), (pad_x + disp_fw, gy)], fill=(128, 128, 132), width=1)
     return prev
 
 
@@ -669,10 +684,11 @@ def export_animated(
     os.makedirs(comp, exist_ok=True)
     try:
         n = _extract_frames(src_path, fps, start, dur, raw)
-        if n == 0:
-            # No video frames decoded: treat as a still and hold it for a short
-            # clip — but if even the first frame won't decode, fail loudly rather
-            # than emitting a 0-byte "export".
+        if n <= 1:
+            # Still image (ffmpeg decodes a PNG/JPG as exactly one frame) or
+            # nothing decoded: hold the still for a short clip so GIF/MP4 export
+            # and text motion actually animate — but if even the first frame
+            # won't decode, fail loudly rather than emitting a 0-byte "export".
             base = _first_image(src_path)
             if base is None:
                 raise ValueError(
@@ -680,7 +696,7 @@ def export_animated(
                     "unsupported format."
                 )
             hold = dur if has_end else min(dur, 3.0)
-            n = max(1, int(round(hold * fps)))
+            n = max(2, int(round(hold * fps)))
             for i in range(1, n + 1):
                 base.save(os.path.join(raw, f"frame_{i:05d}.png"))
 
@@ -688,16 +704,29 @@ def export_animated(
         if not files:
             raise ValueError("No frames could be extracted from the source.")
         n_files = len(files)
+        # One wall-clock base for the whole export: clock overlays advance by
+        # `elapsed` (clip time) only. Without this, each frame stamps the time
+        # it happened to be composited at, so a slow export shows a clock that
+        # jumps minutes ahead over a few seconds of clip.
+        wall = datetime.now()
+        t0 = time.perf_counter()
         for i, fn in enumerate(files, 1):
             with Image.open(os.path.join(raw, fn)) as fr:
                 out = compose_frame(
                     fr.convert("RGB"), p,
-                    frame_index=i - 1, elapsed=(i - 1) / fps,
+                    frame_index=i - 1, elapsed=(i - 1) / fps, now=wall,
                     total_frames=n_files, fps=fps,
                 )
             out.save(os.path.join(comp, f"c_{i:05d}.png"))
             if progress:
-                progress(0.1 + 0.6 * i / len(files), desc=f"Compositing frame {i}/{len(files)}")
+                el = time.perf_counter() - t0
+                eta = el / i * (n_files - i)
+                progress(
+                    0.1 + 0.6 * i / n_files,
+                    desc=f"Compositing frame {i}/{n_files} · {i / n_files:.0%} · "
+                         f"{int(el // 60)}:{int(el % 60):02d} elapsed · "
+                         f"~{int(eta // 60)}:{int(eta % 60):02d} left",
+                )
 
         pattern = _apply_loop(comp, len(files), loop_mode, fps)
         if fmt == "mp4":

@@ -304,7 +304,10 @@ class Upscaler:
         """
         b, c, h, w = x.shape
         s = self.scale
-        out = x.new_zeros((b, c, h * s, w * s))
+        # Accumulate on the CPU: the full-scale output of a big image can dwarf
+        # the per-tile memory that tiling exists to bound (a 4000×3000 ×4 fp32
+        # output alone is ~2.3 GB — enough to OOM the GPU the tiles fit on).
+        out = torch.zeros((b, c, h * s, w * s), dtype=x.dtype)
         n_x = (w + self.tile - 1) // self.tile
         n_y = (h + self.tile - 1) // self.tile
         total = n_x * n_y
@@ -325,7 +328,9 @@ class Upscaler:
                 # map the (unpadded) tile region into the padded output tile
                 ox0, oy0 = (x0 - px0) * s, (y0 - py0) * s
                 ox1, oy1 = ox0 + (x1 - x0) * s, oy0 + (y1 - y0) * s
-                out[:, :, y0 * s:y1 * s, x0 * s:x1 * s] = tile_out[:, :, oy0:oy1, ox0:ox1]
+                out[:, :, y0 * s:y1 * s, x0 * s:x1 * s] = (
+                    tile_out[:, :, oy0:oy1, ox0:ox1].to(out.device)
+                )
                 done += 1
                 if progress_cb:
                     progress_cb(done, total)

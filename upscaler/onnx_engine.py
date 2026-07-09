@@ -7,12 +7,13 @@ is cached, inference is torch-free and often faster than torch on CPU.)
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Callable, Optional
 
 import numpy as np
 import onnxruntime as ort
 from PIL import Image
 
+from upscaler.engine import CancelledError
 from upscaler.models.registry import (
     DeblurSpec,
     ModelSpec,
@@ -21,12 +22,29 @@ from upscaler.models.registry import (
 )
 from upscaler.onnx_export import export_deblur, export_upscale
 
+CancelCb = Optional[Callable[[], bool]]
+ProgressCb = Optional[Callable[[int, int], None]]
+
 
 def _providers(device: str) -> list[str]:
     avail = ort.get_available_providers()
     if device in ("cuda", "auto") and "CUDAExecutionProvider" in avail:
         return ["CUDAExecutionProvider", "CPUExecutionProvider"]
+    # DirectML (the onnxruntime-directml build) reaches any DX12 GPU on native
+    # Windows — AMD/Intel/NVIDIA — which torch cannot do for AMD cards.
+    if device in ("cuda", "auto", "gpu", "dml") and "DmlExecutionProvider" in avail:
+        return ["DmlExecutionProvider", "CPUExecutionProvider"]
     return ["CPUExecutionProvider"]
+
+
+def _session(model_path, device: str) -> "ort.InferenceSession":
+    providers = _providers(device)
+    so = ort.SessionOptions()
+    if providers[0] == "DmlExecutionProvider":
+        # Per ORT docs DirectML needs memory patterns off (our spatial dims are
+        # dynamic, so the pattern cache would be wrong anyway).
+        so.enable_mem_pattern = False
+    return ort.InferenceSession(str(model_path), sess_options=so, providers=providers)
 
 
 def _to_chw(image: Image.Image) -> np.ndarray:
@@ -54,9 +72,8 @@ class OnnxUpscaler:
         self.scale = self.spec.scale
         self.tile = tile
         self.tile_pad = tile_pad
-        self.sess = ort.InferenceSession(
-            str(export_upscale(self.spec)), providers=_providers(device)
-        )
+        self.sess = _session(export_upscale(self.spec), device)
+        self.provider = self.sess.get_providers()[0]
         self._inp = self.sess.get_inputs()[0].name
 
     def _run(self, x: np.ndarray) -> np.ndarray:
@@ -72,9 +89,23 @@ class OnnxUpscaler:
         out = self.sess.run(None, {self._inp: x.astype(np.float32)})[0]
         return out[:, :, : h * self.scale, : w * self.scale]
 
-    def upscale(self, image: Image.Image) -> Image.Image:
+    def upscale(
+        self,
+        image: Image.Image,
+        progress_cb: ProgressCb = None,
+        should_cancel: CancelCb = None,
+    ) -> Image.Image:
+        """Mirror of the torch engine's signature, so callers can drive per-tile
+        progress and cooperative cancel regardless of backend."""
         x = _to_chw(image)
-        out = self._run_tiled(x) if self.tile > 0 else self._run(x)
+        if self.tile > 0:
+            out = self._run_tiled(x, progress_cb=progress_cb, should_cancel=should_cancel)
+        else:
+            if should_cancel and should_cancel():
+                raise CancelledError("Cancelled.")
+            out = self._run(x)
+            if progress_cb:
+                progress_cb(1, 1)
         return _to_image(out)
 
     def upscale_file(self, src, dst) -> Image.Image:
@@ -82,15 +113,24 @@ class OnnxUpscaler:
         result.save(dst)
         return result
 
-    def _run_tiled(self, x: np.ndarray) -> np.ndarray:
+    def _run_tiled(
+        self,
+        x: np.ndarray,
+        progress_cb: ProgressCb = None,
+        should_cancel: CancelCb = None,
+    ) -> np.ndarray:
         """numpy mirror of engine.tiled inference (RRDBNet is fully local)."""
         b, c, h, w = x.shape
         s = self.scale
         out = np.zeros((b, c, h * s, w * s), dtype=np.float32)
         n_x = (w + self.tile - 1) // self.tile
         n_y = (h + self.tile - 1) // self.tile
+        total = n_x * n_y
+        done = 0
         for ty in range(n_y):
             for tx in range(n_x):
+                if should_cancel and should_cancel():
+                    raise CancelledError("Cancelled.")
                 x0, y0 = tx * self.tile, ty * self.tile
                 x1, y1 = min(x0 + self.tile, w), min(y0 + self.tile, h)
                 px0, py0 = max(x0 - self.tile_pad, 0), max(y0 - self.tile_pad, 0)
@@ -99,6 +139,9 @@ class OnnxUpscaler:
                 ox0, oy0 = (x0 - px0) * s, (y0 - py0) * s
                 ox1, oy1 = ox0 + (x1 - x0) * s, oy0 + (y1 - y0) * s
                 out[:, :, y0 * s:y1 * s, x0 * s:x1 * s] = tile_out[:, :, oy0:oy1, ox0:ox1]
+                done += 1
+                if progress_cb:
+                    progress_cb(done, total)
         return out
 
 
@@ -113,9 +156,8 @@ class OnnxDeblurrer:
     def __init__(self, model: Optional[str] = None, device: str = "cpu"):
         self.spec: DeblurSpec = resolve_deblur_model(model)
         self.padder = 2 ** len(self.spec.enc_blk_nums)
-        self.sess = ort.InferenceSession(
-            str(export_deblur(self.spec)), providers=_providers(device)
-        )
+        self.sess = _session(export_deblur(self.spec), device)
+        self.provider = self.sess.get_providers()[0]
         self._inp = self.sess.get_inputs()[0].name
 
     def deblur(self, image: Image.Image) -> Image.Image:

@@ -17,7 +17,8 @@ from upscaler.engine import Upscaler
 from upscaler.models.registry import DEBLUR_MODELS, DEFAULT_DEBLUR_MODEL, MODELS
 from upscaler.sharpen import unsharp_mask
 
-_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".webp", ".tif", ".tiff"}
+_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".webp", ".tif", ".tiff",
+               ".gif", ".avif", ".heic", ".ico", ".tga", ".ppm"}
 _VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v", ".flv", ".wmv"}
 
 
@@ -29,19 +30,31 @@ def _gather_inputs(path: Path) -> list[Path]:
 
 def _output_path(src: Path, out: Path | None, scale: int) -> Path:
     if out and out.suffix:  # explicit file target
+        out.parent.mkdir(parents=True, exist_ok=True)  # fail early, not post-compute
         return out
     out_dir = out if out else src.parent
     out_dir.mkdir(parents=True, exist_ok=True)
     return out_dir / f"{src.stem}_x{scale}.png"
 
 
+def _no_clobber(src: Path, dst: Path, tag: str) -> Path:
+    """Never let a derived output path silently overwrite the source in place
+    (e.g. `upscaler convert photo.png -f PNG` with no -o)."""
+    try:
+        same = dst.resolve() == src.resolve()
+    except OSError:
+        same = str(dst) == str(src)
+    return dst.with_name(f"{dst.stem}_{tag}{dst.suffix}") if same else dst
+
+
 def _convert_output_path(src: Path, out: Path | None, fmt: str) -> Path:
     ext = extension_for(fmt)
     if out and out.suffix:  # explicit file target
+        out.parent.mkdir(parents=True, exist_ok=True)
         return out
     out_dir = out if out else src.parent
     out_dir.mkdir(parents=True, exist_ok=True)
-    return out_dir / f"{src.stem}.{ext}"
+    return _no_clobber(src, out_dir / f"{src.stem}.{ext}", "converted")
 
 
 def build_convert_parser() -> argparse.ArgumentParser:
@@ -63,9 +76,14 @@ def build_convert_parser() -> argparse.ArgumentParser:
     return p
 
 
+# Secondary spellings of extensions whose FORMATS entry lists the primary one.
+_EXT_ALIASES = {"jpeg": "jpg", "jpe": "jpg", "tif": "tiff", "heif": "heic"}
+
+
 def _format_from_output(out: Path | None) -> str | None:
     if out and out.suffix:
         ext = out.suffix.lstrip(".").lower()
+        ext = _EXT_ALIASES.get(ext, ext)
         return next((k for k, v in FORMATS.items() if v[1] == ext), None)
     return None
 
@@ -154,7 +172,12 @@ def run_pdf(argv: list[str]) -> int:
         if not images:
             print("error: none of the inputs are readable images", file=sys.stderr)
             return 2
-        data = images_to_pdf(images)
+        try:
+            # Image.open is lazy: a truncated file passes open() and fails here.
+            data = images_to_pdf(images)
+        except OSError as e:
+            print(f"error: couldn't build the PDF: {e}", file=sys.stderr)
+            return 2
         if args.output.parent != Path():
             args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_bytes(data)
@@ -222,6 +245,11 @@ def build_video_parser() -> argparse.ArgumentParser:
         "--end", type=float, default=None, metavar="SEC",
         help="Trim: end time in seconds (process only up to here).",
     )
+    p.add_argument(
+        "--onnx", action="store_true",
+        help="Use the ONNX Runtime backend per frame (with onnxruntime-directml "
+        "this runs on AMD/Intel GPUs on Windows, where torch is CPU-only).",
+    )
     return p
 
 
@@ -252,10 +280,19 @@ def run_video(argv: list[str]) -> int:
         return 2
 
     # Build the model once and reuse it across every clip.
-    up = Upscaler(
-        model=args.model, scale=args.scale, device=args.device, tile=args.tile
-    )
-    print(f"upscaling {len(inputs)} clip(s) ×{up.scale} on {up.device.type} "
+    if args.onnx:
+        from upscaler.onnx_engine import OnnxUpscaler
+
+        up = OnnxUpscaler(
+            model=args.model, scale=args.scale, device=args.device, tile=args.tile
+        )
+        backend = "GPU (DirectML)" if up.provider.startswith("Dml") else up.provider
+    else:
+        up = Upscaler(
+            model=args.model, scale=args.scale, device=args.device, tile=args.tile
+        )
+        backend = up.device.type
+    print(f"upscaling {len(inputs)} clip(s) ×{up.scale} on {backend} "
           "(this can take a while)…", file=sys.stderr)
 
     failures = 0
@@ -288,10 +325,11 @@ _ONNX_HINT = 'background removal needs onnxruntime. Install it with: pip install
 
 def _png_output_path(src: Path, out: Path | None) -> Path:
     if out and out.suffix:  # explicit file target
+        out.parent.mkdir(parents=True, exist_ok=True)
         return out
     out_dir = out if out else src.parent
     out_dir.mkdir(parents=True, exist_ok=True)
-    return out_dir / f"{src.stem}.png"
+    return _no_clobber(src, out_dir / f"{src.stem}.png", "cutout")
 
 
 def build_removebg_parser() -> argparse.ArgumentParser:
@@ -403,7 +441,7 @@ def run_batch(argv: list[str]) -> int:
                 res = unsharp_mask(res, strength=args.sharpen)
             res.save(out_dir / f"{src.stem}_x{up.scale}.png")
     elif args.op == "convert":
-        fmt = args.format or "png"
+        fmt = args.format or "PNG"  # FORMATS keys are display names, not exts
 
         def do(src: Path) -> None:
             convert_file(src, out_dir / f"{src.stem}.{extension_for(fmt)}",
@@ -488,6 +526,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Piped/redirected output on Windows defaults to cp1252, which can't encode
+    # the arrows/emoji in our own status lines (or torch's) — degrade to '?'
+    # instead of dying with UnicodeEncodeError.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(errors="replace")
+        except (AttributeError, OSError, ValueError):
+            pass
     argv = list(sys.argv[1:] if argv is None else argv)
     # Optional subcommands; bare `upscaler <input>` stays the upscaler. Dispatch
     # is by argv[0] string (like a real filename can't be 'convert'/'batch'/…).
@@ -579,7 +625,9 @@ def main(argv: list[str] | None = None) -> int:
                 result = unsharp_mask(result, strength=args.sharpen)
             dst = _output_path(src, args.output, up.scale)
             result.save(dst)
-        except (Image.UnidentifiedImageError, OSError) as e:
+        # RuntimeError/ValueError cover weight-download and inference failures —
+        # a folder batch should report and continue, not dump a traceback.
+        except (Image.UnidentifiedImageError, OSError, RuntimeError, ValueError) as e:
             print(f"error on {src.name}: {e}", file=sys.stderr)
             failed += 1
             continue

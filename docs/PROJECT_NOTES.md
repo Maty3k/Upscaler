@@ -30,7 +30,13 @@ All phases complete and on `main`. Test suite: **21 passing** (CPU, no downloads
 - `realesrgan-x4plus` — general 4x (default)
 - `realesrgan-x2plus` — general 2x (gentler; better for already-decent photos)
 - `realesrgan-x4plus-anime` — illustration / line art
-- `nafnet-gopro-width64` / `width32` — motion deblur (full / lighter)
+- community upscalers via spandrel — `4x-ultrasharp`, `4x-remacri`, NMKD (non-commercial; see notes)
+- `nafnet-gopro-width64` / `width32` — motion deblur; `nafnet-sidd-width64` — denoise
+- FBCNN (JPEG de-block) · GFPGAN / CodeFormer (faces) · DDColor (colorize) ·
+  Big-LaMa (inpaint) · U²-Net (background removal)
+
+Run `upscaler --list-models` (or open Settings → Models & downloads in the GUI)
+for the live list.
 
 Weights are **downloaded lazily on first use**, cached in `upscaler/weights/`
 (gitignored), and verified against pinned SHA-256.
@@ -105,8 +111,9 @@ on an **already-decent photo**.
 - Use **`--scale 2`** (x2plus) for already-good photos — much gentler.
 - Keep **deblur off** unless the image is genuinely motion-blurred (it softens
   sharp images).
-- Faces are a known Real-ESRGAN weakness (waxiness) — needs a face-restoration
-  model (GFPGAN/CodeFormer), not yet added.
+- Faces are a known Real-ESRGAN weakness (waxiness) — that's what the
+  face-restoration stage (GFPGAN/CodeFormer, `--face` / the "Restore faces"
+  accordion) is for.
 - Rule of thumb: **restoration models help bad inputs, hurt good inputs.**
 
 ---
@@ -217,11 +224,11 @@ and CPU fallbacks): [`docs/SETUP-WINDOWS-AMD.md`](SETUP-WINDOWS-AMD.md). Expect
 
 ## 7. Open items / future work
 
-- [ ] **x2 default for photos** — 4x is an aggressive default that degrades good photos.
-- [ ] **Face restoration** (GFPGAN/CodeFormer) option.
+- [x] **x2 default for photos** — available via presets/model dropdown (config default stays x4).
+- [x] **Face restoration** (GFPGAN/CodeFormer) — shipped (`--face`, "Restore faces" accordion).
 - [x] **GUI ONNX toggle** — backend selectable in the GUI's Advanced section.
 - [ ] **Re-host NAFNet weights** under our own account; re-pin checksums.
-- [ ] **CI** — GitHub Actions running `pytest` on the CPU path.
+- [x] **CI** — GitHub Actions running `pytest` on the CPU path (Linux/macOS/Windows).
 - [ ] **Real speed benchmark** — ONNX vs torch on actual hardware (correctness verified, speed not).
 - [ ] **`train/` module** — degradation → dataset → RRDBNet → loss → loop, ROCm-ready (for the training plan above).
 - [x] **Auto-start** the Gradio app so `upscaler.test` survives reboots (LaunchAgent).
