@@ -26,9 +26,13 @@ jobs:
       # Install a CPU-only torch first — it's the slow step, so it must be cached
       # and kept off the GPU wheels. The PyTorch CPU wheel index is used on Linux;
       # macOS/Windows PyPI wheels are already CPU-only, so plain pip is correct there.
+      # torchvision must come from the SAME index in the same resolve: it arrives
+      # transitively via spandrel ([face]) and the PyPI Linux build links against
+      # CUDA torch — mixed with +cpu torch its compiled ops never register
+      # ("operator torchvision::nms does not exist").
       - name: Install CPU torch (Linux)
         if: runner.os == 'Linux'
-        run: pip install "torch>=2.0" --index-url https://download.pytorch.org/whl/cpu
+        run: pip install "torch>=2.0" "torchvision" --index-url https://download.pytorch.org/whl/cpu
 
       - name: Install CPU torch (macOS / Windows)
         if: runner.os != 'Linux'
