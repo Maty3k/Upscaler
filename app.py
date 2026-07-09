@@ -575,11 +575,30 @@ def restore_only(image, deblur_model, restore_strength, sharpen, device, onnx,
 
 def _video_duration(path):
     """Clip length in seconds (0 if unknown)."""
+    import re
     import shutil
     import subprocess
 
+    if not path:
+        return 0
     fp = shutil.which("ffprobe")
-    if not fp or not path:
+    if not fp:
+        # Only the bundled imageio-ffmpeg binary (no ffprobe): parse the
+        # "Duration: HH:MM:SS.cc" line from the `-i` banner instead of giving
+        # up — the trim fields and the compare scrubber both need a length.
+        from upscaler.video import _ffmpeg
+
+        try:
+            info = subprocess.run(
+                [_ffmpeg(), "-hide_banner", "-i", str(path)],
+                capture_output=True, text=True,
+            )
+            m = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", info.stderr or "")
+            if m:
+                h, mnt, s = m.groups()
+                return round(int(h) * 3600 + int(mnt) * 60 + float(s), 1)
+        except (OSError, RuntimeError):
+            pass
         return 0
     out = subprocess.run(
         [fp, "-v", "error", "-show_entries", "format=duration", "-of",
@@ -623,6 +642,29 @@ def _first_frame(video_path, at: float = 0.0):
     return img
 
 
+def _compare_pair(src_path, out_path, at_src: float, at_out: float):
+    """(before, after) frames at matching timestamps for the comparison slider.
+    The before-frame is resized to the after-frame's dimensions so the swipe
+    lines up pixel-for-pixel and shows the detail gained, not two differently
+    sized images."""
+    before = _first_frame(src_path, at=at_src)
+    after = _first_frame(out_path, at=at_out)
+    if before.size != after.size:
+        before = before.resize(after.size, Image.LANCZOS)
+    return before, after
+
+
+def video_compare_at(video_path, out_path, t, trim_start):
+    """Scrub the before/after comparison to ``t`` seconds into the render."""
+    if not (video_path and out_path):
+        return gr.update()
+    start = float(trim_start) if trim_start and trim_start > 0 else 0.0
+    try:
+        return _compare_pair(video_path, out_path, start + float(t), float(t))
+    except Exception:  # seeking past the last frame etc. — keep the old pair
+        return gr.update()
+
+
 def upscale_video_ui(video_path, model, out_size, sharpen, smooth, trim_start,
                      trim_end, device, tile, onnx=False, progress=gr.Progress()):
     if not video_path:
@@ -657,7 +699,10 @@ def upscale_video_ui(video_path, model, out_size, sharpen, smooth, trim_start,
             os.remove(out)
         except OSError:
             pass
-        raise gr.Error("Cancelled — nothing was saved.") from None
+        raise gr.Error(
+            "Cancelled — finished frames are kept, so running the same video "
+            "with the same settings again will pick up where it left off."
+        ) from None
     except (RuntimeError, FileNotFoundError) as e:
         try:  # don't leave the pre-created output tempfile behind on failure
             os.remove(out)
@@ -670,14 +715,19 @@ def upscale_video_ui(video_path, model, out_size, sharpen, smooth, trim_start,
         ) from e
 
     try:
-        compare = (_first_frame(video_path, at=start or 0), _first_frame(out))
+        compare = _compare_pair(video_path, out, start or 0, 0)
     except Exception:
         compare = None
+    # arm the compare scrubber over the rendered clip (stop just short of the
+    # end — seeking exactly to the last timestamp often yields no frame)
+    out_dur = _video_duration(out)
+    scrub = (gr.update(visible=True, value=0.0, maximum=max(out_dur - 0.1, 0.1))
+             if compare and out_dur > 0.2 else gr.update(visible=False))
     extra = (f" · {target}px" if target else "") + (f" · {fps} fps" if fps else "")
     if start or end:
         extra += f" · trim {start or 0:g}–{end if end else 'end'}s"
     library.save_path(out, "video")  # auto-add to the Library
-    return out, compare, f"✅ Done — preview and download below.{extra}"
+    return out, compare, f"✅ Done — preview and download below.{extra}", scrub
 
 
 _CONVERT_METHODS = ["Change image format", "Images → PDF", "PDF → Images"]
@@ -1087,6 +1137,18 @@ def _available_devices() -> "list[str]":
 
 
 _DEVICES = _available_devices()
+
+
+def _dml_available() -> bool:
+    """True when ONNX Runtime can reach a GPU through DirectML (AMD/Intel/NVIDIA
+    on Windows). Used to default the video ONNX toggle on where torch is
+    CPU-only but the GPU is still reachable this way."""
+    try:
+        import onnxruntime as ort
+
+        return "DmlExecutionProvider" in ort.get_available_providers()
+    except Exception:
+        return False
 
 # One-click starting points for the Upscale tab. Each tunes the model + denoise
 # + sharpen for a use-case; restoration always uses SIDD (denoise) since GoPro
@@ -2140,12 +2202,21 @@ def build_demo() -> gr.Blocks:
                                 "memory. Lower this if a render crashes with an "
                                 "out-of-memory error; 0 turns it off.",
                             )
+                            # Default on when it's the only road to the GPU:
+                            # torch resolves to CPU but DirectML can see a GPU
+                            # (the typical AMD-on-Windows setup) — video on CPU
+                            # is painfully slow and nobody finds this toggle.
+                            _vid_onnx_default = device_name == "cpu" and _dml_available()
                             vid_onnx = gr.Checkbox(
-                                value=False, label="Alternative speed engine (ONNX)",
+                                value=_vid_onnx_default,
+                                label="Alternative speed engine (ONNX)",
                                 info="Runs frames without PyTorch. With the "
                                 "DirectML runtime installed this uses your "
                                 "graphics card (AMD included) — much faster than "
-                                "CPU. The first run exports the model.",
+                                "CPU. The first run exports the model."
+                                + (" Turned on for you: your GPU is reachable "
+                                   "via DirectML but not via PyTorch."
+                                   if _vid_onnx_default else ""),
                             )
                         with gr.Accordion("Tips", open=False):
                             gr.Markdown(
@@ -2168,9 +2239,15 @@ def build_demo() -> gr.Blocks:
                     with gr.Column(scale=1, elem_classes="sticky-col"):
                         vid_out = gr.Video(label="Result", buttons=["download"])
                         vid_compare = gr.ImageSlider(
-                            label="First frame — before / after (drag to compare)",
+                            label="Before / after (drag to compare)",
                             type="pil", height=220, buttons=["download", "fullscreen"],
                             elem_classes=["loupe"],
+                        )
+                        vid_scrub = gr.Slider(
+                            0, 1, value=0, step=0.1, visible=False,
+                            label="Compare at (seconds)",
+                            info="Move through the clip to check any moment "
+                            "against the source, not just the first frame.",
                         )
                         vid_info = gr.Markdown()
 
@@ -2837,14 +2914,18 @@ def build_demo() -> gr.Blocks:
             upscale_video_ui,
             [vid_in, vid_model, vid_size, vid_sharpen, vid_smooth, vid_start,
              vid_end, vid_device, vid_tile, vid_onnx],
-            [vid_out, vid_compare, vid_info],
+            [vid_out, vid_compare, vid_info, vid_scrub],
             show_progress_on=[vid_out],
         )
         vid_cancel.click(lambda: _VIDEO_CANCEL.set(), None, None,
                          cancels=[vid_evt])
+        vid_scrub.release(
+            video_compare_at, [vid_in, vid_out, vid_scrub, vid_start],
+            vid_compare, show_progress="hidden",
+        )
         vid_clear.click(
-            lambda: (None, None, None, None), None,
-            [vid_in, vid_out, vid_compare, vid_info],
+            lambda: (None, None, None, None, gr.update(visible=False)), None,
+            [vid_in, vid_out, vid_compare, vid_info, vid_scrub],
         )
         vid_in.change(_on_video_change, vid_in, [vid_start, vid_end])
 
