@@ -196,12 +196,34 @@ def test_text_static_when_motion_none():
 
 
 def test_text_scroll_offsets_by_frame():
+    """Frame 30 of 60 must show the marquee shifted LEFT by half a period.
+
+    Verified by aligning the two frames' column profiles instead of comparing
+    centroids: the layer is tiled along the scroll axis, so with a narrow font
+    several copies are visible and the centroid barely moves (the old centroid
+    assertion flipped sign depending on the platform's default font)."""
     ov = [_text(motion="scroll-left", speed=200)]
     a = _full_canvas(ov, frame_index=0, total_frames=60, fps=30)
     b = _full_canvas(ov, frame_index=30, total_frames=60, fps=30)
-    cx_a, cx_b = _white_centroid_x(a), _white_centroid_x(b)
-    assert cx_a is not None and cx_b is not None
-    assert cx_b < cx_a  # scrolled left
+    pa = (np.asarray(a.convert("L")) > 200).sum(axis=0).astype(float)
+    pb = (np.asarray(b.convert("L")) > 200).sum(axis=0).astype(float)
+    assert pa.any() and pb.any()
+
+    # Reproduce the compositor's own geometry: rendering frame 0 pinned the
+    # text extent on the overlay (_scroll_span), from which the period and the
+    # whole-cycles-per-clip snapping follow.
+    period = ov[0]["_scroll_span"] + max(int(1920 * 0.25), 40)
+    cycles = max(1, round(200 * (60 / 30) / period))
+    expect = round((0.5 * cycles * period) % period)
+
+    # scroll-left ⇒ pb[x] == pa[x + expect] on the overlapping columns. The
+    # best-aligning shift must land on the expected one (±2px for the per-copy
+    # int() paste rounding). A right-scroll would align near period - expect.
+    def err(s):
+        return float(np.abs(pa[s:] - pb[: pa.size - s]).mean())
+
+    best = min(range(min(period, pa.size - 200)), key=err)
+    assert abs(best - expect) <= 2
 
 
 def test_typewriter_reveals_chars():
