@@ -32,11 +32,19 @@ from upscaler.models.weights import ensure_weights
 
 
 def _empty_cache(device: torch.device) -> None:
-    """Release cached blocks so the CPU retry isn't fighting the failed run."""
-    if device.type == "cuda":
-        torch.cuda.empty_cache()
-    elif device.type == "mps" and hasattr(torch, "mps"):
-        torch.mps.empty_cache()
+    """Release cached blocks so the CPU retry isn't fighting the failed run.
+
+    Best-effort: `torch.mps` exists on machines with no Metal backend at all
+    and raises when called, and we'd rather run the retry than propagate a
+    failure to free memory we were about to stop using anyway.
+    """
+    try:
+        if device.type == "cuda" and torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        elif device.type == "mps" and torch.backends.mps.is_available():
+            torch.mps.empty_cache()
+    except (RuntimeError, AttributeError):
+        pass
 
 
 # Peak working set per (model width x pixel), measured on CPU by running the

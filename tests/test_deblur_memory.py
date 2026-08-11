@@ -124,3 +124,16 @@ def test_non_oom_error_still_propagates(monkeypatch):
 def test_too_large_is_a_runtimeerror_for_existing_handlers():
     # app.py and cli.py both catch RuntimeError around the restore stage.
     assert issubclass(DeblurTooLargeError, RuntimeError)
+
+
+def test_empty_cache_is_a_noop_without_the_backend(monkeypatch):
+    # torch.mps exists on Linux/Windows runners and raises when called; freeing
+    # a cache we're about to abandon must never sink the retry.
+    monkeypatch.setattr(torch.backends.mps, "is_available", lambda: False)
+    monkeypatch.setattr(
+        torch.mps, "empty_cache",
+        lambda: (_ for _ in ()).throw(RuntimeError("no MPS backend")),
+    )
+    from upscaler.deblur import _empty_cache
+
+    _empty_cache(torch.device("mps"))  # must not raise
