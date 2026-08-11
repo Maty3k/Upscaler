@@ -38,7 +38,7 @@ from PIL import Image
 from upscaler import background, config, library, manage, panel
 from upscaler.convert import FORMATS, convert, extension_for
 from upscaler.document import images_to_pdf, pdf_to_images
-from upscaler.deblur import Deblurrer
+from upscaler.deblur import Deblurrer, DeblurTooLargeError
 from upscaler.engine import CancelledError, Upscaler, resolve_device
 from upscaler.models.registry import (
     COLORIZE_MODELS,
@@ -464,7 +464,16 @@ def enhance(image, model, device, deblur, deblur_model, restore_strength, sharpe
                             should_cancel=_ENHANCE_CANCEL.is_set)
     except CancelledError:
         raise gr.Error("Cancelled — nothing was saved.") from None
+    except DeblurTooLargeError as e:
+        raise gr.Error(str(e)) from e  # already worded for the user
     except (RuntimeError, AssertionError, OSError, ValueError) as e:
+        if "out of memory" in str(e).lower():
+            # Blaming the device / the download here sends people hunting in the
+            # wrong place — the image is simply too big for the GPU.
+            raise gr.Error(
+                "Ran out of GPU memory on this image. Try a smaller Tile size, "
+                "turn off Clean up, or scale the image down before enhancing."
+            ) from e
         raise gr.Error(
             "Couldn't run the enhancement. If you set a specific Device "
             "(cuda / mps) your machine may not support it — try \"auto\". Models "
