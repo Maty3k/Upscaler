@@ -5,14 +5,18 @@ image (it pads internally to a valid size) rather than tiled — tiling would
 introduce seams. Deblur is meant to run at the image's native resolution,
 *before* upscaling, so memory is usually fine — but a large photo (say 12MP)
 holds full-resolution activations for every encoder stage at once and does
-overflow a GPU. Since tiling isn't an option, `deblur` retries on CPU: slower,
-but the same pixels, and it beats failing the whole job.
+overflow a GPU. Since tiling isn't an option, `deblur` recovers by shrinking
+the activations instead, cheapest first:
 
-That retry is only worth taking if the result fits in RAM. On a machine with
-less memory than the image needs, torch doesn't fail — it pages, and a job that
-would have errored in seconds instead crawls for hours while the whole system
-swaps. So the fallback is gated on an estimate first, and refuses with an
-actionable message when the image can't fit.
+1. half precision on the same device — halves every activation, and a
+   2560x1440 image that overflows float32 on an 8 GB M2 finishes in ~27s;
+2. CPU in float32 — same pixels, but minutes rather than seconds;
+3. refuse, when even CPU would have to page.
+
+Step 3 matters as much as the others. On a machine with less memory than the
+image needs, torch doesn't fail — it pages, and a job that would have errored
+in seconds instead crawls for hours while the whole system swaps. So the CPU
+step is gated on an estimate and refuses with an actionable message.
 """
 
 from __future__ import annotations
@@ -57,6 +61,37 @@ _PEAK_BYTES_PER_UNIT = 40
 # app itself (~700 MB with weights loaded), and the margin that keeps an
 # estimate this rough from tipping the machine into swap.
 _RAM_BUDGET = 0.5
+
+# Backends where reduced-precision inference is a real speedup rather than an
+# emulated slowdown — on CPU it runs on software kernels and would be slower
+# than the float32 run we're recovering from.
+_HALF_PRECISION_DEVICES = frozenset({"cuda", "mps"})
+
+# bfloat16, NOT float16. LayerNorm2d's eps of 1e-6 is below float16's smallest
+# normal (6.1e-5), so in fp16 it underflows to zero and the normalize divides
+# by an unprotected sqrt(var) — output stays finite but saturates (measured:
+# 150/255 mean error, only 34% of pixels intact). bfloat16 keeps float32's
+# exponent range, so eps survives: 1.4/255 mean error, 99.4% of pixels
+# identical after 8-bit rounding.
+_HALF_DTYPE = torch.bfloat16
+
+
+def _device_budget_bytes(device: torch.device) -> Optional[int]:
+    """What the accelerator says it can spare, or None if it won't say.
+
+    MPS reports a recommended working-set size (5.33 GiB on an 8 GB M2, well
+    under the allocator's nominal ceiling); CUDA reports what is free right
+    now, which is the number that matters when other processes hold memory.
+    """
+    try:
+        if device.type == "mps" and torch.backends.mps.is_available():
+            return int(torch.mps.recommended_max_memory()) or None
+        if device.type == "cuda" and torch.cuda.is_available():
+            free, _total = torch.cuda.mem_get_info(device)
+            return int(free) or None
+    except (RuntimeError, AttributeError, AssertionError):
+        return None
+    return None
 
 
 class DeblurTooLargeError(RuntimeError):
@@ -119,15 +154,27 @@ class Deblurrer:
         net.to(self.device)
         self.net = net
 
-    def _run(self, x: torch.Tensor, device: torch.device) -> np.ndarray:
-        """Run the net on `device`, returning HWC float output on the host."""
-        self.net.to(device)
-        y = self.net(x.to(device))
-        return y.clamp_(0, 1).squeeze(0).permute(1, 2, 0).float().cpu().numpy()
+    def _run(self, x: torch.Tensor, device: torch.device,
+             dtype: torch.dtype = torch.float32) -> np.ndarray:
+        """Run the net on `device` in `dtype`, returning HWC float32 on the host."""
+        try:
+            self.net.to(device=device, dtype=dtype)
+            y = self.net(x.to(device=device, dtype=dtype))
+            return y.float().clamp_(0, 1).squeeze(0).permute(1, 2, 0).cpu().numpy()
+        finally:
+            # Leave the model where (and how) callers expect to find it.
+            self.net.to(device=self.device, dtype=torch.float32)
 
-    def estimate_bytes(self, width_px: int, height_px: int) -> int:
-        """Rough peak working set for deblurring an image of this size."""
-        return _PEAK_BYTES_PER_UNIT * self.spec.width * width_px * height_px
+    def estimate_bytes(self, width_px: int, height_px: int,
+                       dtype: torch.dtype = torch.float32) -> int:
+        """Rough peak working set for deblurring an image of this size.
+
+        The constant was fitted at float32; half precision halves every
+        activation, so scale by the element size.
+        """
+        scale = torch.empty((), dtype=dtype).element_size() / 4
+        return int(_PEAK_BYTES_PER_UNIT * self.spec.width * width_px
+                   * height_px * scale)
 
     def _check_cpu_headroom(self, width_px: int, height_px: int) -> None:
         """Raise DeblurTooLargeError if a CPU run would page instead of fit."""
@@ -153,12 +200,13 @@ class Deblurrer:
     def deblur(self, image: Image.Image) -> Image.Image:
         """Deblur a PIL image, returning a same-resolution result.
 
-        Falls back to CPU if the accelerator runs out of memory, provided the
-        image fits in RAM — see the module docstring for why this can't be
-        solved by tiling, and why the fallback has to be gated.
+        Starts in the widest precision the device can hold, then on an OOM
+        retries reduced precision and finally CPU — see `_retry_after_oom` for
+        why that order, and the module docstring for why tiling isn't the
+        answer instead.
 
-        Raises DeblurTooLargeError (message fit to show the user) when neither
-        the accelerator nor RAM can hold the image.
+        Raises DeblurTooLargeError (message fit to show the user) when nothing
+        in that ladder can hold the image.
         """
         rgb = image.convert("RGB")
         # A CPU-only machine gets the same answer up front, without waiting for
@@ -167,23 +215,106 @@ class Deblurrer:
             self._check_cpu_headroom(rgb.width, rgb.height)
         x = torch.from_numpy(np.asarray(rgb, dtype=np.float32) / 255.0)
         x = x.permute(2, 0, 1).unsqueeze(0)
+
+        dtype = self._starting_dtype(rgb.width, rgb.height)
+        out = None
         try:
-            out = self._run(x, self.device)
+            out = self._run(x, self.device, dtype)
         except RuntimeError as e:
             if self.device.type == "cpu" or "out of memory" not in str(e).lower():
                 raise
-            _empty_cache(self.device)
-            try:
-                self._check_cpu_headroom(rgb.width, rgb.height)
-            except DeblurTooLargeError as too_big:
-                raise too_big from e
+        # Reduced precision can finish and still be garbage, so a successful
+        # run is only accepted once it's checked.
+        if out is not None and dtype is not torch.float32 and not np.isfinite(out).all():
             print(
-                f"clean-up: {self.device.type} ran out of memory on a "
-                f"{rgb.width}x{rgb.height} image — retrying on CPU (slower)",
+                "clean-up: reduced precision produced non-finite values — "
+                "falling back to CPU",
                 file=sys.stderr,
             )
-            try:
-                out = self._run(x, torch.device("cpu"))
-            finally:
-                self.net.to(self.device)  # leave the model where callers expect it
+            out = None
+
+        # Deliberately outside the except block: the exception's traceback pins
+        # every frame of the failed forward pass, and with them the activations
+        # we just ran out of room for. Retrying inside the handler retries
+        # against a device that is still full — bfloat16 needs half the memory
+        # and still OOMs there. Leaving the block drops `e` and frees them.
+        if out is None:
+            out = self._retry_after_oom(x, rgb.width, rgb.height,
+                                        skip_half=dtype is not torch.float32)
         return Image.fromarray(np.round(out * 255.0).astype(np.uint8), mode="RGB")
+
+    def _starting_dtype(self, width_px: int, height_px: int) -> torch.dtype:
+        """Pick the precision to open with, skipping a run doomed to OOM.
+
+        Letting float32 fail first costs the whole forward pass — ~45s of the
+        ~72s a 2560x1440 image took on an 8 GB M2, all of it thrown away. When
+        the device reports a budget and float32 clearly exceeds it, start at
+        reduced precision and spend that time on the run that can finish.
+        """
+        if self.device.type not in _HALF_PRECISION_DEVICES:
+            return torch.float32
+        budget = _device_budget_bytes(self.device)
+        if budget is None:
+            return torch.float32
+        if self.estimate_bytes(width_px, height_px) <= budget:
+            return torch.float32
+        if self.estimate_bytes(width_px, height_px, _HALF_DTYPE) > budget:
+            return torch.float32  # neither fits; let the ladder reach CPU
+        gb = 1 << 30
+        print(
+            f"clean-up: float32 needs about "
+            f"{self.estimate_bytes(width_px, height_px) / gb:.1f} GB for a "
+            f"{width_px}x{height_px} image and {self.device.type} offers "
+            f"{budget / gb:.1f} GB — starting in "
+            f"{str(_HALF_DTYPE).replace('torch.', '')}",
+            file=sys.stderr,
+        )
+        return _HALF_DTYPE
+
+    def _retry_after_oom(self, x: torch.Tensor, width_px: int, height_px: int,
+                         skip_half: bool = False) -> np.ndarray:
+        """Recover from an accelerator OOM, cheapest option first.
+
+        Half precision halves every activation and stays on the GPU: measured
+        on an 8 GB M2, a 2560x1440 image that overflows float32 finishes in
+        ~27s in bfloat16. The same image on CPU is minutes at best, and pages
+        into hours if it doesn't fit in RAM. So bf16 is tried first, and CPU
+        is the last resort rather than the first.
+
+        Any failure in the bf16 attempt (out of memory, or a backend that
+        can't do bfloat16 at all) just falls through to CPU — we're already
+        recovering, and the original error is the one worth reporting.
+
+        Must be called after leaving the handler for the original OOM, so the
+        memory that failed has actually been released.
+        """
+        _empty_cache(self.device)
+        if not skip_half and self.device.type in _HALF_PRECISION_DEVICES:
+            try:
+                out = self._run(x, self.device, _HALF_DTYPE)
+            except (RuntimeError, TypeError):
+                _empty_cache(self.device)
+            else:
+                # Cheap insurance against a run that "succeeds" into garbage.
+                if np.isfinite(out).all():
+                    print(
+                        f"clean-up: {self.device.type} ran out of memory on a "
+                        f"{width_px}x{height_px} image — retried in "
+                        f"{str(_HALF_DTYPE).replace('torch.', '')}",
+                        file=sys.stderr,
+                    )
+                    return out
+                print(
+                    "clean-up: reduced precision produced non-finite values — "
+                    "falling back to CPU",
+                    file=sys.stderr,
+                )
+                _empty_cache(self.device)
+
+        self._check_cpu_headroom(width_px, height_px)  # raises DeblurTooLargeError
+        print(
+            f"clean-up: {self.device.type} ran out of memory on a "
+            f"{width_px}x{height_px} image — retrying on CPU (slower)",
+            file=sys.stderr,
+        )
+        return self._run(x, torch.device("cpu"))
