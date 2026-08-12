@@ -14,9 +14,12 @@ import onnxruntime as ort
 from PIL import Image
 
 from upscaler.engine import (CancelledError, OutputTooLargeError,
-                             _OUTPUT_BYTES_PER_PIXEL)
-from upscaler.memory import (available_ram_bytes, budget_from,
-                             describe_shortfall, total_ram_bytes)
+                             _INPUT_BYTES_PER_PIXEL, _OUTPUT_BYTES_PER_PIXEL,
+                             _fixed_working_set_bytes)
+from upscaler.memory import (AVAILABLE_BUDGET, RAM_BUDGET,
+                             available_ram_bytes, budget_from,
+                             describe_shortfall, device_budget_bytes,
+                             total_ram_bytes)
 from upscaler.models.registry import (
     DeblurSpec,
     ModelSpec,
@@ -77,6 +80,13 @@ class OnnxUpscaler:
         self.tile_pad = tile_pad
         self.sess = _session(export_upscale(self.spec), device)
         self.provider = self.sess.get_providers()[0]
+        # Which side of the measured fixed-cost table the guard should read.
+        # DirectML has no torch backend to ask for a budget; it still uses the
+        # accelerator working-set numbers, torch being the only place they
+        # were measured.
+        self._device_type = {"CUDAExecutionProvider": "cuda",
+                             "DmlExecutionProvider": "dml"}.get(
+                                 self.provider, "cpu")
         self._inp = self.sess.get_inputs()[0].name
 
     def _run(self, x: np.ndarray) -> np.ndarray:
@@ -103,42 +113,81 @@ class OnnxUpscaler:
         self.check_output_fits(image.width, image.height)
         x = _to_chw(image)
         if self.tile > 0:
-            out = self._run_tiled(x, progress_cb=progress_cb, should_cancel=should_cancel)
-        else:
-            if should_cancel and should_cancel():
-                raise CancelledError("Cancelled.")
-            out = self._run(x)
-            if progress_cb:
-                progress_cb(1, 1)
+            # The tiler quantizes straight into a uint8 buffer.
+            return Image.fromarray(
+                self._run_tiled(x, progress_cb=progress_cb,
+                                should_cancel=should_cancel),
+                mode="RGB",
+            )
+        if should_cancel and should_cancel():
+            raise CancelledError("Cancelled.")
+        out = self._run(x)
+        if progress_cb:
+            progress_cb(1, 1)
+        del x  # mirror the torch engine: the input is dead weight now
         return _to_image(out)
 
     def output_bytes(self, width_px: int, height_px: int) -> int:
-        """Peak host memory the result will occupy — same shape as the torch
+        """Host memory the result will occupy — same shape as the torch
         engine's, since the output buffers and conversions are the same."""
         s = self.scale
         return _OUTPUT_BYTES_PER_PIXEL * width_px * s * height_px * s
 
     def check_output_fits(self, width_px: int, height_px: int) -> None:
-        """Raise OutputTooLargeError if the result can't be held in memory.
+        """Raise OutputTooLargeError if this run can't be held in memory.
 
-        The ONNX path allocates the same whole-output buffer as the torch one,
-        so it needs the same guard — a DirectML GPU doesn't make host memory
-        any bigger.
+        The ONNX path builds the same buffers and drives the same per-tile
+        working set as the torch one (the fixed-cost table was measured on the
+        torch engine and is reused here as the best available number), so it
+        gets the same three-part guard — a DirectML GPU doesn't make host
+        memory any bigger.
         """
-        budget = budget_from(total_ram_bytes(), available_ram_bytes())
+        fixed = _fixed_working_set_bytes(self._device_type, self.scale,
+                                         self.tile, width_px, height_px,
+                                         self.tile_pad)
+        gb = 1 << 30
+        if self._device_type != "cpu":
+            dev_budget = device_budget_bytes(self._device_type)
+            if dev_budget is not None and fixed > dev_budget:
+                per = (f"at Tile size {self.tile}" if self.tile > 0 else
+                       f"untiled at {width_px}x{height_px}")
+                raise OutputTooLargeError(
+                    f"The model needs about {fixed / gb:.1f} GB of working "
+                    f"memory {per}, and the GPU can spare about "
+                    f"{dev_budget / gb:.1f} GB. Lower the Tile size (working "
+                    f"memory grows with its square), or close some apps and "
+                    f"try again."
+                )
+        total, available = total_ram_bytes(), available_ram_bytes()
+        budget = budget_from(total, available)
         if budget is None:
             return
-        need = self.output_bytes(width_px, height_px)
+        if self.tile > 0 and total is not None and available is not None:
+            # Same exemption as the torch engine (see its check_output_fits):
+            # the tiled fixed working set is a bounded, measured resident
+            # allocation and answers only to free RAM; the half-of-total
+            # calibration share keeps guarding the transient buffers.
+            budget = min(int(available * AVAILABLE_BUDGET),
+                         int(total * RAM_BUDGET) + fixed)
+        need = (fixed + _INPUT_BYTES_PER_PIXEL * width_px * height_px
+                + self.output_bytes(width_px, height_px))
         if need <= budget:
             return
-        gb = 1 << 30
-        room = describe_shortfall(need, total_ram_bytes(), available_ram_bytes())
-        max_px = budget / (_OUTPUT_BYTES_PER_PIXEL * self.scale * self.scale)
+        room = describe_shortfall(need, total, available)
+        headroom = budget - fixed
+        per_px = (_INPUT_BYTES_PER_PIXEL
+                  + _OUTPUT_BYTES_PER_PIXEL * self.scale * self.scale)
+        if headroom > 0:
+            advice = (f"Use a smaller scale, start from an image of about "
+                      f"{headroom / per_px / 1e6:.1f} megapixels, or set a "
+                      f"smaller Output size.")
+        else:
+            advice = ("Use a smaller scale, lower the Tile size (working "
+                      "memory grows with its square), or close some apps and "
+                      "try again.")
         raise OutputTooLargeError(
             f"A x{self.scale} upscale of {width_px}x{height_px} needs about "
-            f"{need / gb:.1f} GB, and {room}. Use a smaller scale, start from "
-            f"an image of about {max_px / 1e6:.1f} megapixels, or set a "
-            f"smaller Output size."
+            f"{need / gb:.1f} GB, and {room}. {advice}"
         )
 
     def upscale_file(self, src, dst) -> Image.Image:
@@ -152,10 +201,16 @@ class OnnxUpscaler:
         progress_cb: ProgressCb = None,
         should_cancel: CancelCb = None,
     ) -> np.ndarray:
-        """numpy mirror of engine.tiled inference (RRDBNet is fully local)."""
-        b, c, h, w = x.shape
+        """numpy mirror of engine.tiled inference (RRDBNet is fully local).
+
+        Mirrors the uint8 accumulator too: the tile grid partitions the
+        output and quantization is elementwise, so quantizing each tile as it
+        lands is bit-identical to quantizing a stitched float image at a
+        quarter of the accumulator's memory.
+        """
+        _b, _c, h, w = x.shape
         s = self.scale
-        out = np.zeros((b, c, h * s, w * s), dtype=np.float32)
+        out = np.empty((h * s, w * s, 3), dtype=np.uint8)
         n_x = (w + self.tile - 1) // self.tile
         n_y = (h + self.tile - 1) // self.tile
         total = n_x * n_y
@@ -171,7 +226,11 @@ class OnnxUpscaler:
                 tile_out = self._run(x[:, :, py0:py1, px0:px1])
                 ox0, oy0 = (x0 - px0) * s, (y0 - py0) * s
                 ox1, oy1 = ox0 + (x1 - x0) * s, oy0 + (y1 - y0) * s
-                out[:, :, y0 * s:y1 * s, x0 * s:x1 * s] = tile_out[:, :, oy0:oy1, ox0:ox1]
+                # same clip/round/cast sequence `_to_image` applies, per tile
+                crop = np.clip(tile_out[0, :, oy0:oy1, ox0:ox1], 0.0, 1.0)
+                out[y0 * s:y1 * s, x0 * s:x1 * s] = (
+                    np.round(crop.transpose(1, 2, 0) * 255.0).astype(np.uint8)
+                )
                 done += 1
                 if progress_cb:
                     progress_cb(done, total)
