@@ -1891,6 +1891,28 @@ def build_demo() -> gr.Blocks:
                                 for _pname in UPSCALE_PRESETS
                             ]
                         preset_info = gr.Markdown()
+                        out_size = gr.Dropdown(
+                            list(_SIZE_PRESETS) + list(fit.TARGET_PRESETS)
+                            + [_EXACT_CUSTOM],
+                            value="Model default (×2/×4)",
+                            label="Output size", filterable=True,
+                            info="Top entries shrink the longest edge and keep the "
+                            "shape. The ones with two numbers (3440×1440, phones, "
+                            "tablets) land on that exact size — the image is cropped "
+                            "to fit the new shape first.",
+                        )
+                        custom_size = gr.Textbox(
+                            value="", visible=False, label="Custom size",
+                            placeholder="3440x1440",
+                            info="Width × height in pixels. The image is cropped to "
+                            "this shape, then enlarged and fitted to it exactly.",
+                        )
+                        crop_anchor = gr.Dropdown(
+                            list(fit.ANCHORS), value="center", visible=False,
+                            label="Keep which part", filterable=False,
+                            info="Which part of the photo to keep when the crop has "
+                            "to cut something — top is usually right for portraits.",
+                        )
                         model = gr.Dropdown(
                             _MODEL_CHOICES, value=_cfg_model,
                             label="Upscale model", filterable=True,
@@ -1915,28 +1937,6 @@ def build_demo() -> gr.Blocks:
                                 "couple. UltraSharp/Remacri are non-commercial.*",
                                 elem_classes="notes",
                             )
-                        out_size = gr.Dropdown(
-                            list(_SIZE_PRESETS) + list(fit.TARGET_PRESETS)
-                            + [_EXACT_CUSTOM],
-                            value="Model default (×2/×4)",
-                            label="Output size", filterable=True,
-                            info="Top entries shrink the longest edge and keep the "
-                            "shape. The ones with two numbers (3440×1440, phones, "
-                            "tablets) land on that exact size — the image is cropped "
-                            "to fit the new shape first.",
-                        )
-                        custom_size = gr.Textbox(
-                            value="", visible=False, label="Custom size",
-                            placeholder="3440x1440",
-                            info="Width × height in pixels. The image is cropped to "
-                            "this shape, then enlarged and fitted to it exactly.",
-                        )
-                        crop_anchor = gr.Dropdown(
-                            list(fit.ANCHORS), value="center", visible=False,
-                            label="Keep which part", filterable=False,
-                            info="Which part of the photo to keep when the crop has "
-                            "to cut something — top is usually right for portraits.",
-                        )
                         sharpen = gr.Slider(
                             0.0, 3.0, value=0.0, step=0.1,
                             label="Sharpen edges — 0 = off",
