@@ -13,7 +13,10 @@ import numpy as np
 import onnxruntime as ort
 from PIL import Image
 
-from upscaler.engine import CancelledError
+from upscaler.engine import (CancelledError, OutputTooLargeError,
+                             _OUTPUT_BYTES_PER_PIXEL)
+from upscaler.memory import (available_ram_bytes, budget_from,
+                             describe_shortfall, total_ram_bytes)
 from upscaler.models.registry import (
     DeblurSpec,
     ModelSpec,
@@ -97,6 +100,7 @@ class OnnxUpscaler:
     ) -> Image.Image:
         """Mirror of the torch engine's signature, so callers can drive per-tile
         progress and cooperative cancel regardless of backend."""
+        self.check_output_fits(image.width, image.height)
         x = _to_chw(image)
         if self.tile > 0:
             out = self._run_tiled(x, progress_cb=progress_cb, should_cancel=should_cancel)
@@ -107,6 +111,35 @@ class OnnxUpscaler:
             if progress_cb:
                 progress_cb(1, 1)
         return _to_image(out)
+
+    def output_bytes(self, width_px: int, height_px: int) -> int:
+        """Peak host memory the result will occupy — same shape as the torch
+        engine's, since the output buffers and conversions are the same."""
+        s = self.scale
+        return _OUTPUT_BYTES_PER_PIXEL * width_px * s * height_px * s
+
+    def check_output_fits(self, width_px: int, height_px: int) -> None:
+        """Raise OutputTooLargeError if the result can't be held in memory.
+
+        The ONNX path allocates the same whole-output buffer as the torch one,
+        so it needs the same guard — a DirectML GPU doesn't make host memory
+        any bigger.
+        """
+        budget = budget_from(total_ram_bytes(), available_ram_bytes())
+        if budget is None:
+            return
+        need = self.output_bytes(width_px, height_px)
+        if need <= budget:
+            return
+        gb = 1 << 30
+        room = describe_shortfall(need, total_ram_bytes(), available_ram_bytes())
+        max_px = budget / (_OUTPUT_BYTES_PER_PIXEL * self.scale * self.scale)
+        raise OutputTooLargeError(
+            f"A x{self.scale} upscale of {width_px}x{height_px} needs about "
+            f"{need / gb:.1f} GB, and {room}. Use a smaller scale, start from "
+            f"an image of about {max_px / 1e6:.1f} megapixels, or set a "
+            f"smaller Output size."
+        )
 
     def upscale_file(self, src, dst) -> Image.Image:
         result = self.upscale(Image.open(src))

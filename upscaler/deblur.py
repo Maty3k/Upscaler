@@ -21,7 +21,6 @@ step is gated on an estimate and refuses with an actionable message.
 
 from __future__ import annotations
 
-import os
 import sys
 from typing import Optional
 
@@ -30,6 +29,13 @@ import torch
 from PIL import Image
 
 from upscaler.engine import _load_state_dict, resolve_device
+from upscaler.memory import (AVAILABLE_BUDGET as _AVAILABLE_BUDGET,
+                             RAM_BUDGET as _RAM_BUDGET,
+                             available_ram_bytes as _available_ram_bytes,
+                             budget_from as _budget_from,
+                             device_budget_bytes as _device_budget_bytes,
+                             describe_shortfall as _describe_shortfall,
+                             total_ram_bytes as _total_ram_bytes)
 from upscaler.models.nafnet import NAFNet
 from upscaler.models.registry import DeblurSpec, resolve_deblur_model
 from upscaler.models.weights import ensure_weights
@@ -57,17 +63,6 @@ def _empty_cache(device: torch.device) -> None:
 # demanded at that size — close enough to size a guard with.
 _PEAK_BYTES_PER_UNIT = 40
 
-# Fraction of total RAM the deblur may plan to occupy. The rest is the OS, the
-# app itself (~700 MB with weights loaded), and the margin that keeps an
-# estimate this rough from tipping the machine into swap.
-_RAM_BUDGET = 0.5
-
-# Fraction of *currently free* RAM it may take. Total-RAM sizing alone isn't
-# enough: the same 2560x1440 image that ran in 31s in a fresh process thrashed
-# for minutes in a long-lived server on the same 8 GB machine, because the
-# memory was there in principle and gone in practice.
-_AVAILABLE_BUDGET = 0.8
-
 # Backends where reduced-precision inference is a real speedup rather than an
 # emulated slowdown — on CPU it runs on software kernels and would be slower
 # than the float32 run we're recovering from.
@@ -82,88 +77,6 @@ _HALF_PRECISION_DEVICES = frozenset({"cuda", "mps"})
 _HALF_DTYPE = torch.bfloat16
 
 
-if sys.platform == "win32":  # module scope so both RAM probes can use it
-    import ctypes
-
-    class _MemStatus(ctypes.Structure):
-        _fields_ = [("dwLength", ctypes.c_ulong),
-                    ("dwMemoryLoad", ctypes.c_ulong),
-                    ("ullTotalPhys", ctypes.c_ulonglong),
-                    ("ullAvailPhys", ctypes.c_ulonglong),
-                    ("ullTotalPageFile", ctypes.c_ulonglong),
-                    ("ullAvailPageFile", ctypes.c_ulonglong),
-                    ("ullTotalVirtual", ctypes.c_ulonglong),
-                    ("ullAvailVirtual", ctypes.c_ulonglong),
-                    ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
-
-
-def _available_ram_bytes() -> Optional[int]:
-    """RAM that could be handed out right now, or None if the platform won't say.
-
-    Deliberately counts only what the OS considers reclaimable without paging:
-    MemAvailable on Linux, ullAvailPhys on Windows, and free + inactive +
-    purgeable pages on macOS (its "free" alone is near zero on a warm machine
-    and would refuse everything).
-    """
-    try:  # Linux
-        with open("/proc/meminfo") as fh:
-            for line in fh:
-                if line.startswith("MemAvailable:"):
-                    return int(line.split()[1]) * 1024
-    except OSError:
-        pass
-
-    if sys.platform == "darwin":
-        try:
-            import re
-            import subprocess
-
-            out = subprocess.run(["vm_stat"], capture_output=True, text=True,
-                                 timeout=5).stdout
-            page = int(re.search(r"page size of (\d+)", out).group(1))
-            free = 0
-            for label in ("Pages free", "Pages inactive", "Pages purgeable"):
-                m = re.search(rf"{label}:\s+(\d+)", out)
-                if m:
-                    free += int(m.group(1))
-            return free * page or None
-        except Exception:
-            return None
-
-    try:  # Windows
-        import ctypes
-
-        stat = _MemStatus()
-        stat.dwLength = ctypes.sizeof(_MemStatus)
-        ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat))
-        return int(stat.ullAvailPhys) or None
-    except Exception:
-        return None
-
-
-def _device_budget_bytes(device: torch.device) -> Optional[int]:
-    """What the accelerator says it can spare, or None if it won't say.
-
-    MPS reports a recommended working-set size (5.33 GiB on an 8 GB M2, well
-    under the allocator's nominal ceiling) — but that figure is static, and on
-    unified memory the GPU is drawing from the same pool as everything else, so
-    it's capped by what's actually free. CUDA already reports live free memory.
-    """
-    try:
-        if device.type == "mps" and torch.backends.mps.is_available():
-            budget = int(torch.mps.recommended_max_memory())
-            available = _available_ram_bytes()
-            if available is not None:
-                budget = min(budget, int(available * _AVAILABLE_BUDGET))
-            return budget or None
-        if device.type == "cuda" and torch.cuda.is_available():
-            free, _total = torch.cuda.mem_get_info(device)
-            return int(free) or None
-    except (RuntimeError, AttributeError, AssertionError):
-        return None
-    return None
-
-
 class DeblurTooLargeError(RuntimeError):
     """The image can't be cleaned up in the memory this machine has.
 
@@ -171,38 +84,13 @@ class DeblurTooLargeError(RuntimeError):
     """
 
 
-def _total_ram_bytes() -> Optional[int]:
-    """Physical RAM, or None if the platform won't say."""
-    try:
-        return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
-    except (ValueError, OSError, AttributeError):
-        pass
-    try:  # Windows has no sysconf
-        import ctypes
-
-        stat = _MemStatus()
-        stat.dwLength = ctypes.sizeof(_MemStatus)
-        ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat))
-        return int(stat.ullTotalPhys) or None
-    except Exception:
-        return None
-
-
 def _memory_budget(width_px: int, height_px: int) -> Optional[int]:
     """Bytes the deblur may plan to use, or None if nothing can be measured.
 
-    The tighter of "a share of the machine" and "a share of what's free right
-    now" — the first keeps a quiet machine from being over-committed, the
-    second keeps a busy one from paging.
+    Reads the module-level probes rather than calling into upscaler.memory
+    directly, so tests can pin this module's view of the machine.
     """
-    limits = []
-    total = _total_ram_bytes()
-    if total is not None:
-        limits.append(int(total * _RAM_BUDGET))
-    available = _available_ram_bytes()
-    if available is not None:
-        limits.append(int(available * _AVAILABLE_BUDGET))
-    return min(limits) if limits else None
+    return _budget_from(_total_ram_bytes(), _available_ram_bytes())
 
 
 class Deblurrer:
@@ -261,26 +149,15 @@ class Deblurrer:
         if need <= budget:
             return
         gb = 1 << 30
-        total = _total_ram_bytes()
-        available = _available_ram_bytes()
-        # Say which wall was hit: "buy more RAM" and "close some tabs" are very
-        # different pieces of advice.
-        if (total is not None and available is not None
-                and available * _AVAILABLE_BUDGET < total * _RAM_BUDGET):
-            room = (f"only {available / gb:.1f} GB is free right now (of "
-                    f"{total / gb:.0f} GB). Close some apps and try again, or "
-                    f"turn off Clean up")
-        elif total is not None:
-            room = f"this machine has {total / gb:.0f} GB of RAM. Turn off Clean up"
-        else:
-            room = "there isn't enough free memory. Turn off Clean up"
+        room = _describe_shortfall(need, _total_ram_bytes(), _available_ram_bytes())
         max_px = budget // (_PEAK_BYTES_PER_UNIT * self.spec.width)
         smaller = "" if self.spec.width <= 32 else (
             ", switch to a width-32 clean-up model (about half the memory)")
         raise DeblurTooLargeError(
             f"Clean-up needs roughly {need / gb:.1f} GB for a "
-            f"{width_px}x{height_px} image, and {room}{smaller}, or scale "
-            f"the image down to about {max_px / 1e6:.1f} megapixels first."
+            f"{width_px}x{height_px} image, and {room}. Turn off Clean "
+            f"up{smaller}, or scale the image down to about "
+            f"{max_px / 1e6:.1f} megapixels first."
         )
 
     @torch.inference_mode()

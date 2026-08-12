@@ -11,9 +11,27 @@ import torch
 from PIL import Image
 from torch.nn import functional as F
 
+from upscaler.memory import (available_ram_bytes, budget_from,
+                             describe_shortfall, total_ram_bytes)
 from upscaler.models.registry import ModelSpec, resolve_model
 from upscaler.models.rrdbnet import RRDBNet
 from upscaler.models.weights import ensure_weights
+
+# Bytes of host memory per *output* pixel at the peak of `upscale`. Traceable
+# to specific allocations rather than fitted: the float32 accumulation buffer
+# `_run_tiled` builds is 3 channels x 4 bytes = 12, `np.round(out * 255.0)`
+# makes a second float32 array of the same shape (12) while the first is still
+# alive, and the uint8 result plus the PIL copy add 3 each.
+#
+# Tiling is what bounds the *model's* working set, so that part is deliberately
+# not modelled here — it doesn't grow with the image, and an OOM inside a tile
+# is already handled. This guard is about the output, which tiling does nothing
+# for and which grows with the square of the scale factor.
+_OUTPUT_BYTES_PER_PIXEL = 30
+
+
+class OutputTooLargeError(RuntimeError):
+    """The upscaled result won't fit in memory. Message is user-facing."""
 
 
 class CancelledError(RuntimeError):
@@ -249,6 +267,7 @@ class Upscaler:
         returning True raises :class:`CancelledError`.
         """
         rgb = image.convert("RGB")
+        self.check_output_fits(rgb.width, rgb.height)
         x = torch.from_numpy(np.asarray(rgb, dtype=np.float32) / 255.0)
         x = x.permute(2, 0, 1).unsqueeze(0).to(self.device)
         if self.use_fp16:
@@ -283,6 +302,39 @@ class Upscaler:
         if ph or pw:
             t = F.pad(t, (0, pw, 0, ph), mode="replicate")
         return self.net(t)[:, :, : h * self.scale, : w * self.scale]
+
+    def output_bytes(self, width_px: int, height_px: int) -> int:
+        """Peak host memory the result of this upscale will occupy."""
+        s = self.scale
+        return _OUTPUT_BYTES_PER_PIXEL * width_px * s * height_px * s
+
+    def check_output_fits(self, width_px: int, height_px: int) -> None:
+        """Raise OutputTooLargeError if the result can't be held in memory.
+
+        Tiling bounds the model's working set but not the output: at x4 the
+        result is 16x the input's pixel count, and that buffer is allocated
+        whole. Without this a big image on a loaded machine doesn't fail, it
+        pages — minutes to hours of thrashing for a job that can't finish.
+        """
+        budget = budget_from(total_ram_bytes(), available_ram_bytes())
+        if budget is None:  # unknown platform — let it try rather than block
+            return
+        need = self.output_bytes(width_px, height_px)
+        if need <= budget:
+            return
+        gb = 1 << 30
+        room = describe_shortfall(need, total_ram_bytes(), available_ram_bytes())
+        # The two levers a user actually has, in the order they should try them.
+        smaller_scale = "" if self.scale <= 2 else (
+            " Use a ×2 model instead of ×4 (a quarter of the pixels), or")
+        max_px = budget / (_OUTPUT_BYTES_PER_PIXEL * self.scale * self.scale)
+        raise OutputTooLargeError(
+            f"A ×{self.scale} upscale of {width_px}x{height_px} produces "
+            f"{width_px * self.scale}x{height_px * self.scale} and needs about "
+            f"{need / gb:.1f} GB, and {room}.{smaller_scale} start from an "
+            f"image of about {max_px / 1e6:.1f} megapixels or set a smaller "
+            f"Output size."
+        )
 
     def upscale_file(self, src, dst) -> Image.Image:
         result = self.upscale(Image.open(src))

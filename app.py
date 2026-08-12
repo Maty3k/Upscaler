@@ -39,7 +39,8 @@ from upscaler import background, config, library, manage, panel
 from upscaler.convert import FORMATS, convert, extension_for
 from upscaler.document import images_to_pdf, pdf_to_images
 from upscaler.deblur import Deblurrer, DeblurTooLargeError
-from upscaler.engine import CancelledError, Upscaler, resolve_device
+from upscaler.engine import (CancelledError, OutputTooLargeError, Upscaler,
+                             resolve_device)
 from upscaler import fit
 from upscaler.models.registry import (
     COLORIZE_MODELS,
@@ -475,7 +476,7 @@ def enhance(image, model, device, deblur, deblur_model, restore_strength, sharpe
                             should_cancel=_ENHANCE_CANCEL.is_set)
     except CancelledError:
         raise gr.Error("Cancelled — nothing was saved.") from None
-    except DeblurTooLargeError as e:
+    except (DeblurTooLargeError, OutputTooLargeError) as e:
         raise gr.Error(str(e)) from e  # already worded for the user
     except (RuntimeError, AssertionError, OSError, ValueError) as e:
         if "out of memory" in str(e).lower():
