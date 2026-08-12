@@ -11,23 +11,90 @@ import torch
 from PIL import Image
 from torch.nn import functional as F
 
-from upscaler.memory import (available_ram_bytes, budget_from,
-                             describe_shortfall, total_ram_bytes)
+from upscaler.memory import (AVAILABLE_BUDGET, RAM_BUDGET,
+                             available_ram_bytes, budget_from,
+                             describe_shortfall, device_budget_bytes,
+                             total_ram_bytes)
 from upscaler.models.registry import ModelSpec, resolve_model
 from upscaler.models.rrdbnet import RRDBNet
 from upscaler.models.weights import ensure_weights
 
 # Bytes of host memory per *output* pixel at the peak of `upscale`. Traceable
-# to specific allocations rather than fitted: the float32 accumulation buffer
-# `_run_tiled` builds is 3 channels x 4 bytes = 12, `np.round(out * 255.0)`
-# makes a second float32 array of the same shape (12) while the first is still
-# alive, and the uint8 result plus the PIL copy add 3 each.
-#
-# Tiling is what bounds the *model's* working set, so that part is deliberately
-# not modelled here — it doesn't grow with the image, and an OOM inside a tile
-# is already handled. This guard is about the output, which tiling does nothing
-# for and which grows with the square of the scale factor.
-_OUTPUT_BYTES_PER_PIXEL = 30
+# to specific allocations rather than fitted: the uint8 accumulation buffer
+# `_run_tiled` quantizes each tile into is 3 channels x 1 byte, and the PIL
+# copy `Image.fromarray` makes adds another 3. (This was 30 when the tiler
+# stitched a float32 buffer and `np.round` made a second one — per-tile
+# quantization removed both, which is why the guard's whole cost model was
+# re-derived below rather than just re-priced.)
+_OUTPUT_BYTES_PER_PIXEL = 6
+
+# The input as `upscale` builds it: float32 x 3 channels per *input* pixel,
+# alive on the device for the entire run — and on unified memory the device
+# draws from the same RAM the buffers above do.
+_INPUT_BYTES_PER_PIXEL = 12
+
+# The model's own working set, which tiling bounds but does not remove — and
+# which the old guard didn't model at all. That omission is how the incident
+# escaped it: on unified memory an oversized run doesn't raise, it pages (the
+# job that proved it sat at 7.9 GB RSS with ~40k pageins/10s on an 8 GB M2,
+# with no exception ever thrown). Measured on that machine at tile=256,
+# tile_pad=32, in MB:
+#   accel x2: 1130 — MPS driver_allocated plateaus after the first tile and
+#             stays flat to the last (1130.5 / 1130.4 / 1130.4 / 1130.4);
+#             64 MB of that is weights, the rest cached tile blocks. On
+#             unified memory this reservation is *wired* host RAM.
+#   accel x4: 2146 — same flat shape; the extra ~1 GB is the x4 upsampling
+#             tail (conv_up2/conv_hr activations at output resolution).
+#   cpu   x2: 1371 — peak RSS 1708 MB minus the 337 MB post-load baseline.
+#             Larger than the MPS figure, not smaller: CPU inference
+#             materializes intermediates the MPS caching allocator recycles.
+#   cpu   x4: not measured; the accel pair's x4 tail (2146 - 1130) is added
+#             to the measured cpu x2 figure.
+_FIXED_WORKING_SET_MB = {
+    "cpu": {2: 1371, 4: 2387},
+    "accel": {2: 1130, 4: 2146},
+}
+
+# The table was measured at this tile size and padding. What the net actually
+# saw per block was therefore (256 + 2*32)^2 = 320^2 *processed* pixels — the
+# tile plus the context _run_tiled pads it with — and the working set scales
+# with that processed area, not the bare tile square. (Scaling by (tile/256)^2
+# instead overcharges tile 512 by ~1.23x and undercharges tile 64 by ~2.5x.)
+# Whole image when tiling is off. Rough (it ignores the fixed weights), but
+# the guard only needs the order of magnitude to be right.
+_FIXED_MEASURED_TILE = 256
+_FIXED_MEASURED_PAD = 32
+
+
+def _fixed_working_set_bytes(device_type: str, scale: int, tile: int,
+                             width_px: int, height_px: int,
+                             tile_pad: int = _FIXED_MEASURED_PAD) -> int:
+    """Size-independent working set of the model for this run, in bytes.
+
+    ``tile <= 0`` means the whole image is one tile, so the "fixed" cost grows
+    with the image itself — exactly the unguarded whole-image forward that
+    used to swap instead of raise. An image smaller than the tile is likewise
+    its own (single) tile — and tiles are clipped *per dimension*, so a
+    skinny panorama is charged its real ``min(tile + pads, dim)`` extent in
+    each direction, never the full square.
+    """
+    table = _FIXED_WORKING_SET_MB["cpu" if device_type == "cpu" else "accel"]
+    mb = table.get(scale)
+    if mb is None:
+        # Unmeasured scale: the measured x2/x4 pair fits mb = base + tail*s^2
+        # (the tail is the upsampling stages running at output resolution).
+        tail = (table[4] - table[2]) / (16 - 4)
+        mb = table[2] + tail * (scale * scale - 4)
+    if tile > 0:
+        # The largest block the net sees: tile plus its pad on both sides,
+        # clamped per dimension to the image (the tiler never pads past the
+        # border).
+        area = (min(tile + 2 * tile_pad, width_px)
+                * min(tile + 2 * tile_pad, height_px))
+    else:
+        area = width_px * height_px
+    measured_area = (_FIXED_MEASURED_TILE + 2 * _FIXED_MEASURED_PAD) ** 2
+    return int(mb * (1 << 20) * (area / float(measured_area)))
 
 
 class OutputTooLargeError(RuntimeError):
@@ -274,16 +341,28 @@ class Upscaler:
             x = x.half()
 
         if self.tile > 0:
-            out = self._run_tiled(x, progress_cb=progress_cb, should_cancel=should_cancel)
-        else:
-            if should_cancel and should_cancel():
-                raise CancelledError("Cancelled.")
-            out = self._net(x)
-            if progress_cb:
-                progress_cb(1, 1)
+            # The tiler quantizes straight into a uint8 buffer, so the result
+            # needs no further conversion here.
+            return Image.fromarray(
+                self._run_tiled(x, progress_cb=progress_cb,
+                                should_cancel=should_cancel),
+                mode="RGB",
+            )
 
-        out = out.clamp_(0, 1).squeeze(0).permute(1, 2, 0).float().cpu().numpy()
-        return Image.fromarray(np.round(out * 255.0).astype(np.uint8), mode="RGB")
+        if should_cancel and should_cancel():
+            raise CancelledError("Cancelled.")
+        out = self._net(x)
+        if progress_cb:
+            progress_cb(1, 1)
+        arr = out.clamp_(0, 1).squeeze(0).permute(1, 2, 0).float().cpu().numpy()
+        # Drop the input before np.round makes its float copy — it's dead
+        # weight now. On MPS/CUDA `del out` also frees the device-side result
+        # (`.cpu()` above copied it to the host), halving that path's peak; on
+        # the CPU device it frees nothing yet, because the .float().cpu()
+        # chain is a no-op on a host fp32 tensor and `arr` still shares
+        # `out`'s storage until np.round materializes its copy.
+        del out, x
+        return Image.fromarray(np.round(arr * 255.0).astype(np.uint8), mode="RGB")
 
     def _net(self, t: torch.Tensor) -> torch.Tensor:
         """Run the model, first padding spatial dims up to the multiple that
@@ -304,36 +383,88 @@ class Upscaler:
         return self.net(t)[:, :, : h * self.scale, : w * self.scale]
 
     def output_bytes(self, width_px: int, height_px: int) -> int:
-        """Peak host memory the result of this upscale will occupy."""
+        """Host memory the result of this upscale will occupy at its peak."""
         s = self.scale
         return _OUTPUT_BYTES_PER_PIXEL * width_px * s * height_px * s
 
     def check_output_fits(self, width_px: int, height_px: int) -> None:
-        """Raise OutputTooLargeError if the result can't be held in memory.
+        """Raise OutputTooLargeError if this run can't be held in memory.
 
-        Tiling bounds the model's working set but not the output: at x4 the
-        result is 16x the input's pixel count, and that buffer is allocated
-        whole. Without this a big image on a loaded machine doesn't fail, it
-        pages — minutes to hours of thrashing for a job that can't finish.
+        Three allocations coexist at the peak: the model's working set (fixed
+        once tiling is on — see _FIXED_WORKING_SET_MB), the float32 input
+        tensor, and the output buffers. All three are checked here, up front,
+        because torch's response to not fitting is not an error: on unified
+        memory the MPS allocator raises only past ~1.7x its recommended
+        working set and never consults free RAM, so an oversized run
+        "succeeds" into swap — minutes to hours of thrashing for a job that
+        can't finish, with nothing on stderr.
         """
-        budget = budget_from(total_ram_bytes(), available_ram_bytes())
+        fixed = _fixed_working_set_bytes(self.device.type, self.scale,
+                                         self.tile, width_px, height_px,
+                                         self.tile_pad)
+        gb = 1 << 30
+        if self.device.type != "cpu":
+            # The accelerator holds the whole working set at once, and its
+            # budget can be far tighter than the host's — a busy 8 GB M2
+            # offers MPS well under 2 GB while the tile=512 working set is
+            # over 4. Refusing here names the one lever that changes it.
+            dev_budget = device_budget_bytes(self.device)
+            if dev_budget is not None and fixed > dev_budget:
+                per = (f"at Tile size {self.tile}" if self.tile > 0 else
+                       f"untiled at {width_px}x{height_px}")
+                raise OutputTooLargeError(
+                    f"The model needs about {fixed / gb:.1f} GB of working "
+                    f"memory {per}, and {self.device.type} can spare about "
+                    f"{dev_budget / gb:.1f} GB. Lower the Tile size (working "
+                    f"memory grows with its square), or close some apps and "
+                    f"try again."
+                )
+        total, available = total_ram_bytes(), available_ram_bytes()
+        budget = budget_from(total, available)
         if budget is None:  # unknown platform — let it try rather than block
             return
-        need = self.output_bytes(width_px, height_px)
+        if self.tile > 0 and total is not None and available is not None:
+            # RAM_BUDGET's half-of-total share was calibrated when `need` was
+            # a few transient buffers. A tiled run's fixed term is different:
+            # a bounded, *measured* resident set that may legitimately hold
+            # more than half of a small machine's RAM — provided that much is
+            # actually free. (At the shipped Tile 512 it is ~3.6-7.6 GB; the
+            # half-of-total cap alone would refuse that on every 8/16 GB
+            # machine however idle, with "close some apps" advice that could
+            # never succeed.) So with tiling on, the fixed term answers only
+            # to free RAM, while the calibrated share keeps guarding the
+            # transient buffers: need <= min(free share, total share + fixed)
+            # is exactly "everything fits in what's free" AND "the buffers
+            # fit the calibrated share". Untiled, `fixed` *is* the rough
+            # whole-image extrapolation that the cap exists for, and keeps it.
+            budget = min(int(available * AVAILABLE_BUDGET),
+                         int(total * RAM_BUDGET) + fixed)
+        need = (fixed + _INPUT_BYTES_PER_PIXEL * width_px * height_px
+                + self.output_bytes(width_px, height_px))
         if need <= budget:
             return
-        gb = 1 << 30
-        room = describe_shortfall(need, total_ram_bytes(), available_ram_bytes())
-        # The two levers a user actually has, in the order they should try them.
+        room = describe_shortfall(need, total, available)
+        # The levers a user actually has, in the order they should try them.
         smaller_scale = "" if self.scale <= 2 else (
             " Use a ×2 model instead of ×4 (a quarter of the pixels), or")
-        max_px = budget / (_OUTPUT_BYTES_PER_PIXEL * self.scale * self.scale)
+        headroom = budget - fixed
+        # Bytes each input pixel adds: its float32 copy plus scale^2 output px.
+        per_px = (_INPUT_BYTES_PER_PIXEL
+                  + _OUTPUT_BYTES_PER_PIXEL * self.scale * self.scale)
+        if headroom > 0:
+            advice = (f"{smaller_scale} start from an image of about "
+                      f"{headroom / per_px / 1e6:.1f} megapixels or set a "
+                      f"smaller Output size.")
+        elif smaller_scale:
+            advice = (f"{smaller_scale} lower the Tile size (working memory "
+                      f"grows with its square).")
+        else:
+            advice = (" Lower the Tile size (working memory grows with its "
+                      "square), or close some apps and try again.")
         raise OutputTooLargeError(
             f"A ×{self.scale} upscale of {width_px}x{height_px} produces "
             f"{width_px * self.scale}x{height_px * self.scale} and needs about "
-            f"{need / gb:.1f} GB, and {room}.{smaller_scale} start from an "
-            f"image of about {max_px / 1e6:.1f} megapixels or set a smaller "
-            f"Output size."
+            f"{need / gb:.1f} GB, and {room}.{advice}"
         )
 
     def upscale_file(self, src, dst) -> Image.Image:
@@ -348,18 +479,22 @@ class Upscaler:
         x: torch.Tensor,
         progress_cb: Optional[Callable[[int, int], None]] = None,
         should_cancel: Optional[Callable[[], bool]] = None,
-    ) -> torch.Tensor:
-        """Process a large image tile-by-tile to bound memory.
+    ) -> np.ndarray:
+        """Process a large image tile-by-tile, returning the HWC uint8 result.
 
-        Each tile is padded with surrounding context (``tile_pad``) to avoid seams,
-        then the padded border is cropped off the output before stitching.
+        Each tile is padded with surrounding context (``tile_pad``) to avoid
+        seams, then the padded border is cropped off the output before
+        stitching. The tile grid partitions the input, so every output pixel
+        is written exactly once — and 8-bit quantization is elementwise, so
+        quantizing each tile as it lands is bit-identical to quantizing a
+        stitched float image. That is why the accumulator is uint8: the old
+        float32 buffer plus the whole-image `np.round` twin it forced cost
+        24 bytes per output pixel (a 4000×3000 ×4 output alone ~2.3 GB of
+        float); this holds 3, and the float copies stay tile-sized.
         """
-        b, c, h, w = x.shape
+        _b, _c, h, w = x.shape
         s = self.scale
-        # Accumulate on the CPU: the full-scale output of a big image can dwarf
-        # the per-tile memory that tiling exists to bound (a 4000×3000 ×4 fp32
-        # output alone is ~2.3 GB — enough to OOM the GPU the tiles fit on).
-        out = torch.zeros((b, c, h * s, w * s), dtype=x.dtype)
+        out = np.empty((h * s, w * s, 3), dtype=np.uint8)
         n_x = (w + self.tile - 1) // self.tile
         n_y = (h + self.tile - 1) // self.tile
         total = n_x * n_y
@@ -380,8 +515,13 @@ class Upscaler:
                 # map the (unpadded) tile region into the padded output tile
                 ox0, oy0 = (x0 - px0) * s, (y0 - py0) * s
                 ox1, oy1 = ox0 + (x1 - x0) * s, oy0 + (y1 - y0) * s
-                out[:, :, y0 * s:y1 * s, x0 * s:x1 * s] = (
-                    tile_out[:, :, oy0:oy1, ox0:ox1].to(out.device)
+                # clamp on the device, quantize on the host — same ops in the
+                # same order the whole-image conversion used (fp16 tiles are
+                # upcast by .float() exactly as the old final .float() did).
+                arr = (tile_out[:, :, oy0:oy1, ox0:ox1].clamp_(0, 1)
+                       .squeeze(0).permute(1, 2, 0).float().cpu().numpy())
+                out[y0 * s:y1 * s, x0 * s:x1 * s] = (
+                    np.round(arr * 255.0).astype(np.uint8)
                 )
                 done += 1
                 if progress_cb:

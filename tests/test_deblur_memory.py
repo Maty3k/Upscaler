@@ -236,11 +236,88 @@ def test_skips_the_doomed_float32_run_when_the_device_is_too_small(monkeypatch):
     assert _deblurrer()._starting_dtype(2560, 1440) is _HALF_DTYPE
 
 
-def test_starts_in_float32_when_even_half_precision_will_not_fit(monkeypatch):
-    # Nothing fits — open in float32 so the ladder runs its normal course down
-    # to CPU rather than silently degrading precision for no benefit.
+def test_no_dtype_at_all_when_even_half_precision_will_not_fit(monkeypatch):
+    # Nothing fits — None, meaning "stay off the accelerator entirely". This
+    # used to return float32 "so the ladder could reach CPU", but the ladder
+    # waits for an OOM that unified memory never raises for a job sized
+    # between free RAM and the allocator's ~1.7x watermark: the incident run
+    # (a 2560x1072 clean-up, ~7 GB float32 against a ~0.8 GB budget) drove an
+    # 8 GB M2 to 7.9 GB RSS and ~40k pageins/10s with no exception and
+    # nothing on stderr.
     _budget(monkeypatch, 1)
-    assert _deblurrer()._starting_dtype(2560, 1440) is torch.float32
+    assert _deblurrer()._starting_dtype(2560, 1440) is None
+
+
+def test_nothing_fits_runs_on_cpu_without_touching_the_device(monkeypatch):
+    # fp32 ~8.8 GB and bf16 ~4.4 GB against a 1 GB device budget: the
+    # accelerator must never be touched (an oversized MPS allocation
+    # "succeeds" into swap, it doesn't raise), and the job lands on CPU.
+    _budget(monkeypatch, 1)
+    monkeypatch.setattr("upscaler.deblur._total_ram_bytes", lambda: 64 * GB)
+    db = _deblurrer()
+    tried = _stub_run(db, fails_on=())
+    out = db.deblur(Image.new("RGB", (2560, 1440)))
+    assert _devices(tried) == ["cpu"], "the device budget said no — stay off it"
+    assert out.size == (2560, 1440) and out.mode == "RGB"
+
+
+def test_nothing_fits_and_no_ram_refuses_without_touching_the_device(monkeypatch):
+    # The incident shape: neither precision fits the device, and the CPU
+    # estimate (~9.4 GB) exceeds an 8 GB machine too. Refuse before any run.
+    _budget(monkeypatch, 1)
+    monkeypatch.setattr("upscaler.deblur._total_ram_bytes", lambda: 8 * GB)
+    db = _deblurrer()
+    tried = _stub_run(db, fails_on=())
+    with pytest.raises(DeblurTooLargeError):
+        db.deblur(Image.new("RGB", (2560, 1440)))
+    assert tried == [], "no run anywhere: the device would swap, the CPU would page"
+
+
+@pytest.mark.parametrize("error", [
+    TypeError("Got unsupported ScalarType BFloat16"),
+    RuntimeError("BFloat16 is not supported on this backend"),
+])
+def test_bf16_start_on_a_backend_without_bf16_falls_through_to_cpu(monkeypatch, error):
+    # A backend can fit bf16 by the numbers and still not implement it. That
+    # is not a memory problem, so the OOM ladder is the wrong answer — the
+    # run falls through to the CPU path (same headroom gate) instead of
+    # crashing.
+    _budget(monkeypatch, 5.33)  # bf16 fits, float32 doesn't -> opens in bf16
+    monkeypatch.setattr("upscaler.deblur._total_ram_bytes", lambda: 64 * GB)
+    db = _deblurrer()
+    tried = []
+
+    def run(x, device, dtype=torch.float32):
+        tried.append((device.type, dtype))
+        if device.type == "mps":
+            raise error
+        _, _, h, w = x.shape
+        return np.zeros((h, w, 3), dtype=np.float32)
+
+    db._run = run
+    db.net = _FakeNet()
+    out = db.deblur(Image.new("RGB", (2560, 1440)))
+    assert tried == [("mps", _HALF_DTYPE), ("cpu", torch.float32)]
+    assert out.size == (2560, 1440)
+
+
+def test_bf16_start_backend_bug_still_propagates(monkeypatch):
+    # The bf16-unsupported catch must stay narrow: a genuine backend/driver
+    # bug from a bf16-start run is not a capability gap, and silently
+    # converting it into a minutes-long CPU re-run behind a "not enough
+    # memory" note would bury the actual error.
+    _budget(monkeypatch, 5.33)  # bf16 fits, float32 doesn't -> opens in bf16
+    monkeypatch.setattr("upscaler.deblur._total_ram_bytes", lambda: 64 * GB)
+    db = _deblurrer()
+    db.net = _FakeNet()
+
+    def boom(x, device, dtype=torch.float32):
+        raise RuntimeError(
+            "Placeholder storage has not been allocated on MPS device!")
+
+    db._run = boom
+    with pytest.raises(RuntimeError, match="Placeholder storage"):
+        db.deblur(Image.new("RGB", (2560, 1440)))
 
 
 def test_predictive_start_does_not_retry_the_same_precision(monkeypatch):

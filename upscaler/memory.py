@@ -115,27 +115,52 @@ def budget_from(total: Optional[int], available: Optional[int]) -> Optional[int]
     return min(limits) if limits else None
 
 
-def device_budget_bytes(device: torch.device) -> Optional[int]:
+def device_budget_bytes(device) -> Optional[int]:
     """What the accelerator says it can spare, or None if it won't say.
 
     MPS reports a recommended working-set size (5.33 GiB on an 8 GB M2) — but
     that figure is static, and on unified memory the GPU draws from the same
     pool as everything else, so it's capped by what's actually free. CUDA
     already reports live free memory.
+
+    ``device`` is a ``torch.device`` or a bare type string ("mps"/"cuda") — the
+    ONNX engine has no torch device to hand, only a provider name.
     """
+    dev_type = getattr(device, "type", device)
     try:
-        if device.type == "mps" and torch.backends.mps.is_available():
+        if dev_type == "mps" and torch.backends.mps.is_available():
             budget = int(torch.mps.recommended_max_memory())
             available = available_ram_bytes()
             if available is not None:
                 budget = min(budget, int(available * AVAILABLE_BUDGET))
             return budget or None
-        if device.type == "cuda" and torch.cuda.is_available():
+        if dev_type == "cuda" and torch.cuda.is_available():
             free, _total = torch.cuda.mem_get_info(device)
             return int(free) or None
     except (RuntimeError, AttributeError, AssertionError):
         return None
     return None
+
+
+def empty_device_cache(device: torch.device) -> None:
+    """Release cached device blocks so the next stage isn't fighting the last.
+
+    On unified memory the caching allocator's reservation is *wired* host RAM
+    for as long as it's held — ~1.1 GB after an x2 tiled pass, ~2.1 GB after
+    x4 on an 8 GB M2 — and one call here returns ~95% of it in ~12 ms
+    (measured; repeat calls are free).
+
+    Best-effort: `torch.mps` exists on machines with no Metal backend at all
+    and raises when called, and we'd rather keep going than propagate a
+    failure to free memory we were about to stop using anyway.
+    """
+    try:
+        if device.type == "cuda" and torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        elif device.type == "mps" and torch.backends.mps.is_available():
+            torch.mps.empty_cache()
+    except (RuntimeError, AttributeError):
+        pass
 
 
 def describe_shortfall(need: int, total: Optional[int],
