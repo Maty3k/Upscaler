@@ -40,6 +40,7 @@ from upscaler.convert import FORMATS, convert, extension_for
 from upscaler.document import images_to_pdf, pdf_to_images
 from upscaler.deblur import Deblurrer, DeblurTooLargeError
 from upscaler.engine import CancelledError, Upscaler, resolve_device
+from upscaler import fit
 from upscaler.models.registry import (
     COLORIZE_MODELS,
     DEBLUR_MODELS,
@@ -428,13 +429,23 @@ def _restore_fbcnn(src_img, device):
 def enhance(image, model, device, deblur, deblur_model, restore_strength, sharpen,
             tile, onnx, out_size, face=False, face_strength=1.0,
             face_model=DEFAULT_FACE_MODEL, face_fidelity=0.5, fbcnn=False,
-            progress=gr.Progress()):
+            custom_size="", crop_anchor="center", progress=gr.Progress()):
     if image is None:
         raise gr.Error("Upload an image to enhance first.")
     _ENHANCE_CANCEL.clear()
     original = image if isinstance(image, Image.Image) else Image.fromarray(image)
     src = original
     stages = []
+    # Crop to the target's aspect ratio before anything else runs: it's the one
+    # step that removes pixels, and every pixel kept here is cleaned up and
+    # enlarged at full cost. See upscaler/fit.py for the tradeoff.
+    exact = _exact_target(out_size, custom_size)
+    if exact:
+        cropped = fit.crop(src, *exact, anchor=crop_anchor or "center")
+        if cropped.size != src.size:
+            stages.append(f"crop to {exact[0]}:{exact[1]} ({crop_anchor or 'center'})")
+        src = cropped
+    compare_base = src  # what the result is actually derived from
     if fbcnn:  # de-block JPEGs first, before any denoise/deblur
         try:
             src, ok = _restore_fbcnn(src, device)
@@ -498,8 +509,15 @@ def enhance(image, model, device, deblur, deblur_model, restore_strength, sharpe
         result = unsharp_mask(result, strength=float(sharpen))
         stages.append(f"sharpen {sharpen:g}")
 
-    # Fit to a target resolution preset (longest edge), if chosen.
-    target = _SIZE_PRESETS.get(out_size)
+    # Exact resolution wins over the longest-edge presets: the source was
+    # already cropped to this ratio, so this only resamples to the pixel count.
+    if exact:
+        if result.size != exact:
+            result = fit.resize_exact(result, *exact)
+        stages.append(f"→ {exact[0]}×{exact[1]}")
+        target = None
+    else:
+        target = _SIZE_PRESETS.get(out_size)
     if target:
         w, h = result.size
         longest = max(w, h)
@@ -520,8 +538,12 @@ def enhance(image, model, device, deblur, deblur_model, restore_strength, sharpe
         + f" · backend `{backend}` · {result.width}×{result.height}px"
     )
     library.save_image(result, "upscale")  # auto-add to the Library
-    # (before, after) for the comparison slider
-    return (original, result), info
+    # (before, after) for the comparison slider. A crop changes the shape, so
+    # the untouched original would slide against the result misaligned — show
+    # the cropped region instead, scaled to match.
+    before = compare_base if compare_base.size == result.size else \
+        compare_base.resize(result.size, Image.LANCZOS)
+    return (before, result), info
 
 
 def restore_only(image, deblur_model, restore_strength, sharpen, device, onnx,
@@ -743,6 +765,20 @@ _CONVERT_METHODS = ["Change image format", "Images → PDF", "PDF → Images"]
 
 # Output-size presets for upscaling: AI-upscale with the model, then fit the
 # longest edge to this many pixels (None = leave at the model's native scale).
+_EXACT_CUSTOM = "Custom size…"
+
+
+def _exact_target(out_size, custom_size):
+    """Resolve the Output size choice to an exact (w, h), or None.
+
+    None means the longest-edge presets apply instead — the aspect ratio is
+    left alone and nothing is cropped.
+    """
+    if out_size == _EXACT_CUSTOM:
+        return fit.parse_target(custom_size or "")
+    return fit.TARGET_PRESETS.get(out_size)
+
+
 _SIZE_PRESETS: dict[str, int | None] = {
     "Model default (×2/×4)": None,
     "HD · 1280px": 1280,
@@ -1879,11 +1915,26 @@ def build_demo() -> gr.Blocks:
                                 elem_classes="notes",
                             )
                         out_size = gr.Dropdown(
-                            list(_SIZE_PRESETS), value="Model default (×2/×4)",
-                            label="Output size", filterable=False,
-                            info="After enlarging, shrinks the longest edge to this "
-                            "size (4K = 3840px). Pick a model that overshoots your "
-                            "target so the result stays crisp.",
+                            list(_SIZE_PRESETS) + list(fit.TARGET_PRESETS)
+                            + [_EXACT_CUSTOM],
+                            value="Model default (×2/×4)",
+                            label="Output size", filterable=True,
+                            info="Top entries shrink the longest edge and keep the "
+                            "shape. The ones with two numbers (3440×1440, phones, "
+                            "tablets) land on that exact size — the image is cropped "
+                            "to fit the new shape first.",
+                        )
+                        custom_size = gr.Textbox(
+                            value="", visible=False, label="Custom size",
+                            placeholder="3440x1440",
+                            info="Width × height in pixels. The image is cropped to "
+                            "this shape, then enlarged and fitted to it exactly.",
+                        )
+                        crop_anchor = gr.Dropdown(
+                            list(fit.ANCHORS), value="center", visible=False,
+                            label="Keep which part", filterable=False,
+                            info="Which part of the photo to keep when the crop has "
+                            "to cut something — top is usually right for portraits.",
                         )
                         sharpen = gr.Slider(
                             0.0, 3.0, value=0.0, step=0.1,
@@ -2894,11 +2945,21 @@ def build_demo() -> gr.Blocks:
         pdf_extract_btn.click(
             extract_pdf, [pdf_in, pdf_dpi], [pdf_extract_out, pdf_gallery, pdf_extract_info]
         )
+        # The crop controls only mean anything for an exact-size target, and the
+        # custom box only for "Custom size…".
+        out_size.change(
+            lambda choice: (
+                gr.update(visible=choice == _EXACT_CUSTOM),
+                gr.update(visible=choice == _EXACT_CUSTOM
+                          or choice in fit.TARGET_PRESETS),
+            ),
+            out_size, [custom_size, crop_anchor],
+        )
         run_evt = run.click(
             enhance,
             [inp, model, device, deblur, deblur_model, restore_strength, sharpen,
              tile, onnx, out_size, face, face_strength, face_model, face_fidelity,
-             fbcnn],
+             fbcnn, custom_size, crop_anchor],
             [out, info],
             show_progress_on=[out],
         )
