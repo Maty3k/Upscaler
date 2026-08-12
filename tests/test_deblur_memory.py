@@ -24,11 +24,20 @@ OOM = ("MPS backend out of memory (MPS allocated: 8.61 GiB, max allowed: "
 
 
 @pytest.fixture(autouse=True)
-def _no_device_budget(monkeypatch):
-    """Default every test to "the device won't say", so the starting precision
-    is float32 regardless of what hardware the suite runs on. Tests about the
-    predictive start override this explicitly."""
+def _pin_machine(monkeypatch):
+    """Detach every test from the machine it runs on.
+
+    The device budget reads real hardware and free RAM moves under our feet, so
+    both are pinned: no device budget (float32 start everywhere) and no
+    availability reading (sizing falls back to total RAM). Tests about either
+    override theirs explicitly."""
     monkeypatch.setattr("upscaler.deblur._device_budget_bytes", lambda device: None)
+    monkeypatch.setattr("upscaler.deblur._available_ram_bytes", lambda: None)
+
+
+def _available(monkeypatch, gib):
+    monkeypatch.setattr("upscaler.deblur._available_ram_bytes",
+                        lambda: int(gib * GB))
 
 
 def _budget(monkeypatch, gib):
@@ -103,6 +112,7 @@ def test_guard_allows_image_that_fits(monkeypatch):
 
 def test_guard_skipped_when_ram_unknown(monkeypatch):
     monkeypatch.setattr("upscaler.deblur._total_ram_bytes", lambda: None)
+    monkeypatch.setattr("upscaler.deblur._available_ram_bytes", lambda: None)
     _deblurrer()._check_cpu_headroom(20000, 20000)  # unknown platform: don't block
 
 
@@ -246,3 +256,46 @@ def test_predictive_start_does_not_retry_the_same_precision(monkeypatch):
 def test_cpu_device_never_consults_the_device_budget(monkeypatch):
     _budget(monkeypatch, 0.001)
     assert _deblurrer(device="cpu")._starting_dtype(64, 64) is torch.float32
+
+
+def test_busy_machine_is_refused_even_with_enough_total_ram(monkeypatch):
+    """The bug this check exists for: 32 GB installed, almost none of it free.
+
+    Sizing against total RAM alone said yes, and the run then paged — measured
+    as 31s in a fresh process versus minutes of thrashing in a loaded one on
+    the same image and settings.
+    """
+    monkeypatch.setattr("upscaler.deblur._total_ram_bytes", lambda: 32 * GB)
+    _available(monkeypatch, 2)
+    with pytest.raises(DeblurTooLargeError) as exc:
+        _deblurrer()._check_cpu_headroom(2560, 1440)
+    msg = str(exc.value)
+    assert "free right now" in msg, msg
+    assert "Close some apps" in msg, "a busy machine needs different advice than a small one"
+
+
+def test_small_machine_message_talks_about_installed_ram(monkeypatch):
+    monkeypatch.setattr("upscaler.deblur._total_ram_bytes", lambda: 8 * GB)
+    _available(monkeypatch, 7)  # plenty free; the machine is just small
+    with pytest.raises(DeblurTooLargeError) as exc:
+        _deblurrer()._check_cpu_headroom(2560, 1440)
+    assert "8 GB of RAM" in str(exc.value)
+    assert "free right now" not in str(exc.value)
+
+
+def test_budget_is_the_tighter_of_total_and_available(monkeypatch):
+    from upscaler.deblur import _memory_budget
+    monkeypatch.setattr("upscaler.deblur._total_ram_bytes", lambda: 16 * GB)
+    _available(monkeypatch, 1)
+    assert _memory_budget(100, 100) == int(1 * GB * 0.8)  # availability binds
+    _available(monkeypatch, 100)
+    assert _memory_budget(100, 100) == int(16 * GB * 0.5)  # total binds
+
+
+def test_free_ram_is_read_when_available(monkeypatch):
+    # Not mocked: the probe must actually return something on this platform,
+    # or the whole check silently degrades to total-RAM sizing.
+    monkeypatch.undo()
+    from upscaler.deblur import _available_ram_bytes
+    got = _available_ram_bytes()
+    assert got is None or got > 0
