@@ -53,7 +53,7 @@ def test_bright_band_and_frame_sit_exactly_on_the_crop_box(position):
     x = 320
     mid_y = (box[1] + box[3]) // 2
 
-    # Kept region: untouched brightness (away from the 3px frame).
+    # Kept region: untouched brightness (away from the hairline frame).
     assert preview.getpixel((x, mid_y)) == (255, 255, 255)
     # Doomed region: dimmed hard enough to read as "gone", on both sides that
     # exist for this position.
@@ -61,10 +61,13 @@ def test_bright_band_and_frame_sit_exactly_on_the_crop_box(position):
         assert preview.getpixel((x, box[1] - 5))[0] < 120
     if box[3] < 480:
         assert preview.getpixel((x, box[3] + 4))[0] < 120
-    # The accent frame is drawn inward from the box edge — top and bottom rows
-    # of the box are frame, which pins the box's exact location.
-    assert preview.getpixel((x, box[1] + 1)) == _ACCENT
-    assert preview.getpixel((x, box[3] - 2)) == _ACCENT
+    # The 1px accent frame is drawn inward from the box edge — the box's first
+    # and last rows ARE the frame, which pins its exact location.
+    assert preview.getpixel((x, box[1])) == _ACCENT
+    assert preview.getpixel((x, box[3] - 1)) == _ACCENT
+    # ...and one row further in is already kept content, proving the frame is a
+    # hairline rather than the chunky band users found confusing.
+    assert preview.getpixel((x, box[1] + 1)) == (255, 255, 255)
 
 
 def test_custom_size_renders_once_it_parses():

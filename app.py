@@ -519,7 +519,7 @@ def enhance(image, model, device, deblur, deblur_model, restore_strength, sharpe
     if exact:
         if result.size != exact:
             result = fit.resize_exact(result, *exact)
-        stages.append(f"→ {exact[0]}×{exact[1]}")
+        stages.append(f"fit {exact[0]}×{exact[1]}")
         target = None
     else:
         target = _SIZE_PRESETS.get(out_size)
@@ -531,7 +531,7 @@ def enhance(image, model, device, deblur, deblur_model, restore_strength, sharpe
             result = result.resize(
                 (max(1, round(w * r)), max(1, round(h * r))), Image.LANCZOS
             )
-            stages.append(f"→ {target}px")
+            stages.append(f"fit {target}px")
 
     if onnx:
         prov = getattr(up, "provider", "")
@@ -824,7 +824,7 @@ def _crop_preview(image, out_size, custom_size, position_pct):
     # bleeds onto the dimmed region and the bright area stays exactly the crop.
     ImageDraw.Draw(preview).rectangle(
         (box[0], box[1], box[2] - 1, box[3] - 1),
-        outline=_PREVIEW_ACCENT, width=3,
+        outline=_PREVIEW_ACCENT, width=1,
     )
     return gr.update(value=preview, visible=True)
 
