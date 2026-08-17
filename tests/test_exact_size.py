@@ -35,10 +35,10 @@ def stub(monkeypatch):
     return up
 
 
-def _run(src, out_size, custom="", anchor="center"):
+def _run(src, out_size, custom="", position=50.0):
     (before, after), info = app.enhance(
         src, "x2", "cpu", False, "nafnet-gopro-width64", 1.0, 0.0, 256, False,
-        out_size, custom_size=custom, crop_anchor=anchor,
+        out_size, custom_size=custom, crop_position=position,
     )
     return before, after, info
 
@@ -70,15 +70,33 @@ def test_unparseable_custom_size_falls_back_to_no_resize(stub):
     assert after.size == (2000, 1600)  # just the x2 model output
 
 
-def test_anchor_selects_which_band_is_kept(stub):
+def _gradient_source():
+    """Vertical gradient so the kept band is identifiable by its brightness."""
     src = Image.new("RGB", (400, 300))
-    for y in range(300):  # vertical gradient so the kept band is identifiable
+    for y in range(300):
         for x in range(400):
             src.putpixel((x, y), (y, y, y))
-    _, top, _ = _run(src, "Ultrawide QHD · 3440×1440", anchor="top")
-    _, bottom, _ = _run(src, "Ultrawide QHD · 3440×1440", anchor="bottom")
+    return src
+
+
+def test_position_selects_which_band_is_kept(stub):
+    src = _gradient_source()
+    _, top, _ = _run(src, "Ultrawide QHD · 3440×1440", position=0)
+    _, bottom, _ = _run(src, "Ultrawide QHD · 3440×1440", position=100)
     assert top.getpixel((0, 0))[0] < bottom.getpixel((0, 0))[0], (
-        "top anchor should keep the darker (upper) rows")
+        "position 0 should keep the darker (upper) rows")
+
+
+def test_intermediate_position_keeps_a_band_between_the_rails(stub):
+    # 25% must land strictly between the top edge and center — the slider is a
+    # continuum, not a fancier spelling of the three old anchors.
+    src = _gradient_source()
+    _, at_zero, _ = _run(src, "Ultrawide QHD · 3440×1440", position=0)
+    _, quarter, _ = _run(src, "Ultrawide QHD · 3440×1440", position=25)
+    _, center, _ = _run(src, "Ultrawide QHD · 3440×1440", position=50)
+    assert at_zero.getpixel((0, 0))[0] < quarter.getpixel((0, 0))[0] \
+        < center.getpixel((0, 0))[0], (
+        "25% should keep a band strictly above center's, below the top edge's")
 
 
 def test_before_image_matches_the_result_shape(stub):

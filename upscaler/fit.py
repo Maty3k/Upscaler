@@ -72,8 +72,17 @@ class FitPlan:
 
 
 def crop_box_for_aspect(src_w: int, src_h: int, target_w: int, target_h: int,
-                        anchor: str = "center") -> tuple[int, int, int, int]:
-    """Largest box in the source matching the target's aspect ratio."""
+                        anchor: str = "center",
+                        position: Optional[float] = None) -> tuple[int, int, int, int]:
+    """Largest box in the source matching the target's aspect ratio.
+
+    The box only ever slides along one axis — the other is pinned at full size —
+    so a single `position` (0.0–1.0) is enough to place it freely: 0.0 hugs the
+    top/left edge, 1.0 the bottom/right. The five anchors are just sugar for the
+    positions people usually want, so when both are given, `position` wins.
+    Out-of-range positions are clamped rather than rejected — the caller is a
+    UI slider, and a slider's noise shouldn't crash a job.
+    """
     if min(src_w, src_h, target_w, target_h) <= 0:
         raise ValueError("sizes must be positive")
     if anchor not in ANCHORS:
@@ -89,18 +98,23 @@ def crop_box_for_aspect(src_w: int, src_h: int, target_w: int, target_h: int,
         crop_h = max(1, round(src_w * target_h / target_w))
     crop_w, crop_h = min(crop_w, src_w), min(crop_h, src_h)
 
-    if anchor == "left":
-        left = 0
-    elif anchor == "right":
-        left = src_w - crop_w
+    if position is not None:
+        pos = min(1.0, max(0.0, float(position)))
+        left = round((src_w - crop_w) * pos)
+        top = round((src_h - crop_h) * pos)
     else:
-        left = (src_w - crop_w) // 2
-    if anchor == "top":
-        top = 0
-    elif anchor == "bottom":
-        top = src_h - crop_h
-    else:
-        top = (src_h - crop_h) // 2
+        if anchor == "left":
+            left = 0
+        elif anchor == "right":
+            left = src_w - crop_w
+        else:
+            left = (src_w - crop_w) // 2
+        if anchor == "top":
+            top = 0
+        elif anchor == "bottom":
+            top = src_h - crop_h
+        else:
+            top = (src_h - crop_h) // 2
     return left, top, left + crop_w, top + crop_h
 
 
@@ -127,9 +141,11 @@ def plan(src_w: int, src_h: int, target_w: int, target_h: int,
 
 
 def crop(image: Image.Image, target_w: int, target_h: int,
-         anchor: str = "center") -> Image.Image:
+         anchor: str = "center",
+         position: Optional[float] = None) -> Image.Image:
     """Crop to the target's aspect ratio. Size is unchanged if it already matches."""
-    box = crop_box_for_aspect(image.width, image.height, target_w, target_h, anchor)
+    box = crop_box_for_aspect(image.width, image.height, target_w, target_h,
+                              anchor, position=position)
     return image if box == (0, 0, image.width, image.height) else image.crop(box)
 
 

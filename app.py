@@ -33,7 +33,7 @@ for _stream in (sys.stdout, sys.stderr):
 
 import gradio as gr
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw, ImageEnhance
 
 from upscaler import background, config, library, manage, panel
 from upscaler.convert import FORMATS, convert, extension_for
@@ -430,7 +430,7 @@ def _restore_fbcnn(src_img, device):
 def enhance(image, model, device, deblur, deblur_model, restore_strength, sharpen,
             tile, onnx, out_size, face=False, face_strength=1.0,
             face_model=DEFAULT_FACE_MODEL, face_fidelity=0.5, fbcnn=False,
-            custom_size="", crop_anchor="center", progress=gr.Progress()):
+            custom_size="", crop_position=50.0, progress=gr.Progress()):
     if image is None:
         raise gr.Error("Upload an image to enhance first.")
     _ENHANCE_CANCEL.clear()
@@ -442,9 +442,13 @@ def enhance(image, model, device, deblur, deblur_model, restore_strength, sharpe
     # enlarged at full cost. See upscaler/fit.py for the tradeoff.
     exact = _exact_target(out_size, custom_size)
     if exact:
-        cropped = fit.crop(src, *exact, anchor=crop_anchor or "center")
+        # The slider speaks percent (whole numbers read better in the stages
+        # trail); fit speaks 0–1. None can arrive from a stale UI state — treat
+        # it as the centred default rather than crash the job.
+        pos = 50.0 if crop_position is None else float(crop_position)
+        cropped = fit.crop(src, *exact, position=pos / 100)
         if cropped.size != src.size:
-            stages.append(f"crop to {exact[0]}:{exact[1]} ({crop_anchor or 'center'})")
+            stages.append(f"crop to {exact[0]}:{exact[1]} @ {pos:g}%")
         src = cropped
     compare_base = src  # what the result is actually derived from
     if fbcnn:  # de-block JPEGs first, before any denoise/deblur
@@ -788,6 +792,41 @@ _SIZE_PRESETS: dict[str, int | None] = {
     "4K UHD · 3840px": 3840,
     "8K · 7680px": 7680,
 }
+
+# The dark-mode accent from _CSS (--ac). The preview dims everything outside
+# the crop, so the brighter teal reads on both light and dark screenshots.
+_PREVIEW_ACCENT = "#2DD4BF"
+
+
+def _crop_preview(image, out_size, custom_size, position_pct):
+    """Show which part of the image an exact-size crop would keep.
+
+    The whole point is answering "what am I about to lose?" *before* the job
+    runs, so this has to be instant: everything happens on a ≤640px thumbnail,
+    never the full image, and nothing touches disk. The kept region stays at
+    full brightness inside an accent frame; the doomed rest is dimmed rather
+    than blacked out, so it's still recognisable while clearly not surviving.
+    """
+    exact = _exact_target(out_size, custom_size)
+    if image is None or exact is None:
+        return gr.update(visible=False)
+    src = image if isinstance(image, Image.Image) else Image.fromarray(image)
+    # convert() always returns a new image, so the caller's original is never
+    # touched — thumbnail() below mutates in place.
+    thumb = src.convert("RGB")
+    thumb.thumbnail((640, 640))
+    pos = 50.0 if position_pct is None else float(position_pct)
+    box = fit.crop_box_for_aspect(thumb.width, thumb.height, *exact,
+                                  position=pos / 100)
+    preview = ImageEnhance.Brightness(thumb).enhance(0.35)
+    preview.paste(thumb.crop(box), box[:2])
+    # Pillow draws the outline inward from the box edge, so the frame never
+    # bleeds onto the dimmed region and the bright area stays exactly the crop.
+    ImageDraw.Draw(preview).rectangle(
+        (box[0], box[1], box[2] - 1, box[3] - 1),
+        outline=_PREVIEW_ACCENT, width=3,
+    )
+    return gr.update(value=preview, visible=True)
 
 
 def _switch_method(choice):
@@ -1907,11 +1946,25 @@ def build_demo() -> gr.Blocks:
                             info="Width × height in pixels. The image is cropped to "
                             "this shape, then enlarged and fitted to it exactly.",
                         )
+                        # Presets only — picking one just snaps the slider below,
+                        # which is what actually feeds the job.
                         crop_anchor = gr.Dropdown(
                             list(fit.ANCHORS), value="center", visible=False,
                             label="Keep which part", filterable=False,
                             info="Which part of the photo to keep when the crop has "
                             "to cut something — top is usually right for portraits.",
+                        )
+                        crop_position = gr.Slider(
+                            0, 100, value=50, step=1, label="Crop position",
+                            info="Slide to choose which part survives the crop — "
+                            "0% = top/left edge, 100% = bottom/right edge.",
+                            visible=False,
+                        )
+                        # buttons=[] is this gradio's spelling of "no download
+                        # button" — the preview is a throwaway visual aid.
+                        crop_preview = gr.Image(
+                            label="Crop preview — the bright region is kept",
+                            interactive=False, visible=False, buttons=[],
                         )
                         model = gr.Dropdown(
                             _MODEL_CHOICES, value=_cfg_model,
@@ -2947,20 +3000,55 @@ def build_demo() -> gr.Blocks:
             extract_pdf, [pdf_in, pdf_dpi], [pdf_extract_out, pdf_gallery, pdf_extract_info]
         )
         # The crop controls only mean anything for an exact-size target, and the
-        # custom box only for "Custom size…".
-        out_size.change(
-            lambda choice: (
+        # custom box only for "Custom size…". The preview goes further: it also
+        # needs an image and a parseable size, which _crop_preview decides — all
+        # roads below go through it so the preview can never disagree with the
+        # crop the job will actually make.
+        def _on_out_size(choice, image, custom, pos):
+            is_exact = choice == _EXACT_CUSTOM or choice in fit.TARGET_PRESETS
+            return (
                 gr.update(visible=choice == _EXACT_CUSTOM),
-                gr.update(visible=choice == _EXACT_CUSTOM
-                          or choice in fit.TARGET_PRESETS),
-            ),
-            out_size, [custom_size, crop_anchor],
+                gr.update(visible=is_exact),
+                gr.update(visible=is_exact),
+                _crop_preview(image, choice, custom, pos),
+            )
+
+        out_size.change(
+            _on_out_size, [out_size, inp, custom_size, crop_position],
+            [custom_size, crop_anchor, crop_position, crop_preview],
+            show_progress="hidden",
+        )
+
+        # The dropdown is a preset for the slider (left/top → 0, center → 50,
+        # right/bottom → 100); the slider's value is what the job reads.
+        def _on_crop_anchor(anchor, image, choice, custom):
+            pos = {"left": 0, "top": 0, "right": 100, "bottom": 100}.get(anchor, 50)
+            return pos, _crop_preview(image, choice, custom, pos)
+
+        crop_anchor.change(
+            _on_crop_anchor, [crop_anchor, inp, out_size, custom_size],
+            [crop_position, crop_preview], show_progress="hidden",
+        )
+        # .release, not .change: re-render once when the drag ends, not on every
+        # tick through the middle. Everything else that shifts the crop re-renders
+        # too, so the preview never shows a stale frame.
+        crop_position.release(
+            _crop_preview, [inp, out_size, custom_size, crop_position],
+            crop_preview, show_progress="hidden",
+        )
+        inp.change(
+            _crop_preview, [inp, out_size, custom_size, crop_position],
+            crop_preview, show_progress="hidden",
+        )
+        custom_size.change(
+            _crop_preview, [inp, out_size, custom_size, crop_position],
+            crop_preview, show_progress="hidden",
         )
         run_evt = run.click(
             enhance,
             [inp, model, device, deblur, deblur_model, restore_strength, sharpen,
              tile, onnx, out_size, face, face_strength, face_model, face_fidelity,
-             fbcnn, custom_size, crop_anchor],
+             fbcnn, custom_size, crop_position],
             [out, info],
             show_progress_on=[out],
         )
