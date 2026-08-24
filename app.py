@@ -2099,7 +2099,15 @@ def build_demo() -> gr.Blocks:
                     with gr.Column(scale=1, elem_classes="sticky-col"):
                         out = gr.ImageSlider(
                             label="Before / after — drag the divider to compare",
-                            type="pil", height=300, buttons=["download", "fullscreen"],
+                            # max_height (not height): a fixed height= crops the
+                            # block via overflow:hidden, and gradio 6.15's slider
+                            # anchors its two <img> layers differently when
+                            # cropped (in-flow base is top-anchored, clipped
+                            # layer is absolutely centered), tearing the seam
+                            # vertically. max_height scales the image instead,
+                            # keeping both layers in identical boxes.
+                            type="pil", max_height=300,
+                            buttons=["download", "fullscreen"],
                             elem_classes=["loupe"],
                         )
                         info = gr.Markdown()
@@ -2145,7 +2153,8 @@ def build_demo() -> gr.Blocks:
                             col_clear = gr.Button("↺ Clear", variant="secondary", scale=1)
                     with gr.Column(scale=1):
                         col_out = gr.ImageSlider(
-                            label="Before / after", type="pil", height=300,
+                            # max_height, not height — see `out` slider above.
+                            label="Before / after", type="pil", max_height=300,
                             elem_classes=["loupe"],
                         )
                         col_info = gr.Markdown()
@@ -2189,7 +2198,8 @@ def build_demo() -> gr.Blocks:
                             ip_clear = gr.Button("↺ Clear", variant="secondary", scale=1)
                     with gr.Column(scale=1):
                         ip_out = gr.ImageSlider(
-                            label="Before / after", type="pil", height=360,
+                            # max_height, not height — see `out` slider above.
+                            label="Before / after", type="pil", max_height=360,
                             elem_classes=["loupe"],
                         )
                         ip_info = gr.Markdown()
@@ -2354,7 +2364,9 @@ def build_demo() -> gr.Blocks:
                         vid_out = gr.Video(label="Result", buttons=["download"])
                         vid_compare = gr.ImageSlider(
                             label="Before / after (drag to compare)",
-                            type="pil", height=220, buttons=["download", "fullscreen"],
+                            # max_height, not height — see `out` slider above.
+                            type="pil", max_height=220,
+                            buttons=["download", "fullscreen"],
                             elem_classes=["loupe"],
                         )
                         vid_scrub = gr.Slider(
