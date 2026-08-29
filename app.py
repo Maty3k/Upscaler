@@ -3183,7 +3183,7 @@ def build_demo() -> gr.Blocks:
     return demo
 
 
-if __name__ == "__main__":
+def main(inbrowser: bool = False) -> None:
     build_demo().launch(
         server_name="127.0.0.1",
         server_port=int(os.environ.get("UPSCALER_PORT", "7860")),
@@ -3191,7 +3191,19 @@ if __name__ == "__main__":
         css=_CSS,
         js=_APPLY_THEME_JS,
         head=_MAGNIFIER_HEAD,
+        inbrowser=inbrowser,
         # The Library reads from ~/.upscaler/library, outside the app dir — Gradio
         # won't serve files from there unless the folder is explicitly allowed.
         allowed_paths=[str(library.ensure_dir())],
     )
+
+
+def gui() -> None:
+    """`upscaler-gui` console script: launch and open the browser."""
+    main(inbrowser=True)
+
+
+if __name__ == "__main__":
+    # `python app.py` (dev / LaunchAgent) keeps the old behavior: no browser
+    # pop-up, so the login-time autostart stays silent.
+    main()

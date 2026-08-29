@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 # PyPI distribution name ("upscaler" is taken); the import package and the
 # CLI command are still plain `upscaler`.
 name = "local-upscaler"
-version = "0.1.0"
+version = "0.1.1"
 description = "Local, open-source image upscaling + sharpening. Wraps pretrained Real-ESRGAN weights."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -47,6 +47,13 @@ Issues = "https://github.com/Maty3k/Upscaler/issues"
 
 [project.scripts]
 upscaler = "upscaler.cli:main"
+upscaler-gui = "app:gui"
+
+[tool.setuptools]
+# Ship the GUI (root app.py) in the wheel so `upscaler-gui` works from a plain
+# pip install — it stays at the root because tests and the LaunchAgent import
+# it as `app`.
+py-modules = ["app"]
 
 [tool.setuptools.packages.find]
 include = ["upscaler*"]

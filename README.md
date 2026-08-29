@@ -1,30 +1,43 @@
 # Upscaler
 
-Local, open-source image **upscaling + sharpening**. Runs entirely on your
-machine (CPU, NVIDIA CUDA, or Apple-Silicon MPS) on top of pretrained
-[Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN) weights — no cloud, no API keys.
+**Free, private AI photo enhancement on your own computer.** Upscale, sharpen,
+deblur, colorize, remove objects and backgrounds, upscale videos — the same
+kind of results the paid cloud upscalers charge a subscription for, running
+100% locally on top of pretrained
+[Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN) weights.
 
-> Upscaling, deblur, a Gradio GUI, and an ONNX backend all work end-to-end.
-> See [`docs/PROJECT_NOTES.md`](docs/PROJECT_NOTES.md) for full planning, design
-> decisions, the "why it can make photos worse" lesson, and the
-> train-your-own-model playbook (incl. AMD/Windows/ROCm).
+- **No subscription, no credits, no watermark** — open source, Apache-2.0
+- **No upload** — your photos never leave your machine; works offline after
+  the first model download
+- **No account, no API keys** — install once, use forever
+- Runs on plain CPUs, NVIDIA CUDA, Apple Silicon, and AMD/Intel GPUs (ONNX)
 
-## Install
+## Quick start
 
-Python **3.9–3.12** recommended (PyTorch wheels).
+```bash
+pip install "local-upscaler[gui]"
+upscaler-gui                          # opens the app in your browser
+```
+
+Drag a photo in, click **Enhance**, done. Model weights download automatically
+(with checksum verification) the first time you use them.
+
+> **Never used a terminal before?** Follow the step-by-step
+> **[Getting Started guide](docs/GETTING-STARTED.md)** — it starts at
+> "install Python" and ends at your first enhanced photo, in baby steps,
+> for Windows, Mac, and Linux.
+
+Prefer the command line? The same install gives you the `upscaler` command —
+full reference below. Extras: `[gui]` (GUI), `[onnx]` (ONNX backend + Remove
+BG), `[face]` (face restore, Colorize), `[video]` (bundled ffmpeg).
 
 > **On a Windows PC with an AMD GPU?** See
 > [`docs/SETUP-WINDOWS-AMD.md`](docs/SETUP-WINDOWS-AMD.md) for a full
 > GPU-accelerated setup (WSL2 + ROCm) — dramatically faster than CPU/MPS for video.
 
-```bash
-pip install "local-upscaler[gui]"
-```
-
-That's it — the `upscaler` command is now available, and model weights download
-automatically (with checksum verification) the first time you use them.
-Extras: `[gui]` (GUI), `[onnx]` (ONNX backend), `[face]` (face restore),
-`[video]` (bundled ffmpeg).
+> Curious about the internals? [`docs/PROJECT_NOTES.md`](docs/PROJECT_NOTES.md)
+> has the full planning, design decisions, the "why it can make photos worse"
+> lesson, and the train-your-own-model playbook.
 
 <details>
 <summary>Install from source instead (development)</summary>
@@ -134,8 +147,8 @@ Weights download automatically on first use and are cached under
 ### GUI (drag-and-drop)
 
 ```bash
-pip install -e ".[gui]"
-python app.py            # opens a local web UI at http://127.0.0.1:7860
+upscaler-gui             # opens the app in your browser (http://127.0.0.1:7860)
+# from a source checkout: python app.py
 ```
 
 A full local web app with a tab per tool: **Upscale & Enhance** (with deblur /
