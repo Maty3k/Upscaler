@@ -459,8 +459,9 @@ class Upscaler:
             advice = (f"{smaller_scale} lower the Tile size (working memory "
                       f"grows with its square).")
         else:
-            advice = (" Lower the Tile size (working memory grows with its "
-                      "square), or close some apps and try again.")
+            # `room` (from describe_shortfall) may already end in "close some
+            # apps and try again" — don't say it twice in one sentence.
+            advice = " Lower the Tile size (working memory grows with its square)."
         raise OutputTooLargeError(
             f"A ×{self.scale} upscale of {width_px}x{height_px} produces "
             f"{width_px * self.scale}x{height_px * self.scale} and needs about "

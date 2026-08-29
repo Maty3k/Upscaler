@@ -18,9 +18,24 @@ Python **3.9–3.12** recommended (PyTorch wheels).
 > GPU-accelerated setup (WSL2 + ROCm) — dramatically faster than CPU/MPS for video.
 
 ```bash
-python -m venv .venv && source .venv/bin/activate
-pip install -e .            # extras: ".[gui]" (GUI), ".[onnx]" (ONNX backend), ".[dev]" (tests)
+pip install "local-upscaler[gui]"
 ```
+
+That's it — the `upscaler` command is now available, and model weights download
+automatically (with checksum verification) the first time you use them.
+Extras: `[gui]` (GUI), `[onnx]` (ONNX backend), `[face]` (face restore),
+`[video]` (bundled ffmpeg).
+
+<details>
+<summary>Install from source instead (development)</summary>
+
+```bash
+git clone https://github.com/Maty3k/Upscaler.git && cd Upscaler
+python -m venv .venv && source .venv/bin/activate   # .venv\Scripts\activate on Windows
+pip install -e ".[gui]"     # or ".[dev]" for tests
+```
+
+</details>
 
 ## Usage
 
