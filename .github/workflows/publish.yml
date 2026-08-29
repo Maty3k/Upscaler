@@ -1,0 +1,38 @@
+# Publishes to PyPI whenever a version tag (v0.1.0, v0.2.0, …) is pushed.
+# Auth is PyPI "trusted publishing" (OIDC) — no API token stored anywhere.
+# One-time setup on pypi.org: Account → Publishing → add a pending publisher
+# for project `local-upscaler`, repo Maty3k/Upscaler, workflow publish.yml,
+# environment pypi.
+name: Publish to PyPI
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install build
+      - run: python -m build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write   # required for trusted publishing
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1

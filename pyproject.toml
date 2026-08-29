@@ -3,7 +3,9 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "upscaler"
+# PyPI distribution name ("upscaler" is taken); the import package and the
+# CLI command are still plain `upscaler`.
+name = "local-upscaler"
 version = "0.1.0"
 description = "Local, open-source image upscaling + sharpening. Wraps pretrained Real-ESRGAN weights."
 readme = "README.md"
@@ -38,6 +40,10 @@ video = ["imageio-ffmpeg>=0.4"]
 # Face restoration: spandrel loads GFPGAN (no basicsr), opencv-python provides
 # the YuNet detector. Old-arch GFPGAN lives in spandrel_extra_arches.
 face = ["spandrel>=0.4", "spandrel_extra_arches>=0.2", "opencv-python-headless>=4.9"]
+
+[project.urls]
+Homepage = "https://github.com/Maty3k/Upscaler"
+Issues = "https://github.com/Maty3k/Upscaler/issues"
 
 [project.scripts]
 upscaler = "upscaler.cli:main"
