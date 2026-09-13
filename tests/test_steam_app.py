@@ -9,11 +9,11 @@ def test_app_steam_params_maps_controls_in_preview_input_order():
     import app
     from upscaler import steam
 
-    hidpi = list(steam.SCALES)[1]
-    p = app._steam_params("manual", 1.5, -20, 35, "#123456", 300, hidpi)
+    p = app._steam_params("manual", 1.5, -20, 35, "#123456", False, 245, 300)
     assert (p.fit, p.zoom, p.off_x, p.off_y) == ("manual", 1.5, -20.0, 35.0)
-    assert (p.bg_color, p.tile_h, p.scale) == ("#123456", 300, 2)
-    assert app._steam_params("cover", 1, 0, 0, "#000", 122, "unknown label").scale == 1
+    assert (p.bg_color, p.tile_w, p.tile_h, p.transparent) == ("#123456", 245, 300, False)
+    t = app._steam_params("cover", 1, 0, 0, "#123456", True, 122, 122)
+    assert t.transparent and t.bg_color == steam.TRANSPARENT
 
 
 def test_app_steam_on_media_switches_format_and_animation_controls(tmp_path):
@@ -52,5 +52,6 @@ def test_app_steam_export_requires_media():
     import app
 
     with pytest.raises(gr.Error):
-        app.steam_export_ui(None, "cover", 1, 0, 0, "#000", 122, "x", app._STEAM_FMT_STILL,
-                            "24", 0, 0, "normal", 5, True, "", progress=lambda *a, **k: None)
+        app.steam_export_ui(None, "cover", 1, 0, 0, "#000", False, 122, 122,
+                            app._STEAM_FMT_STILL, "24", 0, 0, "normal", 5, True, "",
+                            progress=lambda *a, **k: None)

@@ -38,6 +38,16 @@ def test_steam_hidpi_and_explicit_dir(tmp_path):
     assert Image.open(out / "a_steam_3.png").size == (245, 244)
 
 
+def test_steam_width_and_transparent_bg(tmp_path):
+    src = tmp_path / "cut.png"
+    Image.new("RGBA", (200, 200), (255, 0, 0, 255)).save(src)
+    out = tmp_path / "tiles"
+    assert main(["steam", str(src), "-o", str(out), "--width", "150", "--height", "150",
+                 "--fit", "contain", "--bg", "transparent", "--no-hexify"]) == 0
+    with Image.open(out / "cut_steam_1.png") as im:
+        assert im.size == (150, 150) and im.mode == "RGBA" and im.getpixel((75, 75))[3] == 0
+
+
 def test_steam_errors(tmp_path, capsys):
     assert main(["steam", str(tmp_path / "missing.png")]) == 2
     assert "not found" in capsys.readouterr().err

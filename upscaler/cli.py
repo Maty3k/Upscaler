@@ -508,15 +508,25 @@ def build_steam_parser() -> argparse.ArgumentParser:
         help="Pan up/down, -100..100 (cover and manual fit).",
     )
     p.add_argument(
+        "--width", type=int, default=steam.DEFAULT_TILE_W, metavar="PX",
+        help=f"Tile width in pixels, {steam.MIN_TILE_W}-{steam.MAX_TILE_W} (default "
+        f"{steam.DEFAULT_TILE_W}, pixel-for-pixel at Steam's display size; 150 is the "
+        "size most guides use). Gaps scale with it.",
+    )
+    p.add_argument(
         "--height", type=int, default=steam.DEFAULT_TILE_H, metavar="PX",
-        help=f"Tile height in display pixels, {steam.MIN_TILE_H}-{steam.MAX_TILE_H} "
+        help=f"Tile height in pixels, {steam.MIN_TILE_H}-{steam.MAX_TILE_H} "
         f"(default {steam.DEFAULT_TILE_H}: square tiles).",
     )
     p.add_argument(
         "--hidpi", action="store_true",
-        help="Render at 2x (245px tiles) so it stays crisp on Retina / HiDPI screens.",
+        help="Double the tile size (245px wide) so it stays crisp on Retina / HiDPI screens.",
     )
-    p.add_argument("--bg", default="#000000", metavar="HEX", help="Letterbox colour (default #000000).")
+    p.add_argument(
+        "--bg", default="#000000", metavar="HEX|transparent",
+        help="Letterbox colour (default #000000), or 'transparent' to leave uncovered "
+        "areas see-through so Steam's backdrop shows.",
+    )
     p.add_argument(
         "--fps", type=int, default=24,
         help="Frame rate for animated tiles (default 24; the size budget may lower it).",
@@ -561,9 +571,11 @@ def run_steam(argv: list[str]) -> int:
         print("error: --output must be a directory", file=sys.stderr)
         return 2
 
+    mult = 2 if args.hidpi else 1
     p = steam.ShowcaseParams(
         fit=args.fit, zoom=args.zoom, off_x=args.pan_x, off_y=args.pan_y,
-        bg_color=args.bg, tile_h=args.height, scale=2 if args.hidpi else 1,
+        bg_color=args.bg, tile_w=steam.HIDPI_TILE_W if args.hidpi else args.width,
+        tile_h=args.height * mult,
     )
     animated = not args.still and panel.media_kind(str(args.input)) == "animated"
     stem = f"{args.input.stem}_steam"

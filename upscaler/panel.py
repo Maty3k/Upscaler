@@ -208,6 +208,8 @@ def _load_font(name: str, size: int) -> ImageFont.FreeTypeFont | ImageFont.Image
 
 
 def _background(cw: int, ch: int, p: PanelParams) -> Image.Image:
+    if p.bg_type == "transparent":
+        return Image.new("RGBA", (cw, ch), (0, 0, 0, 0))
     if p.bg_type != "gradient":
         return Image.new("RGB", (cw, ch), _hex(p.bg_color))
     c1 = np.array(_hex(p.bg_color), dtype=np.float32)
@@ -269,7 +271,9 @@ def compose_frame(
     can reuse the same fit / pan / zoom / background semantics.
     """
     cw, ch = canvas if canvas else canvas_size(p.orientation)
-    canvas = _background(cw, ch, p).convert("RGB")
+    canvas = _background(cw, ch, p)
+    if canvas.mode != "RGBA":
+        canvas = canvas.convert("RGB")
     resample = Image.BILINEAR if fast else Image.LANCZOS
 
     if src is not None:
@@ -277,7 +281,14 @@ def compose_frame(
         dw, dh = _drawn_size(src.width, src.height, cw, ch, p.fit, p.zoom)
         resized = src.resize((dw, dh), resample)
         px, py = _paste_pos(dw, dh, cw, ch, p)
-        canvas.paste(resized, (px, py), resized)
+        if canvas.mode == "RGBA":
+            # A transparent canvas needs true alpha compositing — paste() with
+            # a mask would leave the source's own alpha in the uncovered area.
+            layer = Image.new("RGBA", (cw, ch), (0, 0, 0, 0))
+            layer.paste(resized, (px, py))
+            canvas = Image.alpha_composite(canvas, layer)
+        else:
+            canvas.paste(resized, (px, py), resized)
 
     ctx = {"frame_index": frame_index, "total_frames": max(1, total_frames),
            "fps": max(1, fps)}
@@ -563,6 +574,13 @@ def mockup(src_path: str | None, p: PanelParams, width: int = 1400) -> Image.Ima
     return bg
 
 
+def _flatten_mode(im: Image.Image) -> Image.Image:
+    """RGB, or RGBA when the image actually carries transparency — so a PNG
+    cut-out keeps its see-through area (it used to be flattened to black)."""
+    has_alpha = im.mode in ("RGBA", "LA") or (im.mode == "P" and "transparency" in im.info)
+    return im.convert("RGBA" if has_alpha else "RGB")
+
+
 @lru_cache(maxsize=8)
 def _decode_first_frame(path: str, _mtime: float) -> Image.Image | None:
     """Decode the first frame of a source file. Cached by (path, mtime) so the
@@ -571,7 +589,8 @@ def _decode_first_frame(path: str, _mtime: float) -> Image.Image | None:
     kind = media_kind(path)
     if kind == "image":
         try:
-            return Image.open(path).convert("RGB")
+            with Image.open(path) as im:
+                return _flatten_mode(im)
         except Exception:
             return None
     if kind == "animated":
@@ -580,7 +599,7 @@ def _decode_first_frame(path: str, _mtime: float) -> Image.Image | None:
             try:
                 with Image.open(path) as im:  # context-manage so the fp closes
                     im.seek(0)
-                    return im.convert("RGB")
+                    return _flatten_mode(im)
             except Exception:
                 return None
         # video: pull the first frame with ffmpeg (only once per file, cached)

@@ -32,13 +32,18 @@ def _ramp(w=640, h=360):
 
 # ── geometry ──────────────────────────────────────────────────────────────────
 
-def test_layout_matches_steam_css_at_1x_and_2x():
-    one = steam.layout(steam.ShowcaseParams(scale=1))
+def test_layout_matches_steam_css_at_native_and_hidpi_widths():
+    one = steam.layout(steam.ShowcaseParams())
     assert (one.tile_w, one.gap, one.tile_h) == (122, 4, 122)
     assert one.width == 5 * 122 + 4 * 4 == 626
-    two = steam.layout(steam.ShowcaseParams(scale=2))
+    two = steam.layout(steam.ShowcaseParams(tile_w=steam.HIDPI_TILE_W, tile_h=244))
     assert (two.tile_w, two.gap) == (245, 8)
     assert two.width == 5 * 245 + 4 * 8
+    # the 150×150 size most guides quote: gaps scale so the seams still line up
+    guide = steam.layout(steam.ShowcaseParams(tile_w=150, tile_h=150))
+    assert (guide.gap, guide.width, guide.shown_h) == (5, 770, 122)
+    # a tall tile is shown scaled with the width (488 × 122.4 / 244 = 244.8)
+    assert steam.layout(steam.ShowcaseParams(tile_w=244, tile_h=488)).shown_h == 245
 
 
 def test_boxes_tile_the_row_with_gaps_between():
@@ -51,9 +56,11 @@ def test_boxes_tile_the_row_with_gaps_between():
     assert all(b[3] == 200 and b[1] == 0 for b in boxes)
 
 
-def test_tile_height_is_clamped():
+def test_tile_size_is_clamped():
     assert steam.layout(steam.ShowcaseParams(tile_h=1)).tile_h == steam.MIN_TILE_H
     assert steam.layout(steam.ShowcaseParams(tile_h=10_000)).tile_h == steam.MAX_TILE_H
+    assert steam.layout(steam.ShowcaseParams(tile_w=10)).tile_w == steam.MIN_TILE_W
+    assert steam.layout(steam.ShowcaseParams(tile_w=10_000)).tile_w == steam.MAX_TILE_W
 
 
 # ── compositing + slicing ─────────────────────────────────────────────────────
@@ -61,11 +68,29 @@ def test_tile_height_is_clamped():
 def test_compose_row_exact_size_for_every_fit():
     src = _ramp(400, 300)
     for fit in steam.FITS:
-        for scale in (1, 2):
-            p = steam.ShowcaseParams(fit=fit, scale=scale, tile_h=150)
+        for tile_w in (122, 150, 245):
+            p = steam.ShowcaseParams(fit=fit, tile_w=tile_w, tile_h=150)
             lay = steam.layout(p)
             row = steam.compose_row(src, p)
-            assert row.size == (lay.width, lay.height), (fit, scale)
+            assert row.size == (lay.width, lay.height), (fit, tile_w)
+            assert row.mode == "RGB"
+
+
+def test_transparent_background_keeps_alpha():
+    p = steam.ShowcaseParams(fit="contain", bg_color="transparent")
+    assert p.transparent and steam.ShowcaseParams(bg_color="#ff0000").transparent is False
+    src = Image.new("RGB", (100, 400), (0, 0, 255))
+    row = steam.compose_row(src, p)
+    assert row.mode == "RGBA"
+    assert row.getpixel((2, 60))[3] == 0            # letterbox gap → see-through
+    assert row.getpixel((313, 60))[3] == 255        # source → opaque
+    # a see-through source stays see-through where it was
+    cut = Image.new("RGBA", (626, 122), (0, 0, 0, 0))
+    cut.paste((255, 0, 0, 255), (0, 0, 313, 122))
+    row = steam.compose_row(cut, steam.ShowcaseParams(fit="stretch", bg_color="transparent"))
+    assert row.getpixel((10, 10))[3] == 255 and row.getpixel((600, 10))[3] == 0
+    tiles = steam.slice_row(row, p)
+    assert tiles[0].mode == "RGBA" and tiles[4].getpixel((5, 5))[3] == 0
 
 
 def test_slices_continue_across_the_gaps():
@@ -95,6 +120,10 @@ def test_preview_renders_without_media_and_with_frame():
     assert empty.mode == "RGB" and empty.width == 1120
     with_frame = steam.preview(None, steam.ShowcaseParams(tile_h=300), frame=_ramp())
     assert with_frame.height > empty.height  # taller row → taller preview
+    # transparent + wide tiles render too (checkerboard path, alpha-aware mockup)
+    tr = steam.preview(None, steam.ShowcaseParams(fit="contain", bg_color="transparent",
+                                                  tile_w=150, tile_h=150), frame=_ramp(100, 400))
+    assert tr.mode == "RGB" and tr.width == 1120
 
 
 # ── stills ────────────────────────────────────────────────────────────────────
@@ -161,6 +190,18 @@ def test_budget_ladder_gif_is_palette_only():
     assert ladder[-1] == steam.budget_ladder(30)[-1]
 
 
+def test_export_stills_transparent_writes_rgba(tmp_path):
+    src = tmp_path / "cut.png"
+    Image.new("RGBA", (200, 200), (255, 0, 0, 255)).save(src)
+    p = steam.ShowcaseParams(fit="contain", bg_color="transparent")
+    res = steam.export_stills(str(src), p, out_dir=str(tmp_path / "out"), hexify_for_steam=False)
+    assert res.transparent and "transparent background" in steam.describe(res)
+    with Image.open(res.paths[0]) as im:      # leftmost tile: nothing drawn there
+        assert im.mode == "RGBA" and im.getpixel((60, 60))[3] == 0
+    with Image.open(res.paths[2]) as im:      # middle tile: the square
+        assert im.getpixel((61, 61))[3] == 255
+
+
 def test_extract_size_shrinks_big_sources_only():
     lay = steam.layout(steam.ShowcaseParams())
     # 4K cover into a 626×122 row: width-limited → 626 wide, aspect kept
@@ -189,7 +230,7 @@ def fake_pipeline(monkeypatch):
 
     calls = Calls()
 
-    def fake_encode(pattern, base_fps, out_fps, colors, lay, paths, fmt="apng"):
+    def fake_encode(pattern, base_fps, out_fps, colors, lay, paths, fmt="apng", alpha=False):
         seq_dir = os.path.dirname(pattern)
         n = len([f for f in os.listdir(seq_dir) if f.startswith("s_")])
         frames = n * out_fps / base_fps
@@ -295,6 +336,22 @@ def test_extract_frames_scales_and_reports(tmp_path):
     into2.mkdir()
     with pytest.raises(steam.CancelledError):
         steam._extract_frames(str(src), 8, 0.0, 1.0, str(into2), cancel=lambda: True)
+
+
+@pytest.mark.skipif(ffmpeg is None, reason="ffmpeg not installed")
+def test_export_animated_transparent_keeps_alpha(tmp_path):
+    src = tmp_path / "cut.png"
+    Image.new("RGBA", (200, 200), (255, 0, 0, 255)).save(src)
+    p = steam.ShowcaseParams(fit="contain", bg_color="transparent")
+    for fmt in ("apng", "gif"):
+        res = steam.export_animated(str(src), p, fps=8, trim_end=1, max_mb=0,
+                                    out_dir=str(tmp_path / fmt), fmt=fmt, hexify_for_steam=False)
+        with Image.open(res.paths[0]) as im:      # leftmost tile: nothing drawn there
+            im.seek(0)
+            assert im.convert("RGBA").getpixel((60, 60))[3] == 0, fmt
+        with Image.open(res.paths[2]) as im:      # middle tile: the square
+            im.seek(0)
+            assert im.convert("RGBA").getpixel((61, 61))[3] == 255, fmt
 
 
 @pytest.mark.skipif(ffmpeg is None, reason="ffmpeg not installed")

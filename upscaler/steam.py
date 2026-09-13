@@ -37,13 +37,12 @@ N_SLOTS = 5
 ROW_CSS_W = 632.0        # profile column (652px) minus 10px padding each side
 TILE_CSS_W = 122.4       # 20% of the row, minus a 2px margin on each side
 GAP_CSS = 4.0            # 2px right margin + the neighbour's 2px left margin
+DEFAULT_TILE_W = 122     # rendered at Steam's display size, pixel for pixel
 DEFAULT_TILE_H = 122     # square tiles — how Steam's empty-slot placeholders look
-MIN_TILE_H, MAX_TILE_H = 40, 600
-SCALES: dict[str, int] = {
-    "1× · native (122px tiles)": 1,
-    "2× · HiDPI (245px tiles)": 2,
-}
-DEFAULT_SCALE_LABEL = next(iter(SCALES))
+MIN_TILE_W, MAX_TILE_W = 122, 488     # up to 4× for HiDPI; Steam still shows 122.4px
+MIN_TILE_H, MAX_TILE_H = 40, 1200
+HIDPI_TILE_W = round(TILE_CSS_W * 2)  # 245 — the true 2× of what Steam displays
+TRANSPARENT = "transparent"           # accepted as bg_color: gaps show Steam's backdrop
 
 # ── Upload limits ─────────────────────────────────────────────────────────────
 # Steam documents 8 MB per artwork item; community reports put the reliable
@@ -91,24 +90,36 @@ class CancelledError(Exception):
 
 @dataclass
 class ShowcaseParams:
-    """Everything that shapes the row. ``tile_h`` is in display (1×) pixels;
-    ``scale`` renders the same layout at 1× or 2× for HiDPI screens."""
+    """Everything that shapes the row. ``tile_w`` × ``tile_h`` is the pixel
+    size of each exported tile: Steam always *shows* a tile 122.4px wide (and
+    scales the height with it), so a wider render is purely extra resolution
+    for HiDPI screens, and the gaps scale with it so the picture still lines
+    up. ``bg_color`` may be ``"transparent"``."""
     fit: str = "cover"
     zoom: float = 1.0
     off_x: float = 0.0
     off_y: float = 0.0
     bg_color: str = "#000000"
+    tile_w: int = DEFAULT_TILE_W
     tile_h: int = DEFAULT_TILE_H
-    scale: int = 1
+
+    @property
+    def transparent(self) -> bool:
+        return (self.bg_color or "").strip().lower() == TRANSPARENT
 
 
 @dataclass(frozen=True)
 class Layout:
-    """Integer pixel geometry of the composed row at a given render scale."""
-    scale: int
+    """Integer pixel geometry of the composed row."""
+    scale: float          # tile_w / Steam's 122.4px display width
     tile_w: int
     tile_h: int
     gap: int
+
+    @property
+    def shown_h(self) -> int:
+        """Tile height as Steam displays it (at 122.4px wide)."""
+        return max(1, round(self.tile_h / self.scale))
 
     @property
     def width(self) -> int:
@@ -126,16 +137,18 @@ class Layout:
 
 
 def layout(p: ShowcaseParams) -> Layout:
-    s = max(1, int(p.scale))
+    tile_w = max(MIN_TILE_W, min(MAX_TILE_W, int(p.tile_w)))
     tile_h = max(MIN_TILE_H, min(MAX_TILE_H, int(p.tile_h)))
-    return Layout(s, round(TILE_CSS_W * s), tile_h * s, round(GAP_CSS * s))
+    scale = tile_w / TILE_CSS_W
+    return Layout(scale, tile_w, tile_h, max(1, round(GAP_CSS * scale)))
 
 
 # ── Compositing ───────────────────────────────────────────────────────────────
 def _panel_params(p: ShowcaseParams) -> panel.PanelParams:
     return panel.PanelParams(
         fit=p.fit, zoom=float(p.zoom), off_x=float(p.off_x), off_y=float(p.off_y),
-        bg_type="solid", bg_color=p.bg_color,
+        bg_type="transparent" if p.transparent else "solid",
+        bg_color="#000000" if p.transparent else p.bg_color,
     )
 
 
@@ -158,6 +171,15 @@ _DIM_BG = (22, 22, 26)
 _GAP_INK = (10, 11, 13)
 
 
+def _checkerboard(w: int, h: int, cell: int = 8) -> Image.Image:
+    board = Image.new("RGBA", (w, h), (70, 70, 76, 255))
+    d = ImageDraw.Draw(board)
+    for y in range(0, h, cell):
+        for x in range(((y // cell) % 2) * cell, w, cell * 2):
+            d.rectangle([x, y, x + cell - 1, y + cell - 1], fill=(104, 104, 112, 255))
+    return board
+
+
 def preview(src_path: str | None, p: ShowcaseParams,
             frame: Image.Image | None = None, width: int = 1000) -> Image.Image:
     """Editor preview: on top, the framing view (source dimmed, the kept row
@@ -171,6 +193,11 @@ def preview(src_path: str | None, p: ShowcaseParams,
     disp_h = max(1, round(lay.height * ds))
     comp = compose_row(src, p, fast=True).resize((width, disp_h), Image.BILINEAR)
     gap_cols = [(round(x1 * ds), round((x1 + lay.gap) * ds)) for (_, _, x1, _) in lay.boxes[:-1]]
+    if comp.mode == "RGBA":
+        # Framing view: a checkerboard under see-through areas, as editors do.
+        comp_framing = Image.alpha_composite(_checkerboard(width, disp_h), comp).convert("RGB")
+    else:
+        comp_framing = comp
 
     # ── framing panel ──
     pad_x = round(width * 0.06)
@@ -183,7 +210,7 @@ def preview(src_path: str | None, p: ShowcaseParams,
         rs = src.convert("RGBA").resize((max(1, round(dw * ds)), max(1, round(dh * ds))), Image.BILINEAR)
         framing.paste(rs, (round(pad_x + px * ds), round(pad_y + py * ds)), rs)
         framing = Image.blend(framing, Image.new("RGB", (fw, fh), _DIM_BG), 0.5)
-    framing.paste(comp, (pad_x, pad_y))
+    framing.paste(comp_framing, (pad_x, pad_y))
     d = ImageDraw.Draw(framing)
     for gx0, gx1 in gap_cols:
         d.rectangle([pad_x + gx0, pad_y, pad_x + max(gx0 + 1, gx1) - 1, pad_y + disp_h - 1], fill=_GAP_INK)
@@ -204,7 +231,9 @@ def preview(src_path: str | None, p: ShowcaseParams,
     d.rounded_rectangle([pad_x - box_pad, by0, pad_x + width + box_pad - 1, by0 + disp_h + 2 * box_pad - 1],
                         radius=round(5 * ds), fill=_SHOWCASE_BG)
     for tile, (x0, _, _, _) in zip(tiles, lay.boxes):
-        mock.paste(tile, (pad_x + round(x0 * ds), by0 + box_pad))
+        # Alpha-aware: transparent areas show the showcase box, as on Steam.
+        mock.paste(tile, (pad_x + round(x0 * ds), by0 + box_pad),
+                   tile if tile.mode == "RGBA" else None)
 
     out = Image.new("RGB", (fw, fh + mock_h), _PROFILE_BG)
     out.paste(framing, (0, 0))
@@ -219,6 +248,7 @@ class ExportResult:
     layout: Layout
     fmt: str = "png"   # png (stills) | apng | gif
     hexified: bool = False
+    transparent: bool = False
     fps: int = 0
     colors: int | None = None
     duration: float = 0.0
@@ -259,7 +289,7 @@ def export_stills(src_path: str | None, p: ShowcaseParams,
         tile.save(path, "PNG", optimize=True)
         if hexify_for_steam:
             hexify(path)
-    return ExportResult(paths, layout(p), hexified=hexify_for_steam,
+    return ExportResult(paths, layout(p), hexified=hexify_for_steam, transparent=p.transparent,
                         sizes=[os.path.getsize(x) for x in paths])
 
 
@@ -388,7 +418,8 @@ def _sequence(comp_dir: str, n_use: int, mode: str, fps: int) -> str:
 
 
 def _encode_slices(pattern: str, base_fps: int, out_fps: int, colors: int | None,
-                   lay: Layout, paths: list[str], fmt: str = "apng") -> None:
+                   lay: Layout, paths: list[str], fmt: str = "apng",
+                   alpha: bool = False) -> None:
     """One ffmpeg run: crop the composited row into the five tiles and write
     each as a looping APNG (palette-quantised when ``colors`` is set) or GIF
     (always a palette; ordered dither because it LZW-compresses far better)."""
@@ -406,7 +437,7 @@ def _encode_slices(pattern: str, base_fps: int, out_fps: int, colors: int | None
                 f"[c{i}b][p{i}]paletteuse=dither={dither}[o{i}]"
             )
         else:
-            graph.append(f"[s{i}]{crop},format=rgb24[o{i}]")
+            graph.append(f"[s{i}]{crop},format={'rgba' if alpha else 'rgb24'}[o{i}]")
     cmd = [_ffmpeg(), "-y", "-framerate", str(base_fps), "-i", pattern,
            "-filter_complex", ";".join(graph)]
     for i, path in enumerate(paths):
@@ -484,7 +515,7 @@ def export_animated(
         for i, fn in enumerate(files, 1):
             check_cancel()
             with Image.open(os.path.join(raw, fn)) as fr:
-                compose_row(fr.convert("RGB"), p).save(os.path.join(comp, f"c_{i:05d}.png"))
+                compose_row(panel._flatten_mode(fr), p).save(os.path.join(comp, f"c_{i:05d}.png"))
             if progress and (i % 10 == 0 or i == n):
                 el = time.perf_counter() - t0
                 progress(0.1 + 0.5 * i / n, desc=f"Compositing frame {i}/{n} · {i / n:.0%} · "
@@ -496,7 +527,7 @@ def export_animated(
         cap = int(max_mb * 1024 * 1024) if max_mb and max_mb > 0 else 0
         attempts = budget_ladder(fps, fmt) if cap else budget_ladder(fps, fmt)[:1]
 
-        result = ExportResult(paths, lay, fmt=fmt, animated=True)
+        result = ExportResult(paths, lay, fmt=fmt, animated=True, transparent=p.transparent)
         for k, (f, colors, frac) in enumerate(attempts, 1):
             check_cancel()
             n_use = max(2, int(round(n * frac)))
@@ -506,12 +537,13 @@ def export_animated(
                     what += f" · {n_use / fps:.1f}s"
                 progress(0.6 + 0.35 * k / len(attempts),
                          desc=f"Encoding {fmt.upper()} ({what})…")
-            _encode_slices(_sequence(comp, n_use, loop_mode, fps), fps, f, colors, lay, paths, fmt)
+            _encode_slices(_sequence(comp, n_use, loop_mode, fps), fps, f, colors, lay, paths, fmt,
+                           alpha=p.transparent)
             sizes = [os.path.getsize(x) for x in paths]
             result = ExportResult(paths, lay, fmt=fmt, fps=f, colors=colors,
                                   duration=n_use / fps, sizes=sizes,
                                   fits=(not cap or max(sizes) <= cap),
-                                  attempts=k, animated=True)
+                                  attempts=k, animated=True, transparent=p.transparent)
             if result.fits:
                 break
         if hexify_for_steam:
@@ -534,8 +566,11 @@ def describe(res: ExportResult, max_mb: float = 0.0) -> str:
     lay = res.layout
     mb = [s / (1024 * 1024) for s in (res.sizes or [])]
     sizes = " · ".join(_fmt_size(s) for s in (res.sizes or []))
-    head = (f"{N_SLOTS} tiles · {lay.tile_w}×{lay.tile_h}px each · "
-            f"{lay.gap}px gaps ({lay.scale}×)")
+    head = f"{N_SLOTS} tiles · {lay.tile_w}×{lay.tile_h}px each · {lay.gap}px gaps"
+    if lay.tile_w != DEFAULT_TILE_W:
+        head += f" · Steam shows them at 122×{lay.shown_h}"
+    if res.transparent:
+        head += " · transparent background"
     hexed = " · hexified for Steam" if res.hexified else ""
     if not res.animated:
         return f"{head} · still PNG{hexed}\n{sizes}"

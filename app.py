@@ -1211,13 +1211,13 @@ _STEAM_FMT_GIF = "GIF (animated)"
 _STEAM_FMT_STILL = "PNG (still)"
 
 
-def _steam_params(fit, zoom, off_x, off_y, bg_color, tile_h, scale_label):
+def _steam_params(fit, zoom, off_x, off_y, bg_color, transparent, tile_w, tile_h):
     """Build ShowcaseParams from the tab's controls (order = the preview
     input list minus the media file)."""
     return steam.ShowcaseParams(
         fit=fit, zoom=float(zoom), off_x=float(off_x), off_y=float(off_y),
-        bg_color=bg_color, tile_h=int(tile_h),
-        scale=steam.SCALES.get(scale_label, 1),
+        bg_color=steam.TRANSPARENT if transparent else bg_color,
+        tile_w=int(tile_w), tile_h=int(tile_h),
     )
 
 
@@ -1247,12 +1247,12 @@ def steam_on_media(media):
     )
 
 
-def steam_export_ui(media, fit, zoom, off_x, off_y, bg_color, tile_h, scale_label,
+def steam_export_ui(media, fit, zoom, off_x, off_y, bg_color, transparent, tile_w, tile_h,
                     out_fmt, fps, trim_start, trim_end, loop_mode, max_mb, hexify,
                     out_dir, progress=gr.Progress()):
     if not media:
         raise gr.Error("Upload an image, GIF or video first.")
-    p = _steam_params(fit, zoom, off_x, off_y, bg_color, tile_h, scale_label)
+    p = _steam_params(fit, zoom, off_x, off_y, bg_color, transparent, tile_w, tile_h)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     stem = f"steam_{stamp}"
     animated = (out_fmt in (_STEAM_FMT_ANIM, _STEAM_FMT_GIF)
@@ -3020,25 +3020,33 @@ def build_demo() -> gr.Blocks:
                             "set to manual.",
                         )
                         with gr.Row():
+                            st_tilew = gr.Slider(
+                                steam.MIN_TILE_W, steam.MAX_TILE_W, value=steam.DEFAULT_TILE_W,
+                                step=1, label="Tile width (px)",
+                                info="Pixel width of each exported tile. Steam always shows "
+                                "a tile 122px wide, so 122 is pixel-for-pixel; 150 is the "
+                                "size most guides use; 245 stays crisp on Retina / HiDPI "
+                                "screens. The gaps scale with it.",
+                            )
                             st_tileh = gr.Slider(
                                 steam.MIN_TILE_H, steam.MAX_TILE_H, value=steam.DEFAULT_TILE_H,
                                 step=1, label="Tile height (px)",
-                                info="Steam shows every tile 122px wide; the height is "
-                                "yours — 122 makes square tiles (the stock look), "
-                                "taller makes a bigger banner.",
+                                info="Pixel height of each tile — same as the width makes "
+                                "square tiles (the stock look), taller makes a bigger "
+                                "banner. Steam scales it with the width.",
                             )
-                            st_scale = gr.Radio(
-                                list(steam.SCALES), value=steam.DEFAULT_SCALE_LABEL,
-                                label="Resolution",
-                                info="1× is pixel-for-pixel at Steam's size. 2× renders "
-                                "the same layout at double size so it stays crisp on "
-                                "Retina / HiDPI screens (bigger files).",
+                        with gr.Row():
+                            st_bg = gr.ColorPicker(
+                                value="#000000", label="Background (fills letterbox gaps)",
+                                info="Shows through wherever the media doesn't cover the "
+                                "row (contain fit, or a zoomed-out manual fit).",
                             )
-                        st_bg = gr.ColorPicker(
-                            value="#000000", label="Background (fills letterbox gaps)",
-                            info="Shows through wherever the media doesn't cover the row "
-                            "(contain fit, or a zoomed-out manual fit).",
-                        )
+                            st_transparent = gr.Checkbox(
+                                value=False, label="Transparent background",
+                                info="Leave uncovered areas see-through so Steam's own "
+                                "backdrop shows — great with a cut-out PNG (Remove BG) "
+                                "or a contain fit. Ignores the colour.",
+                            )
                         with gr.Group(visible=False) as st_anim_group:
                             gr.Markdown("**Animation** — for APNG / GIF export.")
                             with gr.Row():
@@ -3408,7 +3416,7 @@ def build_demo() -> gr.Blocks:
         # ---- Steam showcase wiring ----
         # Order after the media file must match _steam_params.
         _st_preview_inputs = [st_media, st_fit, st_zoom, st_offx, st_offy, st_bg,
-                              st_tileh, st_scale]
+                              st_transparent, st_tilew, st_tileh]
         st_media.change(
             steam_preview_ui, _st_preview_inputs, st_preview, show_progress="hidden",
         )
