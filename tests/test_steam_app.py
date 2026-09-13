@@ -31,6 +31,14 @@ def test_app_steam_on_media_switches_format_and_animation_controls(tmp_path):
     assert "Upload" in note and group["visible"] is False
 
 
+def test_app_steam_format_choices_cover_all_three():
+    pytest.importorskip("gradio")
+    import app
+
+    assert len({app._STEAM_FMT_STILL, app._STEAM_FMT_ANIM, app._STEAM_FMT_GIF}) == 3
+    assert "GIF" in app._STEAM_FMT_GIF
+
+
 def test_app_steam_export_requires_media():
     gr = pytest.importorskip("gradio")
     import app

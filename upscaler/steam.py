@@ -13,8 +13,9 @@ Everything is composed with the Lian Li panel compositor (same fit / pan / zoom
 / background rules) onto a canvas that spans exactly the five tiles *and the
 four gaps between them*, then cut into slices — so a picture continues across
 the gaps instead of jumping. Animated sources export one APNG per slice via
-ffmpeg, shrunk step by step (palette → fps → length) until every file fits the
-upload cap; stills export five plain PNGs with PIL only.
+ffmpeg (or one GIF per slice), shrunk step by step (palette → fps → length)
+until every file fits the upload cap; stills export five plain PNGs with PIL
+only.
 """
 
 from __future__ import annotations
@@ -52,6 +53,7 @@ MAX_DURATION_SEC = 60    # showcase loops are short — bound the frame extracti
 MAX_FPS = panel.MAX_FPS
 LOOP_STYLES = panel.LOOP_STYLES
 FITS = panel.FITS
+ANIM_FORMATS = ("apng", "gif")   # APNG keeps full colour; GIF is always ≤ 256 colours
 
 UPLOAD_GUIDE = """\
 Steam only shows animated tiles if you upload them as **artwork that Steam files
@@ -201,6 +203,7 @@ def preview(src_path: str | None, p: ShowcaseParams,
 class ExportResult:
     paths: list[str]
     layout: Layout
+    fmt: str = "png"   # png (stills) | apng | gif
     fps: int = 0
     colors: int | None = None
     duration: float = 0.0
@@ -214,8 +217,8 @@ class ExportResult:
         return max(self.sizes) if self.sizes else 0
 
 
-def _tile_paths(out_dir: str, stem: str) -> list[str]:
-    return [os.path.join(out_dir, f"{stem}_{i}.png") for i in range(1, N_SLOTS + 1)]
+def _tile_paths(out_dir: str, stem: str, ext: str = ".png") -> list[str]:
+    return [os.path.join(out_dir, f"{stem}_{i}{ext}") for i in range(1, N_SLOTS + 1)]
 
 
 def export_stills(src_path: str | None, p: ShowcaseParams,
@@ -233,11 +236,12 @@ def export_stills(src_path: str | None, p: ShowcaseParams,
     return ExportResult(paths, layout(p), sizes=[os.path.getsize(x) for x in paths])
 
 
-def budget_ladder(fps: int) -> list[tuple[int, int | None, float]]:
+def budget_ladder(fps: int, fmt: str = "apng") -> list[tuple[int, int | None, float]]:
     """Encode attempts as ``(fps, palette colours or None, length fraction)``,
     best quality first: truecolor as asked → a 256-colour palette (near
     invisible on tiles this small) → lower fps → 128 colours → a shorter clip.
-    The last rung is the most compressed we'll go."""
+    The last rung is the most compressed we'll go. GIF is always a palette, so
+    its ladder starts at the 256-colour rung."""
     fps = max(1, min(MAX_FPS, int(fps)))
     fps_steps: list[int] = []
     for f in (fps, 24, 20, 15, 12, 10):
@@ -248,6 +252,9 @@ def budget_ladder(fps: int) -> list[tuple[int, int | None, float]]:
     low = fps_steps[-1]
     ladder.append((low, 128, 1.0))
     ladder += [(low, 128, frac) for frac in (0.75, 0.5, 0.35, 0.25)]
+    if fmt == "gif":
+        ladder = [(f, c or 256, fr) for f, c, fr in ladder]
+        ladder = [step for i, step in enumerate(ladder) if i == 0 or step != ladder[i - 1]]
     return ladder
 
 
@@ -287,28 +294,35 @@ def _sequence(comp_dir: str, n_use: int, mode: str, fps: int) -> str:
 
 
 def _encode_slices(pattern: str, base_fps: int, out_fps: int, colors: int | None,
-                   lay: Layout, paths: list[str]) -> None:
+                   lay: Layout, paths: list[str], fmt: str = "apng") -> None:
     """One ffmpeg run: crop the composited row into the five tiles and write
-    each as a looping APNG (palette-quantised when ``colors`` is set)."""
+    each as a looping APNG (palette-quantised when ``colors`` is set) or GIF
+    (always a palette; ordered dither because it LZW-compresses far better)."""
+    gif = fmt == "gif"
+    if gif:
+        colors = colors or 256
     graph = [f"[0:v]fps={out_fps},split={N_SLOTS}" + "".join(f"[s{i}]" for i in range(N_SLOTS))]
     for i, (x0, y0, x1, y1) in enumerate(lay.boxes):
         crop = f"crop={x1 - x0}:{y1 - y0}:{x0}:{y0}"
         if colors:
+            dither = "bayer" if gif else "sierra2_4a"
             graph.append(
                 f"[s{i}]{crop},split[c{i}a][c{i}b];"
                 f"[c{i}a]palettegen=max_colors={colors}[p{i}];"
-                f"[c{i}b][p{i}]paletteuse=dither=sierra2_4a[o{i}]"
+                f"[c{i}b][p{i}]paletteuse=dither={dither}[o{i}]"
             )
         else:
             graph.append(f"[s{i}]{crop},format=rgb24[o{i}]")
     cmd = [_ffmpeg(), "-y", "-framerate", str(base_fps), "-i", pattern,
            "-filter_complex", ";".join(graph)]
     for i, path in enumerate(paths):
-        cmd += ["-map", f"[o{i}]", "-f", "apng", "-plays", "0", "-pred", "mixed", path]
+        cmd += ["-map", f"[o{i}]"]
+        cmd += ["-f", "gif", "-loop", "0"] if gif else ["-f", "apng", "-plays", "0", "-pred", "mixed"]
+        cmd.append(path)
     panel._ffmpeg_run(cmd)
     for path in paths:
         if not os.path.exists(path) or not os.path.getsize(path):
-            raise RuntimeError("ffmpeg produced an empty APNG.")
+            raise RuntimeError(f"ffmpeg produced an empty {fmt.upper()}.")
 
 
 def export_animated(
@@ -322,14 +336,18 @@ def export_animated(
     max_mb: float = DEFAULT_MAX_MB,
     out_dir: str | None = None,
     stem: str = "steam",
+    fmt: str = "apng",
     progress=None,
 ) -> ExportResult:
-    """Five looping APNG tiles. Frames are extracted once at ``fps`` and
-    composited once; then the budget ladder re-encodes (cheap at tile size)
-    until every tile is ≤ ``max_mb`` (0 disables the budget). Returns the
-    first attempt that fits, or the last (smallest) one with ``fits=False``."""
+    """Five looping APNG (or GIF) tiles. Frames are extracted once at ``fps``
+    and composited once; then the budget ladder re-encodes (cheap at tile
+    size) until every tile is ≤ ``max_mb`` (0 disables the budget). Returns
+    the first attempt that fits, or the last (smallest) one with
+    ``fits=False``."""
     if not src_path:
         raise ValueError("Upload media first.")
+    if fmt not in ANIM_FORMATS:
+        raise ValueError(f"fmt must be one of {ANIM_FORMATS}, not {fmt!r}")
     fps = max(1, min(MAX_FPS, int(fps)))
     lay = layout(p)
     start, dur, has_end = _trim_window(src_path, trim_start, trim_end)
@@ -368,22 +386,24 @@ def export_animated(
 
         out_dir = out_dir or tempfile.mkdtemp(prefix="steam_")
         os.makedirs(out_dir, exist_ok=True)
-        paths = _tile_paths(out_dir, stem)
+        paths = _tile_paths(out_dir, stem, ".gif" if fmt == "gif" else ".png")
         cap = int(max_mb * 1024 * 1024) if max_mb and max_mb > 0 else 0
-        attempts = budget_ladder(fps) if cap else [(fps, None, 1.0)]
+        attempts = budget_ladder(fps, fmt) if cap else budget_ladder(fps, fmt)[:1]
 
-        result = ExportResult(paths, lay, animated=True)
+        result = ExportResult(paths, lay, fmt=fmt, animated=True)
         for k, (f, colors, frac) in enumerate(attempts, 1):
             n_use = max(2, int(round(n * frac)))
             if progress:
                 what = f"{f} fps · {colors or 'full'} colours"
                 if frac < 1:
                     what += f" · {n_use / fps:.1f}s"
-                progress(0.6 + 0.35 * k / len(attempts), desc=f"Encoding APNG ({what})…")
-            _encode_slices(_sequence(comp, n_use, loop_mode, fps), fps, f, colors, lay, paths)
+                progress(0.6 + 0.35 * k / len(attempts),
+                         desc=f"Encoding {fmt.upper()} ({what})…")
+            _encode_slices(_sequence(comp, n_use, loop_mode, fps), fps, f, colors, lay, paths, fmt)
             sizes = [os.path.getsize(x) for x in paths]
-            result = ExportResult(paths, lay, fps=f, colors=colors, duration=n_use / fps,
-                                  sizes=sizes, fits=(not cap or max(sizes) <= cap),
+            result = ExportResult(paths, lay, fmt=fmt, fps=f, colors=colors,
+                                  duration=n_use / fps, sizes=sizes,
+                                  fits=(not cap or max(sizes) <= cap),
                                   attempts=k, animated=True)
             if result.fits:
                 break
@@ -407,7 +427,7 @@ def describe(res: ExportResult, max_mb: float = 0.0) -> str:
             f"{lay.gap}px gaps ({lay.scale}×)")
     if not res.animated:
         return f"{head} · still PNG\n{sizes}"
-    detail = (f"APNG · {res.fps} fps · {res.colors or 'full'} colours · "
+    detail = (f"{res.fmt.upper()} · {res.fps} fps · {res.colors or 'full'} colours · "
               f"{res.duration:.1f}s · looping")
     if res.attempts > 1:
         detail += f" · shrunk in {res.attempts} steps to fit"

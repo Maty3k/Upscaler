@@ -147,14 +147,15 @@ upscaler pdf extract in.pdf                        # → ./in_pages/ next to the
 upscaler steam clip.mp4 -o ./tiles                  # five looping APNG tiles (needs ffmpeg)
 upscaler steam photo.jpg --height 200 --pan-y 20    # five still PNG tiles, a taller row
 upscaler steam clip.mp4 --fps 15 --end 4 --loop boomerang --max-mb 5
+upscaler steam clip.mp4 -o ./tiles --gif            # GIF tiles instead (256 colours, smaller)
 upscaler steam --how-to-upload                      # the browser-console upload steps
 ```
 
 Cuts one picture or clip into the five tiles Steam shows side by side in a
 profile's **Workshop Showcase**, at Steam's exact geometry (122 px tiles, 4 px
 gaps, height of your choice; `--hidpi` renders at 2×) so the image lines up
-across all five. Clips become one looping animated PNG per tile, shrunk in
-steps (256 colours → lower fps → shorter clip) until each file fits the
+across all five. Clips become one looping animated PNG (or GIF) per tile,
+shrunk in steps (256 colours → lower fps → shorter clip) until each file fits the
 `--max-mb` budget (default 5 MB; Steam documents 8 MB). Uploading animated
 tiles needs a one-line browser-console trick that `--how-to-upload` prints.
 

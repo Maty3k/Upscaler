@@ -131,6 +131,14 @@ def test_budget_ladder_order_and_bounds():
     assert steam.budget_ladder(12)[2][0] == 10
 
 
+def test_budget_ladder_gif_is_palette_only():
+    ladder = steam.budget_ladder(30, "gif")
+    assert ladder[0] == (30, 256, 1.0)          # no truecolor rung for GIF
+    assert all(c is not None for _, c, _ in ladder)
+    assert len(ladder) == len(steam.budget_ladder(30)) - 1   # the duplicate collapsed
+    assert ladder[-1] == steam.budget_ladder(30)[-1]
+
+
 @pytest.fixture
 def fake_pipeline(monkeypatch):
     """Replace ffmpeg extraction + encoding with fakes: 24 frames come from
@@ -141,14 +149,18 @@ def fake_pipeline(monkeypatch):
             base.save(os.path.join(into, f"frame_{i:05d}.png"))
         return 24
 
-    calls = []
+    class Calls(list):
+        fmt = None   # the format the last encode was asked for
 
-    def fake_encode(pattern, base_fps, out_fps, colors, lay, paths):
+    calls = Calls()
+
+    def fake_encode(pattern, base_fps, out_fps, colors, lay, paths, fmt="apng"):
         seq_dir = os.path.dirname(pattern)
         n = len([f for f in os.listdir(seq_dir) if f.startswith("s_")])
         frames = n * out_fps / base_fps
         size = int(frames * (300 if colors is None else colors))
         calls.append((out_fps, colors, n))
+        calls.fmt = fmt
         for path in paths:
             Path(path).write_bytes(b"x" * size)
 
@@ -192,6 +204,18 @@ def test_export_animated_no_budget_encodes_once(tmp_path, fake_pipeline):
     assert fake_pipeline == [(12, None, 46)]    # boomerang: 1..24 then 23..2
 
 
+def test_export_animated_gif_uses_gif_paths_and_palette(tmp_path, fake_pipeline):
+    src = tmp_path / "in.mp4"
+    src.write_bytes(b"fake")
+    res = steam.export_animated(str(src), steam.ShowcaseParams(), fps=12, max_mb=0,
+                                out_dir=str(tmp_path / "out"), fmt="gif")
+    assert res.fmt == "gif" and res.colors == 256 and fake_pipeline.fmt == "gif"
+    assert [Path(p).name for p in res.paths] == [f"steam_{i}.gif" for i in range(1, 6)]
+    assert "GIF · 12 fps · 256 colours" in steam.describe(res)
+    with pytest.raises(ValueError):
+        steam.export_animated(str(src), steam.ShowcaseParams(), fmt="webp")
+
+
 # ── real ffmpeg ───────────────────────────────────────────────────────────────
 
 @pytest.mark.skipif(ffmpeg is None, reason="ffmpeg not installed")
@@ -210,3 +234,21 @@ def test_export_animated_writes_looping_apngs(tmp_path):
             assert im.format == "PNG" and im.is_animated and im.n_frames > 1
             assert im.size == (122, 122)
         assert os.path.getsize(path) <= 0.05 * 1024 * 1024
+
+
+@pytest.mark.skipif(ffmpeg is None, reason="ffmpeg not installed")
+def test_export_animated_writes_looping_gifs(tmp_path):
+    src = tmp_path / "in.mp4"
+    subprocess.run(
+        [ffmpeg, "-y", "-f", "lavfi", "-i", "testsrc2=size=160x90:rate=8:duration=1",
+         "-pix_fmt", "yuv420p", str(src)],
+        capture_output=True, check=True,
+    )
+    res = steam.export_animated(str(src), steam.ShowcaseParams(), fps=8, max_mb=0.05,
+                                out_dir=str(tmp_path / "out"), fmt="gif")
+    assert res.fits and res.fmt == "gif"
+    for path in res.paths:
+        assert path.endswith(".gif")
+        with Image.open(path) as im:
+            assert im.format == "GIF" and im.is_animated and im.n_frames > 1
+            assert im.size == (122, 122)

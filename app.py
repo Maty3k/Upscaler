@@ -1206,6 +1206,7 @@ def panel_enhance_source(media, up_model, *vals, progress=gr.Progress()):
 # ── Steam Workshop Showcase ───────────────────────────────────────────────────
 _STEAM_FPS = ["10", "12", "15", "20", "24", "30"]
 _STEAM_FMT_ANIM = "APNG (animated)"
+_STEAM_FMT_GIF = "GIF (animated)"
 _STEAM_FMT_STILL = "PNG (still)"
 
 
@@ -1253,7 +1254,8 @@ def steam_export_ui(media, fit, zoom, off_x, off_y, bg_color, tile_h, scale_labe
     p = _steam_params(fit, zoom, off_x, off_y, bg_color, tile_h, scale_label)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     stem = f"steam_{stamp}"
-    animated = out_fmt == _STEAM_FMT_ANIM and panel.media_kind(media) == "animated"
+    animated = (out_fmt in (_STEAM_FMT_ANIM, _STEAM_FMT_GIF)
+                and panel.media_kind(media) == "animated")
     max_mb = float(max_mb or 0)
     progress(0.02, desc="Preparing…")
     try:
@@ -1261,7 +1263,8 @@ def steam_export_ui(media, fit, zoom, off_x, off_y, bg_color, tile_h, scale_labe
             res = steam.export_animated(
                 media, p, fps=int(fps), trim_start=float(trim_start or 0),
                 trim_end=float(trim_end or 0), loop_mode=loop_mode, max_mb=max_mb,
-                out_dir=_ensure_export_dir(), stem=stem, progress=progress,
+                out_dir=_ensure_export_dir(), stem=stem,
+                fmt="gif" if out_fmt == _STEAM_FMT_GIF else "apng", progress=progress,
             )
         else:
             res = steam.export_stills(media, p, out_dir=_ensure_export_dir(), stem=stem)
@@ -3030,7 +3033,7 @@ def build_demo() -> gr.Blocks:
                             "(contain fit, or a zoomed-out manual fit).",
                         )
                         with gr.Group(visible=False) as st_anim_group:
-                            gr.Markdown("**Animation** — for APNG export.")
+                            gr.Markdown("**Animation** — for APNG / GIF export.")
                             with gr.Row():
                                 st_start = gr.Number(value=0, label="Trim start (s)", minimum=0,
                                                      info="Skip everything before this point.")
@@ -3055,10 +3058,12 @@ def build_demo() -> gr.Blocks:
                                 "5 MB is the safe bet. 0 = no limit.",
                             )
                         st_fmt = gr.Radio(
-                            [_STEAM_FMT_STILL, _STEAM_FMT_ANIM], value=_STEAM_FMT_STILL,
-                            label="Export format",
+                            [_STEAM_FMT_STILL, _STEAM_FMT_ANIM, _STEAM_FMT_GIF],
+                            value=_STEAM_FMT_STILL, label="Export format",
                             info="PNG = five stills from the first frame · APNG = five "
-                            "looping animations (video / GIF sources).",
+                            "looping animations in full colour · GIF = the same in "
+                            "256 colours (smaller files; the format most Steam guides "
+                            "use).",
                         )
                         st_outdir = gr.Textbox(
                             value=cfg["output_dir"],

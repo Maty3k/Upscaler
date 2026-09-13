@@ -58,6 +58,10 @@ def test_steam_clip_exports_apngs(tmp_path):
     assert len(files) == 5
     with Image.open(files[0]) as im:
         assert im.is_animated and im.n_frames > 1
+    # --gif switches the animated tiles to GIF
+    assert main(["steam", str(src), "-o", str(tmp_path / "gifs"), "--fps", "8", "--gif"]) == 0
+    with Image.open(tmp_path / "gifs" / "clip_steam_1.gif") as im:
+        assert im.format == "GIF" and im.is_animated
     # --still forces PNG stills even for a clip
     assert main(["steam", str(src), "-o", str(tmp_path / "stills"), "--still"]) == 0
     with Image.open(tmp_path / "stills" / "clip_steam_1.png") as im:

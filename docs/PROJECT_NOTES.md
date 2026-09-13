@@ -25,7 +25,7 @@ All phases complete and on `main`. Test suite: **21 passing** (CPU, no downloads
 | 4 | **ONNX Runtime** backend — torch-free, often faster on CPU (`--onnx`) | `onnx_export.py`, `onnx_engine.py` |
 | — | SHA-256 checksums pinned on all weights | `models/registry.py`, `scripts/print_checksums.py` |
 | — | Served locally at `upscaler.test` via Herd nginx proxy → Gradio | (see [Serving](#5-serving-locally-via-herd)) |
-| — | **Steam Showcase** tab + `upscaler steam` — one picture/clip → the five Workshop Showcase tiles (still PNG, or looping APNG shrunk to a size budget) at Steam's CSS geometry | `steam.py` |
+| — | **Steam Showcase** tab + `upscaler steam` — one picture/clip → the five Workshop Showcase tiles (still PNG, or looping APNG / GIF shrunk to a size budget) at Steam's CSS geometry | `steam.py` |
 
 ### Models in the registry
 - `realesrgan-x4plus` — general 4x (default)

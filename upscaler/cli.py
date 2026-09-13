@@ -477,7 +477,8 @@ def build_steam_parser() -> argparse.ArgumentParser:
         description="Cut an image, GIF or video into the five tiles of a Steam profile "
         "Workshop Showcase, at Steam's exact tile widths and gaps so the picture "
         "lines up across all five. Stills export five PNGs; clips export five "
-        "looping APNGs shrunk step by step to fit the upload cap (needs ffmpeg).",
+        "looping APNGs (or GIFs with --gif) shrunk step by step to fit the upload "
+        "cap (needs ffmpeg).",
     )
     p.add_argument("input", type=Path, nargs="?", help="Image, GIF or video file.")
     p.add_argument(
@@ -487,6 +488,10 @@ def build_steam_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--still", action="store_true",
         help="Export still PNG tiles from the first frame, even for a clip.",
+    )
+    p.add_argument(
+        "--gif", action="store_true",
+        help="Animated tiles as GIF (256 colours, smaller) instead of full-colour APNG.",
     )
     p.add_argument(
         "--fit", choices=steam.FITS, default="cover",
@@ -569,7 +574,8 @@ def run_steam(argv: list[str]) -> int:
             res = steam.export_animated(
                 str(args.input), p, fps=args.fps, trim_start=args.start,
                 trim_end=args.end, loop_mode=args.loop, max_mb=args.max_mb,
-                out_dir=str(out_dir), stem=stem, progress=progress,
+                out_dir=str(out_dir), stem=stem, fmt="gif" if args.gif else "apng",
+                progress=progress,
             )
         else:
             res = steam.export_stills(str(args.input), p, out_dir=str(out_dir), stem=stem)
