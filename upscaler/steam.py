@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import subprocess
 import tempfile
 import time
 from dataclasses import dataclass
@@ -73,6 +74,10 @@ safe bet), which is what the size budget below is for. The trick is community
 knowledge, not a Steam feature, so if an upload fails, check a current
 "Steam workshop showcase animated" guide for changes.
 """
+
+
+class CancelledError(Exception):
+    """The caller's cancel flag turned true mid-export."""
 
 
 @dataclass
@@ -258,7 +263,8 @@ def budget_ladder(fps: int, fmt: str = "apng") -> list[tuple[int, int | None, fl
     return ladder
 
 
-def _trim_window(src_path: str, trim_start: float, trim_end: float) -> tuple[float, float, bool]:
+def _trim_window(src_path: str, trim_start: float, trim_end: float) -> tuple[float, float, bool, bool]:
+    """(start, duration, explicit_end, duration_known) for the export window."""
     dur_total = panel.media_duration(src_path)
     start = max(0.0, float(trim_start or 0))
     has_end = bool(trim_end and float(trim_end) > start)
@@ -268,7 +274,73 @@ def _trim_window(src_path: str, trim_start: float, trim_end: float) -> tuple[flo
         dur = min(dur_total - start, MAX_DURATION_SEC)
     else:
         dur = MAX_DURATION_SEC  # unknown length: let ffmpeg read to EOF, capped
-    return start, dur, has_end
+    return start, dur, has_end, has_end or dur_total > start
+
+
+def extract_size(src_w: int, src_h: int, lay: Layout, p: ShowcaseParams) -> tuple[int, int] | None:
+    """The size frames can be shrunk to *during extraction* without changing
+    the composition: the fit's drawn size depends only on the source aspect,
+    so a pre-scaled frame lands on the row identically. Returns None when the
+    fit would enlarge the source (then the original pixels are the best we
+    have) — a 4K phone clip otherwise hits the disk as thousands of 4K PNGs."""
+    dw, dh = panel._drawn_size(src_w, src_h, lay.width, lay.height, p.fit, p.zoom)
+    if dw >= src_w or dh >= src_h:
+        return None
+    return dw, dh
+
+
+def _extract_frames(src_path: str, fps: float, start: float, dur: float, into: str,
+                    size: tuple[int, int] | None = None, progress=None, cancel=None,
+                    total_hint: int = 0) -> int:
+    """Extract ``frame_%05d.png`` files, scaled to ``size`` on the way out.
+    Streams ffmpeg's own ``-progress`` feed so the UI keeps moving through a
+    long decode (and anything proxying it sees traffic), and kills ffmpeg as
+    soon as ``cancel()`` turns true. Returns the frame count."""
+    vf = f"fps={fps}"
+    if size:
+        vf += f",scale={size[0]}:{size[1]}:flags=lanczos"
+    cmd = [_ffmpeg(), "-y", "-nostats", "-loglevel", "error", "-progress", "pipe:1"]
+    if start > 0:
+        cmd += ["-ss", str(start)]
+    cmd += ["-i", str(src_path)]
+    if dur > 0:
+        cmd += ["-t", str(dur)]
+    cmd += ["-vf", vf, "-vsync", "0", os.path.join(into, "frame_%05d.png")]
+
+    err_path = os.path.join(into, "_ffmpeg.err")
+    last = 0.0
+    with open(err_path, "wb") as err:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=err, text=True,
+                                encoding="utf-8", errors="replace")
+        try:
+            for line in proc.stdout:  # one key=value per line, a block every ~0.5 s
+                if cancel and cancel():
+                    raise CancelledError("Export cancelled.")
+                if not line.startswith("frame=") or not progress:
+                    continue
+                try:
+                    frame = int(line.split("=", 1)[1])
+                except ValueError:
+                    continue
+                now = time.perf_counter()
+                if now - last >= 0.5:
+                    last = now
+                    if total_hint:
+                        progress(0.05 + 0.15 * min(1.0, frame / total_hint),
+                                 desc=f"Extracting frame {frame}/{total_hint}…")
+                    else:
+                        progress(0.1, desc=f"Extracting frame {frame}…")
+            rc = proc.wait()
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+    if rc != 0:
+        with open(err_path, errors="replace") as fh:
+            tail = "\n".join(fh.read().strip().splitlines()[-6:])
+        raise RuntimeError(f"ffmpeg failed:\n{tail}")
+    os.remove(err_path)
+    return len([f for f in os.listdir(into) if f.startswith("frame_")])
 
 
 def _link(src: str, dst: str) -> None:
@@ -338,19 +410,29 @@ def export_animated(
     stem: str = "steam",
     fmt: str = "apng",
     progress=None,
+    cancel=None,
 ) -> ExportResult:
     """Five looping APNG (or GIF) tiles. Frames are extracted once at ``fps``
-    and composited once; then the budget ladder re-encodes (cheap at tile
-    size) until every tile is ≤ ``max_mb`` (0 disables the budget). Returns
-    the first attempt that fits, or the last (smallest) one with
-    ``fits=False``."""
+    (already shrunk to the size the row needs) and composited once; then the
+    budget ladder re-encodes (cheap at tile size) until every tile is ≤
+    ``max_mb`` (0 disables the budget). Returns the first attempt that fits,
+    or the last (smallest) one with ``fits=False``. ``cancel`` is polled
+    throughout and raises ``CancelledError`` when it turns true."""
     if not src_path:
         raise ValueError("Upload media first.")
     if fmt not in ANIM_FORMATS:
         raise ValueError(f"fmt must be one of {ANIM_FORMATS}, not {fmt!r}")
     fps = max(1, min(MAX_FPS, int(fps)))
     lay = layout(p)
-    start, dur, has_end = _trim_window(src_path, trim_start, trim_end)
+    base = panel._first_image(src_path)
+    if base is None:
+        raise ValueError("Couldn't decode the uploaded media — it may be corrupt or an "
+                         "unsupported format.")
+    start, dur, has_end, known = _trim_window(src_path, trim_start, trim_end)
+
+    def check_cancel() -> None:
+        if cancel and cancel():
+            raise CancelledError("Export cancelled.")
 
     work = tempfile.mkdtemp(prefix="steam_work_")
     raw = os.path.join(work, "raw")
@@ -360,12 +442,12 @@ def export_animated(
     try:
         if progress:
             progress(0.05, desc="Extracting frames…")
-        n = panel._extract_frames(src_path, fps, start, dur, raw)
+        n = _extract_frames(
+            src_path, fps, start, dur, raw, size=extract_size(base.width, base.height, lay, p),
+            progress=progress, cancel=cancel,
+            total_hint=int(round(dur * fps)) if known else 0,
+        )
         if n <= 1:
-            base = panel._first_image(src_path)
-            if base is None:
-                raise ValueError("Couldn't decode the uploaded media — it may be corrupt "
-                                 "or an unsupported format.")
             hold = dur if has_end else min(dur, 3.0)
             n = max(2, int(round(hold * fps)))
             for i in range(1, n + 1):
@@ -377,6 +459,7 @@ def export_animated(
         n = len(files)
         t0 = time.perf_counter()
         for i, fn in enumerate(files, 1):
+            check_cancel()
             with Image.open(os.path.join(raw, fn)) as fr:
                 compose_row(fr.convert("RGB"), p).save(os.path.join(comp, f"c_{i:05d}.png"))
             if progress and (i % 10 == 0 or i == n):
@@ -392,6 +475,7 @@ def export_animated(
 
         result = ExportResult(paths, lay, fmt=fmt, animated=True)
         for k, (f, colors, frac) in enumerate(attempts, 1):
+            check_cancel()
             n_use = max(2, int(round(n * frac)))
             if progress:
                 what = f"{f} fps · {colors or 'full'} colours"

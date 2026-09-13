@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -139,11 +140,24 @@ def test_budget_ladder_gif_is_palette_only():
     assert ladder[-1] == steam.budget_ladder(30)[-1]
 
 
+def test_extract_size_shrinks_big_sources_only():
+    lay = steam.layout(steam.ShowcaseParams())
+    # 4K cover into a 626×122 row: width-limited → 626 wide, aspect kept
+    assert steam.extract_size(3840, 2160, lay, steam.ShowcaseParams()) == (626, 352)
+    # stretch → exactly the row
+    assert steam.extract_size(3840, 2160, lay, steam.ShowcaseParams(fit="stretch")) == (626, 122)
+    # manual zoom scales the target with it
+    assert steam.extract_size(3840, 2160, lay, steam.ShowcaseParams(fit="manual", zoom=2))[0] == 1252
+    # a small source would be enlarged — keep its native pixels
+    assert steam.extract_size(300, 200, lay, steam.ShowcaseParams()) is None
+
+
 @pytest.fixture
 def fake_pipeline(monkeypatch):
     """Replace ffmpeg extraction + encoding with fakes: 24 frames come from
     PIL, and each 'encode' writes files whose size tracks frames × colours."""
-    def fake_extract(src_path, fps, start, dur, into):
+    def fake_extract(src_path, fps, start, dur, into, size=None, progress=None,
+                     cancel=None, total_hint=0):
         base = Image.new("RGB", (64, 36), (200, 30, 30))
         for i in range(1, 25):
             base.save(os.path.join(into, f"frame_{i:05d}.png"))
@@ -164,10 +178,29 @@ def fake_pipeline(monkeypatch):
         for path in paths:
             Path(path).write_bytes(b"x" * size)
 
-    monkeypatch.setattr(panel, "_extract_frames", fake_extract)
+    monkeypatch.setattr(steam, "_extract_frames", fake_extract)
+    monkeypatch.setattr(panel, "_first_image", lambda p: Image.new("RGB", (1920, 1080)))
     monkeypatch.setattr(panel, "media_duration", lambda p: 2.0)
     monkeypatch.setattr(steam, "_encode_slices", fake_encode)
     return calls
+
+
+def test_export_animated_honours_cancel(tmp_path, fake_pipeline):
+    src = tmp_path / "in.mp4"
+    src.write_bytes(b"fake")
+    seen = []
+
+    def cancel():
+        seen.append(1)
+        return len(seen) > 3   # let a few frames composite, then pull the plug
+
+    before = {d for d in os.listdir(tempfile.gettempdir()) if d.startswith("steam_work_")}
+    with pytest.raises(steam.CancelledError):
+        steam.export_animated(str(src), steam.ShowcaseParams(), fps=12, max_mb=0,
+                              out_dir=str(tmp_path / "out"), cancel=cancel)
+    assert fake_pipeline == []   # never reached the encoder
+    after = {d for d in os.listdir(tempfile.gettempdir()) if d.startswith("steam_work_")}
+    assert after <= before       # the work dir was cleaned up
 
 
 def test_export_animated_stops_at_first_fitting_rung(tmp_path, fake_pipeline):
@@ -217,6 +250,28 @@ def test_export_animated_gif_uses_gif_paths_and_palette(tmp_path, fake_pipeline)
 
 
 # ── real ffmpeg ───────────────────────────────────────────────────────────────
+
+@pytest.mark.skipif(ffmpeg is None, reason="ffmpeg not installed")
+def test_extract_frames_scales_and_reports(tmp_path):
+    src = tmp_path / "in.mp4"
+    subprocess.run(
+        [ffmpeg, "-y", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=8:duration=1",
+         "-pix_fmt", "yuv420p", str(src)],
+        capture_output=True, check=True,
+    )
+    into = tmp_path / "raw"
+    into.mkdir()
+    n = steam._extract_frames(str(src), 8, 0.0, 1.0, str(into), size=(100, 56),
+                              progress=lambda *a, **k: None, total_hint=8)
+    assert n >= 7
+    assert Image.open(into / "frame_00001.png").size == (100, 56)
+    assert not (into / "_ffmpeg.err").exists()
+    # a cancel flag that's already set stops it before any frame lands
+    into2 = tmp_path / "raw2"
+    into2.mkdir()
+    with pytest.raises(steam.CancelledError):
+        steam._extract_frames(str(src), 8, 0.0, 1.0, str(into2), cancel=lambda: True)
+
 
 @pytest.mark.skipif(ffmpeg is None, reason="ffmpeg not installed")
 def test_export_animated_writes_looping_apngs(tmp_path):

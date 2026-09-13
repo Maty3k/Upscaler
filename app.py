@@ -69,6 +69,7 @@ _INPAINT_CACHE: dict[tuple, object] = {}
 _ENHANCE_CANCEL = threading.Event()
 _BATCH_CANCEL = threading.Event()
 _VIDEO_CANCEL = threading.Event()
+_STEAM_CANCEL = threading.Event()
 
 # One-shot download files (converted images, ZIPs, video/panel exports) go in
 # this dedicated dir instead of loose in the OS temp dir, and anything older
@@ -1257,6 +1258,7 @@ def steam_export_ui(media, fit, zoom, off_x, off_y, bg_color, tile_h, scale_labe
     animated = (out_fmt in (_STEAM_FMT_ANIM, _STEAM_FMT_GIF)
                 and panel.media_kind(media) == "animated")
     max_mb = float(max_mb or 0)
+    _STEAM_CANCEL.clear()
     progress(0.02, desc="Preparing…")
     try:
         if animated:
@@ -1265,9 +1267,12 @@ def steam_export_ui(media, fit, zoom, off_x, off_y, bg_color, tile_h, scale_labe
                 trim_end=float(trim_end or 0), loop_mode=loop_mode, max_mb=max_mb,
                 out_dir=_ensure_export_dir(), stem=stem,
                 fmt="gif" if out_fmt == _STEAM_FMT_GIF else "apng", progress=progress,
+                cancel=_STEAM_CANCEL.is_set,
             )
         else:
             res = steam.export_stills(media, p, out_dir=_ensure_export_dir(), stem=stem)
+    except steam.CancelledError:
+        return gr.update(), gr.update(), "⏹ Export cancelled."
     except (RuntimeError, ValueError, FileNotFoundError) as e:
         raise gr.Error(
             "Couldn't create the tiles. Animated export needs ffmpeg installed; "
@@ -3092,6 +3097,7 @@ def build_demo() -> gr.Blocks:
                             )
                         with gr.Row():
                             st_export = gr.Button("Export tiles", variant="primary", size="lg", scale=3)
+                            st_cancel = gr.Button("✕ Cancel", variant="stop", scale=1)
                             st_clear = gr.Button("↺ Clear", variant="secondary", scale=1)
                     with gr.Column(scale=1, elem_classes="sticky-col"):
                         st_preview = gr.Image(
@@ -3405,13 +3411,14 @@ def build_demo() -> gr.Blocks:
         st_media.change(
             steam_on_media, st_media, [st_end, st_anim_group, st_fmt, st_info]
         )
-        st_export.click(
+        st_evt = st_export.click(
             steam_export_ui,
             _st_preview_inputs + [st_fmt, st_fps, st_start, st_end, st_loopmode,
                                   st_maxmb, st_outdir],
             [st_gallery, st_file, st_info],
             show_progress_on=[st_gallery],
         )
+        st_cancel.click(lambda: _STEAM_CANCEL.set(), None, None, cancels=[st_evt])
         st_clear.click(
             lambda: (None, None, None, None), None,
             [st_media, st_preview, st_gallery, st_file],

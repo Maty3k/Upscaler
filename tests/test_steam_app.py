@@ -39,6 +39,14 @@ def test_app_steam_format_choices_cover_all_three():
     assert "GIF" in app._STEAM_FMT_GIF
 
 
+def test_app_steam_has_cancel_flag():
+    pytest.importorskip("gradio")
+    import threading
+    import app
+
+    assert isinstance(app._STEAM_CANCEL, threading.Event)
+
+
 def test_app_steam_export_requires_media():
     gr = pytest.importorskip("gradio")
     import app
