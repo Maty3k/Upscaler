@@ -25,7 +25,7 @@ import shutil
 import subprocess
 import tempfile
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from PIL import Image, ImageDraw
 
@@ -102,6 +102,7 @@ class ShowcaseParams:
     bg_color: str = "#000000"
     tile_w: int = DEFAULT_TILE_W
     tile_h: int = DEFAULT_TILE_H
+    repeat: bool = False   # fit the source into ONE tile and repeat it ×5
 
     @property
     def transparent(self) -> bool:
@@ -152,10 +153,83 @@ def _panel_params(p: ShowcaseParams) -> panel.PanelParams:
     )
 
 
+def canvas_size(p: ShowcaseParams, lay: Layout | None = None) -> tuple[int, int]:
+    """What the source is fitted into: the whole row, or one tile in repeat mode."""
+    lay = lay or layout(p)
+    return (lay.tile_w, lay.tile_h) if p.repeat else (lay.width, lay.height)
+
+
 def compose_row(src: Image.Image | None, p: ShowcaseParams, fast: bool = False) -> Image.Image:
-    """The whole row — five tiles plus the gaps between them — as one image."""
+    """The whole row — five tiles plus the gaps between them — as one image.
+    In repeat mode the source is fitted into a single tile, which is then
+    stamped into all five slots (the gaps take the background)."""
     lay = layout(p)
-    return panel.compose_frame(src, _panel_params(p), fast=fast, canvas=(lay.width, lay.height))
+    pp = _panel_params(p)
+    if not p.repeat:
+        return panel.compose_frame(src, pp, fast=fast, canvas=(lay.width, lay.height))
+    tile = panel.compose_frame(src, pp, fast=fast, canvas=(lay.tile_w, lay.tile_h))
+    row = panel._background(lay.width, lay.height, pp)
+    if row.mode != "RGBA":
+        row = row.convert("RGB")
+    for (x0, y0, _, _) in lay.boxes:
+        row.paste(tile, (x0, y0))
+    return row
+
+
+# ── Presets ───────────────────────────────────────────────────────────────────
+# Named layouts computed from the source's aspect ratio, so a TikTok clip, a
+# widescreen clip or a square image each land on the showcase without manual
+# fiddling. "Auto" picks per aspect: portrait sources repeat per tile (five
+# copies at full height), everything else spans the row uncropped.
+PRESET_AUTO = "Auto — fit the source"
+PRESET_BANNER = "Banner strip (square tiles, crop)"
+PRESET_WHOLE = "Whole picture across the row (no crop)"
+PRESET_CENTER = "Centre tile only"
+PRESET_REPEAT = "Every tile (repeat ×5)"
+PRESET_CUSTOM = "Custom"
+PRESETS = [PRESET_AUTO, PRESET_BANNER, PRESET_WHOLE, PRESET_CENTER, PRESET_REPEAT, PRESET_CUSTOM]
+PRESET_KEYS = {"auto": PRESET_AUTO, "banner": PRESET_BANNER, "whole": PRESET_WHOLE,
+               "center": PRESET_CENTER, "repeat": PRESET_REPEAT}
+
+
+def resolve_auto(src_w: int, src_h: int) -> str:
+    """The preset "Auto" stands for, given the source size."""
+    return PRESET_REPEAT if src_h > src_w else PRESET_WHOLE
+
+
+def apply_preset(name: str, src_w: int, src_h: int, p: ShowcaseParams) -> ShowcaseParams:
+    """Return ``p`` re-shaped by a preset for a ``src_w``×``src_h`` source.
+    Keeps the tile width and colour; sets fit / zoom / pan / height / repeat /
+    transparency as the preset needs. Unknown names (incl. Custom) return
+    ``p`` unchanged."""
+    if name == PRESET_AUTO:
+        name = resolve_auto(src_w, src_h)
+    src_w, src_h = max(1, int(src_w)), max(1, int(src_h))
+    lay = layout(replace(p, repeat=False))
+    tile_w, row_w = lay.tile_w, lay.width
+
+    def clamp_h(h: float) -> int:
+        return max(MIN_TILE_H, min(MAX_TILE_H, int(round(h))))
+
+    if name == PRESET_BANNER:
+        return replace(p, fit="cover", zoom=1.0, off_x=0.0, off_y=0.0, tile_h=tile_w, repeat=False)
+    if name == PRESET_WHOLE:
+        want = row_w * src_h / src_w
+        h = clamp_h(want)
+        # If the row can't be tall enough for the whole picture, letterbox
+        # instead of silently cropping it.
+        fit = "cover" if h == round(want) else "contain"
+        return replace(p, fit=fit, zoom=1.0, off_x=0.0, off_y=0.0, tile_h=h, repeat=False)
+    if name == PRESET_CENTER:
+        # Manual fit with zoom = tile/row makes the drawn width exactly one
+        # tile, centred — i.e. the middle slot — while the other four stay
+        # empty (transparent, so they vanish on the profile).
+        return replace(p, fit="manual", zoom=tile_w / row_w, off_x=0.0, off_y=0.0,
+                       tile_h=clamp_h(tile_w * src_h / src_w), bg_color=TRANSPARENT, repeat=False)
+    if name == PRESET_REPEAT:
+        return replace(p, fit="contain", zoom=1.0, off_x=0.0, off_y=0.0,
+                       tile_h=clamp_h(tile_w * src_h / src_w), repeat=True)
+    return p
 
 
 def slice_row(row: Image.Image, p: ShowcaseParams) -> list[Image.Image]:
@@ -181,15 +255,20 @@ def _checkerboard(w: int, h: int, cell: int = 8) -> Image.Image:
 
 
 def preview(src_path: str | None, p: ShowcaseParams,
-            frame: Image.Image | None = None, width: int = 1000) -> Image.Image:
+            frame: Image.Image | None = None, width: int = 1000,
+            max_row_h: int = 560) -> Image.Image:
     """Editor preview: on top, the framing view (source dimmed, the kept row
     bright, the four gap columns blacked out); below it, a Steam-style mockup
-    of the Workshop Showcase box with the five tiles and their real spacing."""
+    of the Workshop Showcase box with the five tiles and their real spacing.
+    The row is shown ``width`` wide, or narrower when a tall row would
+    otherwise exceed ``max_row_h``, so a portrait layout stays on screen."""
     lay = layout(p)
     pp = _panel_params(p)
     src = frame if frame is not None else panel._first_image(src_path)
 
-    ds = width / lay.width
+    full_w = width
+    ds = min(width / lay.width, max_row_h / lay.height)
+    width = max(1, round(lay.width * ds))
     disp_h = max(1, round(lay.height * ds))
     comp = compose_row(src, p, fast=True).resize((width, disp_h), Image.BILINEAR)
     gap_cols = [(round(x1 * ds), round((x1 + lay.gap) * ds)) for (_, _, x1, _) in lay.boxes[:-1]]
@@ -199,12 +278,12 @@ def preview(src_path: str | None, p: ShowcaseParams,
     else:
         comp_framing = comp
 
-    # ── framing panel ──
-    pad_x = round(width * 0.06)
-    pad_y = max(28, round(disp_h * 0.6))
-    fw, fh = width + 2 * pad_x, disp_h + 2 * pad_y
+    # ── framing panel ── (always full_w wide; a narrow tall row sits centred)
+    pad_x = round(full_w * 0.06) + (full_w - width) // 2
+    pad_y = max(28, min(120, round(disp_h * 0.6)))
+    fw, fh = full_w + 2 * round(full_w * 0.06), disp_h + 2 * pad_y
     framing = Image.new("RGB", (fw, fh), _DIM_BG)
-    if src is not None:
+    if src is not None and not p.repeat:   # (repeat mode has no single cropped-out area)
         dw, dh = panel._drawn_size(src.width, src.height, lay.width, lay.height, p.fit, p.zoom)
         px, py = panel._paste_pos(dw, dh, lay.width, lay.height, pp)
         rs = src.convert("RGBA").resize((max(1, round(dw * ds)), max(1, round(dh * ds))), Image.BILINEAR)
@@ -223,9 +302,9 @@ def preview(src_path: str | None, p: ShowcaseParams,
     mock_h = head_h + box_pad * 2 + disp_h + round(18 * ds)
     mock = Image.new("RGB", (fw, mock_h), _PROFILE_BG)
     d = ImageDraw.Draw(mock)
-    font = panel._load_font("Arial", max(11, round(15 * ds)))
+    font = panel._load_font("Arial", max(13, round(15 * ds)))
     d.text((pad_x, round(8 * ds)), "Workshop Showcase", fill=_HEADER_FG, font=font)
-    small = panel._load_font("Arial", max(9, round(11 * ds)))
+    small = panel._load_font("Arial", max(11, round(11 * ds)))
     d.text((pad_x + width, round(12 * ds)), "5 items", fill=(140, 150, 160), font=small, anchor="ra")
     by0 = head_h
     d.rounded_rectangle([pad_x - box_pad, by0, pad_x + width + box_pad - 1, by0 + disp_h + 2 * box_pad - 1],
@@ -249,6 +328,7 @@ class ExportResult:
     fmt: str = "png"   # png (stills) | apng | gif
     hexified: bool = False
     transparent: bool = False
+    repeat: bool = False
     fps: int = 0
     colors: int | None = None
     duration: float = 0.0
@@ -290,7 +370,7 @@ def export_stills(src_path: str | None, p: ShowcaseParams,
         if hexify_for_steam:
             hexify(path)
     return ExportResult(paths, layout(p), hexified=hexify_for_steam, transparent=p.transparent,
-                        sizes=[os.path.getsize(x) for x in paths])
+                        repeat=p.repeat, sizes=[os.path.getsize(x) for x in paths])
 
 
 def budget_ladder(fps: int, fmt: str = "apng") -> list[tuple[int, int | None, float]]:
@@ -335,7 +415,8 @@ def extract_size(src_w: int, src_h: int, lay: Layout, p: ShowcaseParams) -> tupl
     so a pre-scaled frame lands on the row identically. Returns None when the
     fit would enlarge the source (then the original pixels are the best we
     have) — a 4K phone clip otherwise hits the disk as thousands of 4K PNGs."""
-    dw, dh = panel._drawn_size(src_w, src_h, lay.width, lay.height, p.fit, p.zoom)
+    cw, ch = canvas_size(p, lay)
+    dw, dh = panel._drawn_size(src_w, src_h, cw, ch, p.fit, p.zoom)
     if dw >= src_w or dh >= src_h:
         return None
     return dw, dh
@@ -527,7 +608,8 @@ def export_animated(
         cap = int(max_mb * 1024 * 1024) if max_mb and max_mb > 0 else 0
         attempts = budget_ladder(fps, fmt) if cap else budget_ladder(fps, fmt)[:1]
 
-        result = ExportResult(paths, lay, fmt=fmt, animated=True, transparent=p.transparent)
+        result = ExportResult(paths, lay, fmt=fmt, animated=True, transparent=p.transparent,
+                              repeat=p.repeat)
         for k, (f, colors, frac) in enumerate(attempts, 1):
             check_cancel()
             n_use = max(2, int(round(n * frac)))
@@ -543,7 +625,8 @@ def export_animated(
             result = ExportResult(paths, lay, fmt=fmt, fps=f, colors=colors,
                                   duration=n_use / fps, sizes=sizes,
                                   fits=(not cap or max(sizes) <= cap),
-                                  attempts=k, animated=True, transparent=p.transparent)
+                                  attempts=k, animated=True, transparent=p.transparent,
+                                  repeat=p.repeat)
             if result.fits:
                 break
         if hexify_for_steam:
@@ -571,6 +654,8 @@ def describe(res: ExportResult, max_mb: float = 0.0) -> str:
         head += f" · Steam shows them at 122×{lay.shown_h}"
     if res.transparent:
         head += " · transparent background"
+    if res.repeat:
+        head += " · source repeated in every tile"
     hexed = " · hexified for Steam" if res.hexified else ""
     if not res.animated:
         return f"{head} · still PNG{hexed}\n{sizes}"

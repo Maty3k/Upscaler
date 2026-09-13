@@ -126,6 +126,57 @@ def test_preview_renders_without_media_and_with_frame():
     assert tr.mode == "RGB" and tr.width == 1120
 
 
+# ── presets + repeat ──────────────────────────────────────────────────────────
+
+def test_presets_shape_the_row_from_the_source_aspect():
+    base = steam.ShowcaseParams()
+    whole = steam.apply_preset(steam.PRESET_WHOLE, 1920, 1080, base)
+    assert (whole.fit, whole.tile_h, whole.repeat) == ("cover", 352, False)   # 626 × 9/16
+    tall = steam.apply_preset(steam.PRESET_WHOLE, 1080, 1920, base)
+    assert (tall.fit, tall.tile_h) == ("cover", 1113)                           # 626 × 16/9
+    # too tall for the cap → letterbox rather than crop
+    capped = steam.apply_preset(steam.PRESET_WHOLE, 1080, 1920, steam.ShowcaseParams(tile_w=245))
+    assert (capped.fit, capped.tile_h) == ("contain", steam.MAX_TILE_H)
+    center = steam.apply_preset(steam.PRESET_CENTER, 1080, 1920, base)
+    assert center.fit == "manual" and center.zoom == pytest.approx(122 / 626)
+    assert center.tile_h == 217 and center.transparent and not center.repeat
+    rep_ = steam.apply_preset(steam.PRESET_REPEAT, 1080, 1920, base)
+    assert (rep_.fit, rep_.tile_h, rep_.repeat) == ("contain", 217, True)
+    banner = steam.apply_preset(steam.PRESET_BANNER, 1080, 1920, steam.ShowcaseParams(tile_h=400, zoom=3))
+    assert (banner.fit, banner.tile_h, banner.zoom) == ("cover", 122, 1.0)
+    # Auto: portrait → repeat, otherwise whole; Custom → untouched
+    assert steam.resolve_auto(1080, 1920) == steam.PRESET_REPEAT
+    assert steam.resolve_auto(1000, 1000) == steam.PRESET_WHOLE
+    assert steam.apply_preset(steam.PRESET_AUTO, 1080, 1920, base).repeat
+    assert steam.apply_preset(steam.PRESET_CUSTOM, 1080, 1920, base) == base
+    assert steam.PRESET_KEYS["auto"] == steam.PRESET_AUTO and len(steam.PRESETS) == 6
+
+
+def test_center_preset_lands_exactly_on_the_middle_tile():
+    p = steam.apply_preset(steam.PRESET_CENTER, 1080, 1920, steam.ShowcaseParams())
+    row = steam.compose_row(Image.new("RGB", (1080, 1920), (255, 0, 0)), p)
+    tiles = steam.slice_row(row, p)
+    assert row.mode == "RGBA"
+    assert tiles[0].getpixel((60, 100))[3] == 0 and tiles[4].getpixel((60, 100))[3] == 0
+    assert tiles[2].getpixel((1, 1))[3] == 255 and tiles[2].getpixel((120, 215))[3] == 255
+    assert tiles[2].getpixel((60, 100))[:3] == (255, 0, 0)
+
+
+def test_repeat_mode_stamps_one_tile_five_times():
+    p = steam.ShowcaseParams(fit="contain", tile_h=244, repeat=True)
+    lay = steam.layout(p)
+    assert steam.canvas_size(p) == (122, 244) and steam.canvas_size(steam.ShowcaseParams()) == (626, 122)
+    row = steam.compose_row(_ramp(400, 800), p)
+    assert row.size == (lay.width, lay.height)
+    tiles = steam.slice_row(row, p)
+    assert all(t.tobytes() == tiles[0].tobytes() for t in tiles[1:])
+    assert tiles[0].getpixel((61, 122)) != (0, 0, 0)               # source drawn, not just bg
+    # extraction shrinks to ONE tile's drawn size in repeat mode
+    assert steam.extract_size(2160, 3840, lay, p) == (122, 217)
+    assert "repeated in every tile" in steam.describe(
+        steam.ExportResult([], lay, repeat=True, sizes=[]))
+
+
 # ── stills ────────────────────────────────────────────────────────────────────
 
 def test_export_stills_writes_five_numbered_pngs(tmp_path):

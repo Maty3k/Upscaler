@@ -1211,14 +1211,26 @@ _STEAM_FMT_GIF = "GIF (animated)"
 _STEAM_FMT_STILL = "PNG (still)"
 
 
-def _steam_params(fit, zoom, off_x, off_y, bg_color, transparent, tile_w, tile_h):
+def _steam_params(fit, zoom, off_x, off_y, bg_color, transparent, tile_w, tile_h, repeat):
     """Build ShowcaseParams from the tab's controls (order = the preview
     input list minus the media file)."""
     return steam.ShowcaseParams(
         fit=fit, zoom=float(zoom), off_x=float(off_x), off_y=float(off_y),
         bg_color=steam.TRANSPARENT if transparent else bg_color,
-        tile_w=int(tile_w), tile_h=int(tile_h),
+        tile_w=int(tile_w), tile_h=int(tile_h), repeat=bool(repeat),
     )
+
+
+def steam_apply_preset(media, preset, *vals):
+    """Re-shape the controls for the chosen preset from the source's aspect.
+    Returns updates for (fit, zoom, pan x, pan y, transparent, tile height,
+    repeat); no-ops when there's no media or the preset is Custom."""
+    keep = tuple(gr.update() for _ in range(7))
+    src = panel._first_image(media) if media else None
+    if src is None or preset == steam.PRESET_CUSTOM:
+        return keep
+    p = steam.apply_preset(preset, src.width, src.height, _steam_params(*vals))
+    return (p.fit, p.zoom, p.off_x, p.off_y, p.transparent, p.tile_h, p.repeat)
 
 
 def steam_preview_ui(media, *vals):
@@ -1248,11 +1260,11 @@ def steam_on_media(media):
 
 
 def steam_export_ui(media, fit, zoom, off_x, off_y, bg_color, transparent, tile_w, tile_h,
-                    out_fmt, fps, trim_start, trim_end, loop_mode, max_mb, hexify,
+                    repeat, out_fmt, fps, trim_start, trim_end, loop_mode, max_mb, hexify,
                     out_dir, progress=gr.Progress()):
     if not media:
         raise gr.Error("Upload an image, GIF or video first.")
-    p = _steam_params(fit, zoom, off_x, off_y, bg_color, transparent, tile_w, tile_h)
+    p = _steam_params(fit, zoom, off_x, off_y, bg_color, transparent, tile_w, tile_h, repeat)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     stem = f"steam_{stamp}"
     animated = (out_fmt in (_STEAM_FMT_ANIM, _STEAM_FMT_GIF)
@@ -2997,6 +3009,15 @@ def build_demo() -> gr.Blocks:
                                         ".mkv", ".m4v", ".avi"],
                             elem_classes="drop",
                         )
+                        st_preset = gr.Dropdown(
+                            steam.PRESETS, value=steam.PRESET_AUTO, label="Preset",
+                            filterable=False,
+                            info="Shapes the row from your media's aspect ratio. Auto: a "
+                            "portrait clip (TikTok / Reels) repeats in every tile at full "
+                            "height, anything else spans the row uncropped. Pick "
+                            "another to compare; editing a control below switches to "
+                            "Custom.",
+                        )
                         st_fit = gr.Radio(
                             steam.FITS, value="cover", label="Fit",
                             info="How your media fills the row: cover fills and crops, "
@@ -3035,6 +3056,11 @@ def build_demo() -> gr.Blocks:
                                 "square tiles (the stock look), taller makes a bigger "
                                 "banner. Steam scales it with the width.",
                             )
+                        st_repeat = gr.Checkbox(
+                            value=False, label="Repeat the source in every tile",
+                            info="Fit the whole picture into one tile and stamp it into "
+                            "all five, instead of spreading one picture across the row.",
+                        )
                         with gr.Row():
                             st_bg = gr.ColorPicker(
                                 value="#000000", label="Background (fills letterbox gaps)",
@@ -3098,6 +3124,10 @@ def build_demo() -> gr.Blocks:
                             gr.Markdown(steam.UPLOAD_GUIDE, elem_classes="notes")
                         with gr.Accordion("Tips", open=False):
                             gr.Markdown(
+                                "* **Start from a preset** — Auto reads your clip's shape: "
+                                "a TikTok / Reels clip gets five full-height copies, a "
+                                "widescreen clip spans the row uncropped. 'Centre tile "
+                                "only' floats one tile in the middle.\n"
                                 "* **Wide sources suit the row** — a 16:9 clip at 122px "
                                 "tall shows only a slim band; raise Tile height or pan "
                                 "to the part that matters.\n"
@@ -3416,15 +3446,33 @@ def build_demo() -> gr.Blocks:
         # ---- Steam showcase wiring ----
         # Order after the media file must match _steam_params.
         _st_preview_inputs = [st_media, st_fit, st_zoom, st_offx, st_offy, st_bg,
-                              st_transparent, st_tilew, st_tileh]
+                              st_transparent, st_tilew, st_tileh, st_repeat]
+        # Controls a preset writes. Editing one by hand flips the preset to
+        # Custom so it stops overriding you; changing the tile width or the
+        # media re-applies the active preset (its height depends on both).
+        _st_preset_outputs = [st_fit, st_zoom, st_offx, st_offy, st_transparent,
+                              st_tileh, st_repeat]
+        _st_preset_inputs = [st_media, st_preset] + _st_preview_inputs[1:]
         st_media.change(
-            steam_preview_ui, _st_preview_inputs, st_preview, show_progress="hidden",
-        )
+            steam_apply_preset, _st_preset_inputs, _st_preset_outputs, show_progress="hidden",
+        ).then(steam_preview_ui, _st_preview_inputs, st_preview, show_progress="hidden")
+        st_preset.input(
+            steam_apply_preset, _st_preset_inputs, _st_preset_outputs, show_progress="hidden",
+        ).then(steam_preview_ui, _st_preview_inputs, st_preview, show_progress="hidden")
+        st_tilew.input(
+            steam_apply_preset, _st_preset_inputs, _st_preset_outputs, show_progress="hidden",
+        ).then(steam_preview_ui, _st_preview_inputs, st_preview, show_progress="hidden",
+               trigger_mode="always_last")
         for _c in _st_preview_inputs[1:]:
+            if _c is st_tilew:
+                continue
             _c.input(
                 steam_preview_ui, _st_preview_inputs, st_preview,
                 show_progress="hidden", trigger_mode="always_last",
             )
+        for _c in _st_preset_outputs:
+            _c.input(lambda: gr.update(value=steam.PRESET_CUSTOM), None, st_preset,
+                     show_progress="hidden")
         st_media.change(
             steam_on_media, st_media, [st_end, st_anim_group, st_fmt, st_info]
         )

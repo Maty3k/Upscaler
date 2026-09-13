@@ -494,6 +494,17 @@ def build_steam_parser() -> argparse.ArgumentParser:
         help="Animated tiles as GIF (256 colours, smaller) instead of full-colour APNG.",
     )
     p.add_argument(
+        "--preset", choices=sorted(steam.PRESET_KEYS),
+        help="Shape the row from the source's aspect ratio: auto (portrait → repeat, "
+        "else whole), banner (square tiles, crop), whole (whole picture across the "
+        "row, no crop), center (one tile in the middle, transparent around), repeat "
+        "(the whole picture in every tile). Overrides --fit/--zoom/--pan/--height.",
+    )
+    p.add_argument(
+        "--repeat", action="store_true",
+        help="Fit the whole picture into one tile and repeat it in all five.",
+    )
+    p.add_argument(
         "--fit", choices=steam.FITS, default="cover",
         help="cover crops to fill, contain letterboxes, stretch distorts, manual "
         "uses --zoom (default: cover).",
@@ -575,8 +586,14 @@ def run_steam(argv: list[str]) -> int:
     p = steam.ShowcaseParams(
         fit=args.fit, zoom=args.zoom, off_x=args.pan_x, off_y=args.pan_y,
         bg_color=args.bg, tile_w=steam.HIDPI_TILE_W if args.hidpi else args.width,
-        tile_h=args.height * mult,
+        tile_h=args.height * mult, repeat=args.repeat,
     )
+    if args.preset:
+        first = panel._first_image(str(args.input))
+        if first is None:
+            print(f"error: couldn't decode {args.input}", file=sys.stderr)
+            return 2
+        p = steam.apply_preset(steam.PRESET_KEYS[args.preset], first.width, first.height, p)
     animated = not args.still and panel.media_kind(str(args.input)) == "animated"
     stem = f"{args.input.stem}_steam"
     try:

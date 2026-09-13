@@ -48,6 +48,24 @@ def test_steam_width_and_transparent_bg(tmp_path):
         assert im.size == (150, 150) and im.mode == "RGBA" and im.getpixel((75, 75))[3] == 0
 
 
+def test_steam_presets(tmp_path):
+    wide = tmp_path / "wide.png"
+    Image.new("RGB", (1920, 1080), (5, 5, 5)).save(wide)
+    out = tmp_path / "whole"
+    assert main(["steam", str(wide), "-o", str(out), "--preset", "whole", "--no-hexify"]) == 0
+    assert Image.open(out / "wide_steam_1.png").size == (122, 352)
+    tall = tmp_path / "tall.png"
+    Image.new("RGB", (1080, 1920), (7, 7, 7)).save(tall)
+    out = tmp_path / "auto"
+    assert main(["steam", str(tall), "-o", str(out), "--preset", "auto", "--no-hexify"]) == 0
+    t1, t5 = (out / "tall_steam_1.png").read_bytes(), (out / "tall_steam_5.png").read_bytes()
+    assert Image.open(out / "tall_steam_1.png").size == (122, 217) and t1 == t5   # repeated
+    out = tmp_path / "center"
+    assert main(["steam", str(tall), "-o", str(out), "--preset", "center", "--no-hexify"]) == 0
+    with Image.open(out / "tall_steam_1.png") as im:
+        assert im.mode == "RGBA" and im.getpixel((60, 100))[3] == 0
+
+
 def test_steam_errors(tmp_path, capsys):
     assert main(["steam", str(tmp_path / "missing.png")]) == 2
     assert "not found" in capsys.readouterr().err
