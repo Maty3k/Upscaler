@@ -99,6 +99,23 @@ That's it. You've upscaled a photo, for free, without it ever leaving your PC.
 
 ---
 
+## Updating to the latest version
+
+New features and fixes come out as new versions. To get them, open a terminal
+(Step 2) and run:
+
+```
+pip install -U "local-upscaler[gui,video]"
+```
+
+> **Windows, if `pip` is not recognised:** use
+> `py -m pip install -U "local-upscaler[gui,video]"` instead.
+
+Wait for it to finish, close the app if it's running (close its terminal
+window), and start it again with `upscaler-gui`. That's the whole update.
+
+---
+
 ## What else is in there?
 
 Each tab is a separate tool, all local:
@@ -112,6 +129,8 @@ Each tab is a separate tool, all local:
 | **Video** | Upscale whole videos frame-by-frame (slow but works) |
 | **Convert & Documents** | Convert between PNG/JPEG/WebP/HEIC/…, images ⇄ PDF |
 | **Batch** | Apply one operation to a whole folder of images |
+| **Lian Li Screen** | Compose media for the Lian Li 8.8″ case screen at its exact size |
+| **Steam Showcase** | Cut a picture or clip into the five tiles of a Steam profile Workshop Showcase |
 | **Library** | Everything you've exported, in one place |
 
 ---

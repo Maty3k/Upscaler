@@ -22,6 +22,20 @@ upscaler-gui                          # opens the app in your browser
 Drag a photo in, click **Enhance**, done. Model weights download automatically
 (with checksum verification) the first time you use them.
 
+### Updating
+
+Already installed? New versions ship on PyPI, so upgrading is one line — then
+restart `upscaler-gui`:
+
+```bash
+pip install -U "local-upscaler[gui,video]"    # [video] bundles ffmpeg (Steam tiles, video)
+```
+
+On Windows, if `pip` isn't recognised, use `py -m pip install -U "local-upscaler[gui,video]"`.
+`pip show local-upscaler` prints the version you have; the newest is on
+[PyPI](https://pypi.org/project/local-upscaler/) and under
+[Releases](https://github.com/Maty3k/Upscaler/releases).
+
 > **Never used a terminal before?** Follow the step-by-step
 > **[Getting Started guide](docs/GETTING-STARTED.md)** — it starts at
 > "install Python" and ends at your first enhanced photo, in baby steps,
