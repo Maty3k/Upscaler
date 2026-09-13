@@ -19,6 +19,15 @@ def test_steam_still_default_output_dir(tmp_path):
     names = sorted(p.name for p in out.glob("*.png"))
     assert names == [f"photo_steam_{i}.png" for i in range(1, 6)]
     assert Image.open(out / "photo_steam_1.png").size == (122, 150)
+    assert (out / "photo_steam_1.png").read_bytes()[-1] == 0x21     # hexified by default
+
+
+def test_steam_no_hexify(tmp_path):
+    src = tmp_path / "p.png"
+    Image.new("RGB", (300, 300), (9, 9, 9)).save(src)
+    out = tmp_path / "raw"
+    assert main(["steam", str(src), "-o", str(out), "--no-hexify"]) == 0
+    assert (out / "p_steam_1.png").read_bytes()[-1] == 0x82         # intact IEND CRC
 
 
 def test_steam_hidpi_and_explicit_dir(tmp_path):
@@ -58,10 +67,12 @@ def test_steam_clip_exports_apngs(tmp_path):
     assert len(files) == 5
     with Image.open(files[0]) as im:
         assert im.is_animated and im.n_frames > 1
-    # --gif switches the animated tiles to GIF
-    assert main(["steam", str(src), "-o", str(tmp_path / "gifs"), "--fps", "8", "--gif"]) == 0
+    assert files[0].read_bytes()[-1] == 0x21                  # hexified by default
+    # --gif switches the animated tiles to GIF (untouched here so PIL can walk it)
+    assert main(["steam", str(src), "-o", str(tmp_path / "gifs"), "--fps", "8", "--gif",
+                 "--no-hexify"]) == 0
     with Image.open(tmp_path / "gifs" / "clip_steam_1.gif") as im:
-        assert im.format == "GIF" and im.is_animated
+        assert im.format == "GIF" and im.is_animated and im.n_frames > 1
     # --still forces PNG stills even for a clip
     assert main(["steam", str(src), "-o", str(tmp_path / "stills"), "--still"]) == 0
     with Image.open(tmp_path / "stills" / "clip_steam_1.png") as im:

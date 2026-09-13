@@ -53,4 +53,4 @@ def test_app_steam_export_requires_media():
 
     with pytest.raises(gr.Error):
         app.steam_export_ui(None, "cover", 1, 0, 0, "#000", 122, "x", app._STEAM_FMT_STILL,
-                            "24", 0, 0, "normal", 5, "", progress=lambda *a, **k: None)
+                            "24", 0, 0, "normal", 5, True, "", progress=lambda *a, **k: None)

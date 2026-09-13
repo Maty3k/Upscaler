@@ -535,6 +535,11 @@ def build_steam_parser() -> argparse.ArgumentParser:
         help=f"Per-tile size budget in MB, 0 disables (default {steam.DEFAULT_MAX_MB:g}).",
     )
     p.add_argument(
+        "--no-hexify", action="store_true",
+        help="Leave files untouched. By default each tile's last byte is set to 0x21 "
+        "(the 'hexify' step) so Steam keeps animations instead of flattening them.",
+    )
+    p.add_argument(
         "--how-to-upload", action="store_true",
         help="Print the Steam upload steps (browser-console trick) and exit.",
     )
@@ -575,10 +580,11 @@ def run_steam(argv: list[str]) -> int:
                 str(args.input), p, fps=args.fps, trim_start=args.start,
                 trim_end=args.end, loop_mode=args.loop, max_mb=args.max_mb,
                 out_dir=str(out_dir), stem=stem, fmt="gif" if args.gif else "apng",
-                progress=progress,
+                hexify_for_steam=not args.no_hexify, progress=progress,
             )
         else:
-            res = steam.export_stills(str(args.input), p, out_dir=str(out_dir), stem=stem)
+            res = steam.export_stills(str(args.input), p, out_dir=str(out_dir), stem=stem,
+                                      hexify_for_steam=not args.no_hexify)
     except (RuntimeError, ValueError, FileNotFoundError, OSError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 1

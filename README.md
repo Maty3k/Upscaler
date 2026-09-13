@@ -156,8 +156,10 @@ profile's **Workshop Showcase**, at Steam's exact geometry (122 px tiles, 4 px
 gaps, height of your choice; `--hidpi` renders at 2×) so the image lines up
 across all five. Clips become one looping animated PNG (or GIF) per tile,
 shrunk in steps (256 colours → lower fps → shorter clip) until each file fits the
-`--max-mb` budget (default 5 MB; Steam documents 8 MB). Uploading animated
-tiles needs a one-line browser-console trick that `--how-to-upload` prints.
+`--max-mb` budget (default 5 MB; Steam documents 8 MB). Tiles come out
+"hexified" (last byte set to 21, the hex-editor step the guides describe, so
+Steam keeps the animation; `--no-hexify` to skip), and uploading them needs a
+one-line browser-console trick that `--how-to-upload` prints.
 
 Weights download automatically on first use and are cached under
 `upscaler/weights/` (override with `UPSCALER_WEIGHTS_DIR`).

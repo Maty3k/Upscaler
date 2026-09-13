@@ -106,7 +106,28 @@ def test_export_stills_writes_five_numbered_pngs(tmp_path):
     assert [Path(x).name for x in res.paths] == [f"pic_{i}.png" for i in range(1, 6)]
     assert all(Image.open(x).size == (122, 122) for x in res.paths)
     assert not res.animated and res.fits and len(res.sizes) == 5
-    assert "still PNG" in steam.describe(res)
+    assert "still PNG" in steam.describe(res) and "hexified" in steam.describe(res)
+    # hexified by default: PNG trailer byte 0x82 → 0x21, and PIL still reads it
+    assert all(Path(x).read_bytes()[-1] == steam.HEX_TRAILER for x in res.paths)
+    with Image.open(res.paths[0]) as im:
+        im.load()
+
+
+def test_hexify_can_be_turned_off(tmp_path):
+    src = tmp_path / "in.png"
+    _ramp().save(src)
+    res = steam.export_stills(str(src), steam.ShowcaseParams(), out_dir=str(tmp_path / "out"),
+                              hexify_for_steam=False)
+    assert not res.hexified and "hexified" not in steam.describe(res)
+    assert all(Path(x).read_bytes()[-1] == 0x82 for x in res.paths)   # intact IEND CRC
+
+
+def test_hexify_rewrites_only_the_last_byte(tmp_path):
+    f = tmp_path / "x.gif"
+    f.write_bytes(b"GIF89a" + bytes(20) + b";")
+    steam.hexify(str(f))
+    data = f.read_bytes()
+    assert data[-1] == 0x21 and data[:-1] == b"GIF89a" + bytes(20)
 
 
 def test_export_stills_rejects_undecodable(tmp_path):
@@ -209,11 +230,12 @@ def test_export_animated_stops_at_first_fitting_rung(tmp_path, fake_pipeline):
     cap_mb = 5000 / (1024 * 1024)  # sizes: 7200 → 6144 → 5120 → 2560 fits
     res = steam.export_animated(str(src), steam.ShowcaseParams(), fps=12, max_mb=cap_mb,
                                 out_dir=str(tmp_path / "out"))
-    assert res.fits and res.animated
+    assert res.fits and res.animated and res.hexified
     assert (res.fps, res.colors, res.attempts) == (10, 128, 4)
     assert res.duration == pytest.approx(2.0)   # length untouched
     assert [c[:2] for c in fake_pipeline] == [(12, None), (12, 256), (10, 256), (10, 128)]
     assert len(res.paths) == 5 and all(os.path.getsize(p) == 2560 for p in res.paths)
+    assert all(Path(p).read_bytes()[-1] == steam.HEX_TRAILER for p in res.paths)
 
 
 def test_export_animated_reports_over_budget_after_last_rung(tmp_path, fake_pipeline):
@@ -232,9 +254,11 @@ def test_export_animated_no_budget_encodes_once(tmp_path, fake_pipeline):
     src = tmp_path / "in.mp4"
     src.write_bytes(b"fake")
     res = steam.export_animated(str(src), steam.ShowcaseParams(), fps=12, max_mb=0,
-                                loop_mode="boomerang", out_dir=str(tmp_path / "out"))
-    assert res.fits and res.attempts == 1 and res.colors is None
+                                loop_mode="boomerang", out_dir=str(tmp_path / "out"),
+                                hexify_for_steam=False)
+    assert res.fits and res.attempts == 1 and res.colors is None and not res.hexified
     assert fake_pipeline == [(12, None, 46)]    # boomerang: 1..24 then 23..2
+    assert all(Path(p).read_bytes()[-1] == ord("x") for p in res.paths)   # untouched
 
 
 def test_export_animated_gif_uses_gif_paths_and_palette(tmp_path, fake_pipeline):
@@ -299,11 +323,19 @@ def test_export_animated_writes_looping_gifs(tmp_path):
          "-pix_fmt", "yuv420p", str(src)],
         capture_output=True, check=True,
     )
+    # Pillow can't walk a hexified GIF to its (deliberately broken) trailer, so
+    # verify the frames on an untouched export and the trailer on a default one.
     res = steam.export_animated(str(src), steam.ShowcaseParams(), fps=8, max_mb=0.05,
-                                out_dir=str(tmp_path / "out"), fmt="gif")
-    assert res.fits and res.fmt == "gif"
+                                out_dir=str(tmp_path / "out"), fmt="gif",
+                                hexify_for_steam=False)
+    assert res.fits and res.fmt == "gif" and not res.hexified
     for path in res.paths:
         assert path.endswith(".gif")
         with Image.open(path) as im:
             assert im.format == "GIF" and im.is_animated and im.n_frames > 1
             assert im.size == (122, 122)
+        assert Path(path).read_bytes()[-1] == 0x3B          # GIF trailer intact
+    hexed = steam.export_animated(str(src), steam.ShowcaseParams(), fps=8, max_mb=0.05,
+                                  out_dir=str(tmp_path / "hexed"), fmt="gif")
+    assert hexed.hexified
+    assert all(Path(p).read_bytes()[-1] == steam.HEX_TRAILER for p in hexed.paths)

@@ -56,9 +56,18 @@ LOOP_STYLES = panel.LOOP_STYLES
 FITS = panel.FITS
 ANIM_FORMATS = ("apng", "gif")   # APNG keeps full colour; GIF is always ≤ 256 colours
 
+# The community "hexify" step: Steam's upload backend re-encodes artwork (which
+# flattens an animation to one frame); a trailer byte it can't parse makes that
+# step fail, so the original bytes are stored and served untouched. Browsers
+# render GIF/PNG regardless of the trailer (verified in Chrome), so tiles play.
+HEX_TRAILER = 0x21
+
 UPLOAD_GUIDE = """\
 Steam only shows animated tiles if you upload them as **artwork that Steam files
-under the Workshop**, which needs a one-line browser trick on the upload page:
+under the Workshop**, which needs a one-line browser trick on the upload page.
+The exported tiles are already **hexified** (last byte set to `21`, the step
+guides send you to a hex editor for) unless you turned that off, so there is
+nothing to edit first — Steam keeps them animated instead of flattening them.
 
 1. Open `https://steamcommunity.com/sharedfiles/edititem/767/3/` in your browser
    (logged in).
@@ -209,6 +218,7 @@ class ExportResult:
     paths: list[str]
     layout: Layout
     fmt: str = "png"   # png (stills) | apng | gif
+    hexified: bool = False
     fps: int = 0
     colors: int | None = None
     duration: float = 0.0
@@ -226,8 +236,17 @@ def _tile_paths(out_dir: str, stem: str, ext: str = ".png") -> list[str]:
     return [os.path.join(out_dir, f"{stem}_{i}{ext}") for i in range(1, N_SLOTS + 1)]
 
 
+def hexify(path: str) -> None:
+    """Overwrite the file's last byte with ``HEX_TRAILER`` in place — see the
+    note on that constant for why Steam needs it."""
+    with open(path, "r+b") as fh:
+        fh.seek(-1, os.SEEK_END)
+        fh.write(bytes([HEX_TRAILER]))
+
+
 def export_stills(src_path: str | None, p: ShowcaseParams,
-                  out_dir: str | None = None, stem: str = "steam") -> ExportResult:
+                  out_dir: str | None = None, stem: str = "steam",
+                  hexify_for_steam: bool = True) -> ExportResult:
     """Five still PNG tiles from the first frame of the source (PIL only)."""
     src = panel._first_image(src_path)
     if src is None:
@@ -238,7 +257,10 @@ def export_stills(src_path: str | None, p: ShowcaseParams,
     paths = _tile_paths(out_dir, stem)
     for tile, path in zip(slice_row(compose_row(src, p), p), paths):
         tile.save(path, "PNG", optimize=True)
-    return ExportResult(paths, layout(p), sizes=[os.path.getsize(x) for x in paths])
+        if hexify_for_steam:
+            hexify(path)
+    return ExportResult(paths, layout(p), hexified=hexify_for_steam,
+                        sizes=[os.path.getsize(x) for x in paths])
 
 
 def budget_ladder(fps: int, fmt: str = "apng") -> list[tuple[int, int | None, float]]:
@@ -409,6 +431,7 @@ def export_animated(
     out_dir: str | None = None,
     stem: str = "steam",
     fmt: str = "apng",
+    hexify_for_steam: bool = True,
     progress=None,
     cancel=None,
 ) -> ExportResult:
@@ -491,6 +514,10 @@ def export_animated(
                                   attempts=k, animated=True)
             if result.fits:
                 break
+        if hexify_for_steam:
+            for path in paths:
+                hexify(path)
+            result.hexified = True
         if progress:
             progress(1.0)
         return result
@@ -509,10 +536,11 @@ def describe(res: ExportResult, max_mb: float = 0.0) -> str:
     sizes = " · ".join(_fmt_size(s) for s in (res.sizes or []))
     head = (f"{N_SLOTS} tiles · {lay.tile_w}×{lay.tile_h}px each · "
             f"{lay.gap}px gaps ({lay.scale}×)")
+    hexed = " · hexified for Steam" if res.hexified else ""
     if not res.animated:
-        return f"{head} · still PNG\n{sizes}"
+        return f"{head} · still PNG{hexed}\n{sizes}"
     detail = (f"{res.fmt.upper()} · {res.fps} fps · {res.colors or 'full'} colours · "
-              f"{res.duration:.1f}s · looping")
+              f"{res.duration:.1f}s · looping{hexed}")
     if res.attempts > 1:
         detail += f" · shrunk in {res.attempts} steps to fit"
     line = f"{head}\n{detail}\n{sizes}"

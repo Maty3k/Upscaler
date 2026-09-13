@@ -1248,8 +1248,8 @@ def steam_on_media(media):
 
 
 def steam_export_ui(media, fit, zoom, off_x, off_y, bg_color, tile_h, scale_label,
-                    out_fmt, fps, trim_start, trim_end, loop_mode, max_mb, out_dir,
-                    progress=gr.Progress()):
+                    out_fmt, fps, trim_start, trim_end, loop_mode, max_mb, hexify,
+                    out_dir, progress=gr.Progress()):
     if not media:
         raise gr.Error("Upload an image, GIF or video first.")
     p = _steam_params(fit, zoom, off_x, off_y, bg_color, tile_h, scale_label)
@@ -1266,11 +1266,13 @@ def steam_export_ui(media, fit, zoom, off_x, off_y, bg_color, tile_h, scale_labe
                 media, p, fps=int(fps), trim_start=float(trim_start or 0),
                 trim_end=float(trim_end or 0), loop_mode=loop_mode, max_mb=max_mb,
                 out_dir=_ensure_export_dir(), stem=stem,
-                fmt="gif" if out_fmt == _STEAM_FMT_GIF else "apng", progress=progress,
+                fmt="gif" if out_fmt == _STEAM_FMT_GIF else "apng",
+                hexify_for_steam=bool(hexify), progress=progress,
                 cancel=_STEAM_CANCEL.is_set,
             )
         else:
-            res = steam.export_stills(media, p, out_dir=_ensure_export_dir(), stem=stem)
+            res = steam.export_stills(media, p, out_dir=_ensure_export_dir(), stem=stem,
+                                      hexify_for_steam=bool(hexify))
     except steam.CancelledError:
         return gr.update(), gr.update(), "⏹ Export cancelled."
     except (RuntimeError, ValueError, FileNotFoundError) as e:
@@ -3070,6 +3072,13 @@ def build_demo() -> gr.Blocks:
                             "256 colours (smaller files; the format most Steam guides "
                             "use).",
                         )
+                        st_hexify = gr.Checkbox(
+                            value=True, label="Hexify for Steam upload",
+                            info="Sets each tile's last byte to 21 — the hex-editor step "
+                            "the guides describe — so Steam keeps the animation instead "
+                            "of flattening it. Files still open everywhere; untick only "
+                            "if you want untouched files.",
+                        )
                         st_outdir = gr.Textbox(
                             value=cfg["output_dir"],
                             label="Save a copy to folder (optional)",
@@ -3414,7 +3423,7 @@ def build_demo() -> gr.Blocks:
         st_evt = st_export.click(
             steam_export_ui,
             _st_preview_inputs + [st_fmt, st_fps, st_start, st_end, st_loopmode,
-                                  st_maxmb, st_outdir],
+                                  st_maxmb, st_hexify, st_outdir],
             [st_gallery, st_file, st_info],
             show_progress_on=[st_gallery],
         )
