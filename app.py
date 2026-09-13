@@ -35,7 +35,7 @@ import gradio as gr
 import numpy as np
 from PIL import Image, ImageDraw, ImageEnhance
 
-from upscaler import background, config, library, manage, panel
+from upscaler import background, config, library, manage, panel, steam
 from upscaler.convert import FORMATS, convert, extension_for
 from upscaler.document import images_to_pdf, pdf_to_images
 from upscaler.deblur import Deblurrer, DeblurTooLargeError
@@ -1203,6 +1203,99 @@ def panel_enhance_source(media, up_model, *vals, progress=gr.Progress()):
     return gr.update(value=out), panel.preview(out, _panel_params(*vals)), note
 
 
+# ── Steam Workshop Showcase ───────────────────────────────────────────────────
+_STEAM_FPS = ["10", "12", "15", "20", "24", "30"]
+_STEAM_FMT_ANIM = "APNG (animated)"
+_STEAM_FMT_STILL = "PNG (still)"
+
+
+def _steam_params(fit, zoom, off_x, off_y, bg_color, tile_h, scale_label):
+    """Build ShowcaseParams from the tab's controls (order = the preview
+    input list minus the media file)."""
+    return steam.ShowcaseParams(
+        fit=fit, zoom=float(zoom), off_x=float(off_x), off_y=float(off_y),
+        bg_color=bg_color, tile_h=int(tile_h),
+        scale=steam.SCALES.get(scale_label, 1),
+    )
+
+
+def steam_preview_ui(media, *vals):
+    """Live framing view + Steam profile mockup."""
+    return steam.preview(media, _steam_params(*vals))
+
+
+def steam_on_media(media):
+    """On upload: fill trim End with the clip length, reveal the animation
+    controls and pick the matching export format."""
+    kind = panel.media_kind(media)
+    is_anim = kind == "animated"
+    dur = panel.media_duration(media) if is_anim else 0.0
+    if not media:
+        note = "Upload an image, GIF or video to begin."
+    elif is_anim:
+        note = (f"Animated source · {dur:g}s — exports five looping APNG tiles "
+                f"(clips are capped at {steam.MAX_DURATION_SEC}s).")
+    else:
+        note = "Still image loaded — exports five PNG tiles."
+    return (
+        gr.update(value=dur, maximum=dur or None),
+        gr.update(visible=is_anim),
+        gr.update(value=_STEAM_FMT_ANIM if is_anim else _STEAM_FMT_STILL),
+        note,
+    )
+
+
+def steam_export_ui(media, fit, zoom, off_x, off_y, bg_color, tile_h, scale_label,
+                    out_fmt, fps, trim_start, trim_end, loop_mode, max_mb, out_dir,
+                    progress=gr.Progress()):
+    if not media:
+        raise gr.Error("Upload an image, GIF or video first.")
+    p = _steam_params(fit, zoom, off_x, off_y, bg_color, tile_h, scale_label)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    stem = f"steam_{stamp}"
+    animated = out_fmt == _STEAM_FMT_ANIM and panel.media_kind(media) == "animated"
+    max_mb = float(max_mb or 0)
+    progress(0.02, desc="Preparing…")
+    try:
+        if animated:
+            res = steam.export_animated(
+                media, p, fps=int(fps), trim_start=float(trim_start or 0),
+                trim_end=float(trim_end or 0), loop_mode=loop_mode, max_mb=max_mb,
+                out_dir=_ensure_export_dir(), stem=stem, progress=progress,
+            )
+        else:
+            res = steam.export_stills(media, p, out_dir=_ensure_export_dir(), stem=stem)
+    except (RuntimeError, ValueError, FileNotFoundError) as e:
+        raise gr.Error(
+            "Couldn't create the tiles. Animated export needs ffmpeg installed; "
+            "otherwise check your source file and settings, then try again."
+        ) from e
+
+    # One ZIP with the five tiles (numbered in showcase order) + the upload steps.
+    zpath = os.path.join(_ensure_export_dir(), f"steam_showcase_{stamp}.zip")
+    with zipfile.ZipFile(zpath, "w") as z:
+        for path in res.paths:
+            z.write(path, os.path.basename(path))
+        z.writestr("HOW-TO-UPLOAD.txt", steam.UPLOAD_GUIDE)
+
+    for i, path in enumerate(res.paths, 1):
+        library.save_path(path, f"steam-tile{i}")  # auto-add each tile to the Library
+    library.save_path(zpath, "steam")
+
+    msg = "✅ Tiles exported · " + steam.describe(res, max_mb).replace("\n", "  \n")
+    out_dir = (out_dir or "").strip()
+    if out_dir:
+        try:
+            os.makedirs(out_dir, exist_ok=True)
+            for path in res.paths:
+                shutil.copyfile(path, os.path.join(out_dir, os.path.basename(path)))
+            msg += f"\n\n📁 Saved copies to `{out_dir}`"
+        except OSError as e:
+            msg += f"\n\n⚠ Couldn't save to `{out_dir}`: {e}"
+    gallery = [(path, f"Tile {i}") for i, path in enumerate(res.paths, 1)]
+    return gallery, zpath, msg
+
+
 _MODEL_CHOICES = [(f"{s.name}  (×{s.scale}) — {s.notes}", s.name) for s in MODELS.values()]
 _DEBLUR_CHOICES = [(f"{s.name} — {s.notes}", s.name) for s in DEBLUR_MODELS.values()]
 _FACE_CHOICES = [(f"{s.name} — {s.notes}", s.name) for s in FACE_MODELS.values()]
@@ -1728,6 +1821,11 @@ ICON_PDF = _svg('<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 '
                 '2-2V8z"/><path d="M14 3v5h5"/>')
 ICON_PANEL = _svg('<rect x="2" y="8" width="20" height="8" rx="1.5"/>'
                   '<path d="M6 12h.01M9 12h.01"/>')
+ICON_STEAM = _svg('<rect x="1.5" y="8" width="3.4" height="8" rx=".8"/>'
+                  '<rect x="5.8" y="8" width="3.4" height="8" rx=".8"/>'
+                  '<rect x="10.1" y="8" width="3.4" height="8" rx=".8"/>'
+                  '<rect x="14.4" y="8" width="3.4" height="8" rx=".8"/>'
+                  '<rect x="18.7" y="8" width="3.4" height="8" rx=".8"/>')
 ICON_LIBRARY = _svg('<rect x="3" y="3" width="7" height="7" rx="1.5"/>'
                     '<rect x="14" y="3" width="7" height="7" rx="1.5"/>'
                     '<rect x="3" y="14" width="7" height="7" rx="1.5"/>'
@@ -2870,6 +2968,140 @@ def build_demo() -> gr.Blocks:
                         pn_file = gr.File(label="Download export")
                         pn_info = gr.Markdown()
 
+            # ---- Tab: Steam Workshop Showcase (five tiles from one picture/clip) ----
+            with gr.Tab("Steam Showcase"):
+                gr.HTML(_section_head(
+                    "Steam", "Workshop Showcase tiles",
+                    "Turn a photo, GIF or video into the five tiles Steam shows side by "
+                    "side in your profile's Workshop Showcase. Tiles are cut at Steam's "
+                    "exact widths and gaps so the picture lines up across all five, and "
+                    "clips export as looping animated PNGs shrunk to fit the upload limit.",
+                    icon=ICON_STEAM,
+                ))
+                with gr.Row(equal_height=False):
+                    with gr.Column(scale=1):
+                        st_media = gr.File(
+                            label="Image, GIF or video",
+                            file_count="single",
+                            file_types=["image", ".gif", ".mp4", ".mov", ".webm",
+                                        ".mkv", ".m4v", ".avi"],
+                            elem_classes="drop",
+                        )
+                        st_fit = gr.Radio(
+                            steam.FITS, value="cover", label="Fit",
+                            info="How your media fills the row: cover fills and crops, "
+                            "contain adds bars, stretch distorts, manual lets you zoom "
+                            "and pan freely.",
+                        )
+                        with gr.Row():
+                            st_offx = gr.Slider(
+                                -100, 100, value=0, step=1, label="Pan X (%)",
+                                info="Slide left/right to choose which part survives "
+                                "the crop (cover and manual fit).",
+                            )
+                            st_offy = gr.Slider(
+                                -100, 100, value=0, step=1, label="Pan Y (%)",
+                                info="Slide up/down to choose which part survives "
+                                "the crop (cover and manual fit).",
+                            )
+                        st_zoom = gr.Slider(
+                            0.1, 5, value=1, step=0.01, label="Zoom (manual fit)",
+                            info="Zooms the image in or out — only used when Fit is "
+                            "set to manual.",
+                        )
+                        with gr.Row():
+                            st_tileh = gr.Slider(
+                                steam.MIN_TILE_H, steam.MAX_TILE_H, value=steam.DEFAULT_TILE_H,
+                                step=1, label="Tile height (px)",
+                                info="Steam shows every tile 122px wide; the height is "
+                                "yours — 122 makes square tiles (the stock look), "
+                                "taller makes a bigger banner.",
+                            )
+                            st_scale = gr.Radio(
+                                list(steam.SCALES), value=steam.DEFAULT_SCALE_LABEL,
+                                label="Resolution",
+                                info="1× is pixel-for-pixel at Steam's size. 2× renders "
+                                "the same layout at double size so it stays crisp on "
+                                "Retina / HiDPI screens (bigger files).",
+                            )
+                        st_bg = gr.ColorPicker(
+                            value="#000000", label="Background (fills letterbox gaps)",
+                            info="Shows through wherever the media doesn't cover the row "
+                            "(contain fit, or a zoomed-out manual fit).",
+                        )
+                        with gr.Group(visible=False) as st_anim_group:
+                            gr.Markdown("**Animation** — for APNG export.")
+                            with gr.Row():
+                                st_start = gr.Number(value=0, label="Trim start (s)", minimum=0,
+                                                     info="Skip everything before this point.")
+                                st_end = gr.Number(value=0, label="Trim end (s)", minimum=0,
+                                                   info="Stop here (0 = play to the end).")
+                            with gr.Row():
+                                st_fps = gr.Dropdown(
+                                    _STEAM_FPS, value="24", label="FPS", filterable=False,
+                                    info="Frames per second — higher is smoother but a "
+                                    "bigger file; the budget may lower it.",
+                                )
+                                st_loopmode = gr.Radio(
+                                    steam.LOOP_STYLES, value="normal", label="Loop style",
+                                    info="normal restarts, boomerang plays forward then "
+                                    "back, crossfade blends the end into the start.",
+                                )
+                            st_maxmb = gr.Slider(
+                                0, steam.STEAM_MAX_MB, value=steam.DEFAULT_MAX_MB, step=0.5,
+                                label="Size budget per tile (MB)",
+                                info="Each tile is shrunk in steps (256 colours → lower "
+                                "fps → shorter clip) until it fits. Steam documents 8 MB; "
+                                "5 MB is the safe bet. 0 = no limit.",
+                            )
+                        st_fmt = gr.Radio(
+                            [_STEAM_FMT_STILL, _STEAM_FMT_ANIM], value=_STEAM_FMT_STILL,
+                            label="Export format",
+                            info="PNG = five stills from the first frame · APNG = five "
+                            "looping animations (video / GIF sources).",
+                        )
+                        st_outdir = gr.Textbox(
+                            value=cfg["output_dir"],
+                            label="Save a copy to folder (optional)",
+                            placeholder="/path/to/a/folder",
+                            info="On export, also drops the five tiles into this folder, "
+                            "on top of the normal download.",
+                        )
+                        with gr.Accordion("How to upload to Steam", open=False):
+                            gr.Markdown(steam.UPLOAD_GUIDE, elem_classes="notes")
+                        with gr.Accordion("Tips", open=False):
+                            gr.Markdown(
+                                "* **Wide sources suit the row** — a 16:9 clip at 122px "
+                                "tall shows only a slim band; raise Tile height or pan "
+                                "to the part that matters.\n"
+                                "* **The black bars in the preview are Steam's gaps** "
+                                "between tiles — anything under them is never shown, so "
+                                "keep faces and text off the seams.\n"
+                                "* **Short loops upload best**: 3–6 seconds at 15–24 fps "
+                                "fits the budget with room to spare.\n"
+                                "* **Boomerang or crossfade hide the repeat seam** on "
+                                "clips that don't naturally loop.\n"
+                                "* **Upload the tiles in order 1 → 5** — the ZIP names "
+                                "them for you.",
+                                elem_classes="notes",
+                            )
+                        with gr.Row():
+                            st_export = gr.Button("Export tiles", variant="primary", size="lg", scale=3)
+                            st_clear = gr.Button("↺ Clear", variant="secondary", scale=1)
+                    with gr.Column(scale=1, elem_classes="sticky-col"):
+                        st_preview = gr.Image(
+                            label="Preview — framing (bright = kept, black bars = Steam's "
+                            "gaps) and how it sits on your profile",
+                            height=380, buttons=["fullscreen"], elem_classes=["loupe"],
+                        )
+                        st_gallery = gr.Gallery(
+                            label="Tiles 1 → 5 (animated tiles play here)", columns=5,
+                            height=200, object_fit="contain",
+                            buttons=["download", "fullscreen"], elem_classes=["loupe"],
+                        )
+                        st_file = gr.File(label="Download all five (ZIP)")
+                        st_info = gr.Markdown()
+
             # ---- Tab: Library (everything you export, saved automatically) ----
             with gr.Tab("Library") as lib_tab:
                 gr.HTML(_section_head(
@@ -3152,6 +3384,33 @@ def build_demo() -> gr.Blocks:
         pn_layout_upload.upload(
             panel_layout_upload, pn_layout_upload, _pn_preview_inputs[1:],
         ).then(panel_preview_ui, _pn_preview_inputs, pn_preview)
+
+        # ---- Steam showcase wiring ----
+        # Order after the media file must match _steam_params.
+        _st_preview_inputs = [st_media, st_fit, st_zoom, st_offx, st_offy, st_bg,
+                              st_tileh, st_scale]
+        st_media.change(
+            steam_preview_ui, _st_preview_inputs, st_preview, show_progress="hidden",
+        )
+        for _c in _st_preview_inputs[1:]:
+            _c.input(
+                steam_preview_ui, _st_preview_inputs, st_preview,
+                show_progress="hidden", trigger_mode="always_last",
+            )
+        st_media.change(
+            steam_on_media, st_media, [st_end, st_anim_group, st_fmt, st_info]
+        )
+        st_export.click(
+            steam_export_ui,
+            _st_preview_inputs + [st_fmt, st_fps, st_start, st_end, st_loopmode,
+                                  st_maxmb, st_outdir],
+            [st_gallery, st_file, st_info],
+            show_progress_on=[st_gallery],
+        )
+        st_clear.click(
+            lambda: (None, None, None, None), None,
+            [st_media, st_preview, st_gallery, st_file],
+        )
 
         # ---- Library tab ----
         _lib_outputs = [lib_gallery, lib_video_pick, lib_video, lib_count]

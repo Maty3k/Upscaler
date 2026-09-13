@@ -252,6 +252,7 @@ def compose_frame(
     now: datetime | None = None,
     total_frames: int = 1,
     fps: int = 30,
+    canvas: tuple[int, int] | None = None,
 ) -> Image.Image:
     """Composite a single source frame onto the exact panel canvas.
 
@@ -262,8 +263,12 @@ def compose_frame(
     ``total_frames`` / ``fps`` position scrolling/fading/typewriter text, and
     ``elapsed`` / ``now`` set the time a clock overlay shows. All default so the
     preview and still exports render a static start frame unchanged.
+
+    ``canvas`` overrides the Lian Li orientation sizes with an explicit
+    ``(width, height)`` so other fixed-size targets (the Steam showcase row)
+    can reuse the same fit / pan / zoom / background semantics.
     """
-    cw, ch = canvas_size(p.orientation)
+    cw, ch = canvas if canvas else canvas_size(p.orientation)
     canvas = _background(cw, ch, p).convert("RGB")
     resample = Image.BILINEAR if fast else Image.LANCZOS
 

@@ -469,6 +469,122 @@ def run_batch(argv: list[str]) -> int:
     return 0 if n_ok > 0 else 2
 
 
+def build_steam_parser() -> argparse.ArgumentParser:
+    from upscaler import steam
+
+    p = argparse.ArgumentParser(
+        prog="upscaler steam",
+        description="Cut an image, GIF or video into the five tiles of a Steam profile "
+        "Workshop Showcase, at Steam's exact tile widths and gaps so the picture "
+        "lines up across all five. Stills export five PNGs; clips export five "
+        "looping APNGs shrunk step by step to fit the upload cap (needs ffmpeg).",
+    )
+    p.add_argument("input", type=Path, nargs="?", help="Image, GIF or video file.")
+    p.add_argument(
+        "-o", "--output", type=Path,
+        help="Output directory (default: <name>_steam/ next to the input).",
+    )
+    p.add_argument(
+        "--still", action="store_true",
+        help="Export still PNG tiles from the first frame, even for a clip.",
+    )
+    p.add_argument(
+        "--fit", choices=steam.FITS, default="cover",
+        help="cover crops to fill, contain letterboxes, stretch distorts, manual "
+        "uses --zoom (default: cover).",
+    )
+    p.add_argument("--zoom", type=float, default=1.0, help="Zoom for --fit manual (default 1.0).")
+    p.add_argument(
+        "--pan-x", type=float, default=0.0, metavar="PCT",
+        help="Pan left/right, -100..100 (cover and manual fit).",
+    )
+    p.add_argument(
+        "--pan-y", type=float, default=0.0, metavar="PCT",
+        help="Pan up/down, -100..100 (cover and manual fit).",
+    )
+    p.add_argument(
+        "--height", type=int, default=steam.DEFAULT_TILE_H, metavar="PX",
+        help=f"Tile height in display pixels, {steam.MIN_TILE_H}-{steam.MAX_TILE_H} "
+        f"(default {steam.DEFAULT_TILE_H}: square tiles).",
+    )
+    p.add_argument(
+        "--hidpi", action="store_true",
+        help="Render at 2x (245px tiles) so it stays crisp on Retina / HiDPI screens.",
+    )
+    p.add_argument("--bg", default="#000000", metavar="HEX", help="Letterbox colour (default #000000).")
+    p.add_argument(
+        "--fps", type=int, default=24,
+        help="Frame rate for animated tiles (default 24; the size budget may lower it).",
+    )
+    p.add_argument("--start", type=float, default=0.0, metavar="SEC", help="Trim: start time.")
+    p.add_argument(
+        "--end", type=float, default=0.0, metavar="SEC",
+        help=f"Trim: end time (default: end of clip, capped at {steam.MAX_DURATION_SEC}s).",
+    )
+    p.add_argument(
+        "--loop", choices=steam.LOOP_STYLES, default="normal",
+        help="normal restarts, boomerang plays forward then back, crossfade blends the join.",
+    )
+    p.add_argument(
+        "--max-mb", type=float, default=steam.DEFAULT_MAX_MB,
+        help=f"Per-tile size budget in MB, 0 disables (default {steam.DEFAULT_MAX_MB:g}).",
+    )
+    p.add_argument(
+        "--how-to-upload", action="store_true",
+        help="Print the Steam upload steps (browser-console trick) and exit.",
+    )
+    return p
+
+
+def run_steam(argv: list[str]) -> int:
+    from upscaler import panel, steam
+
+    args = build_steam_parser().parse_args(argv)
+    if args.how_to_upload:
+        print(steam.UPLOAD_GUIDE)
+        return 0
+    if args.input is None or not args.input.is_file():
+        print(f"error: input not found: {args.input}", file=sys.stderr)
+        return 2
+    out_dir = args.output or args.input.with_name(f"{args.input.stem}_steam")
+    if out_dir.suffix and not out_dir.is_dir():
+        print("error: --output must be a directory", file=sys.stderr)
+        return 2
+
+    p = steam.ShowcaseParams(
+        fit=args.fit, zoom=args.zoom, off_x=args.pan_x, off_y=args.pan_y,
+        bg_color=args.bg, tile_h=args.height, scale=2 if args.hidpi else 1,
+    )
+    animated = not args.still and panel.media_kind(str(args.input)) == "animated"
+    stem = f"{args.input.stem}_steam"
+    try:
+        if animated:
+            last = [""]
+
+            def progress(frac: float, desc: str = "") -> None:
+                if desc and desc != last[0]:
+                    last[0] = desc
+                    print(f"  {desc}", file=sys.stderr)
+
+            res = steam.export_animated(
+                str(args.input), p, fps=args.fps, trim_start=args.start,
+                trim_end=args.end, loop_mode=args.loop, max_mb=args.max_mb,
+                out_dir=str(out_dir), stem=stem, progress=progress,
+            )
+        else:
+            res = steam.export_stills(str(args.input), p, out_dir=str(out_dir), stem=stem)
+    except (RuntimeError, ValueError, FileNotFoundError, OSError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+
+    print(steam.describe(res, args.max_mb), file=sys.stderr)
+    for path in res.paths:
+        print(path)
+    print("Upload the tiles in order 1 → 5 — `upscaler steam --how-to-upload` has the steps.",
+          file=sys.stderr)
+    return 0 if res.fits else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="upscaler",
@@ -477,7 +593,8 @@ def build_parser() -> argparse.ArgumentParser:
         "`upscaler pdf build *.png -o out.pdf` / `upscaler pdf extract in.pdf`, "
         "`upscaler video in.mp4 -o out.mp4`, "
         "`upscaler removebg <input> -o out.png`, "
-        "`upscaler batch <dir> -o <dir> --op upscale|convert|removebg`. "
+        "`upscaler batch <dir> -o <dir> --op upscale|convert|removebg`, "
+        "`upscaler steam clip.mp4 -o <dir>` (Steam Workshop Showcase tiles). "
         "Add --face to restore faces after upscaling.",
     )
     p.add_argument(
@@ -547,6 +664,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_removebg(argv[1:])
     if argv and argv[0] == "batch":
         return run_batch(argv[1:])
+    if argv and argv[0] == "steam":
+        return run_steam(argv[1:])
 
     args = build_parser().parse_args(argv)
 
