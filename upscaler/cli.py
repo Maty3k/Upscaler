@@ -891,6 +891,116 @@ def run_adjust(argv: list[str]) -> int:
     return 1 if failed else 0
 
 
+# (flag, dataclass field, help) — floats unless the field is an int.
+_EFFECT_OPTS = [
+    ("grain", "Film grain, 0..100."),
+    ("grain-size", "Grain coarseness, 1 (fine) .. 6 (clumpy)."),
+    ("halation", "Glow bleeding out of highlights, 0..100."),
+    ("halation-threshold", "How bright a pixel must be to glow, 0..99 (default 65)."),
+    ("halation-radius", "How far the glow spreads, %% of the short side (default 2)."),
+    ("leak", "A colored wash across the frame, 0..100."),
+    ("leak-angle", "Which side the leak comes from, degrees (default 45)."),
+    ("leak-softness", "1 (one edge) .. 100 (the whole frame), default 60."),
+    ("vignette", "-100 (bright corners) .. 100 (dark corners)."),
+    ("vignette-radius", "How much of the middle stays untouched, 0..99 (default 60)."),
+    ("vignette-feather", "How gradually the vignette falls off, 1..100 (default 50)."),
+    ("aberration", "Red/blue fringing toward the corners, 0..100."),
+    ("duotone", "Recolor between two colors by brightness, 0..100."),
+    ("dither", "Ordered dithering, 0..100."),
+    ("halftone", "Dot screen, 0..100."),
+    ("halftone-cell", "Dot size, %% of the short side (default 1)."),
+    ("halftone-angle", "Screen angle in degrees (default 45)."),
+    ("scanlines", "CRT scanlines, 0..100."),
+    ("scanline-spacing", "Gap between scanlines (default 3)."),
+    ("glitch", "Displaced bands and torn channels, 0..100."),
+]
+_EFFECT_INT_OPTS = [
+    ("posterize", "Flatten to this many levels per channel, 2..32 (0 = off)."),
+    ("dither-levels", "Colors per channel for --dither, 2..16 (default 4)."),
+    ("glitch-seed", "Which random tear --glitch produces (default 7)."),
+]
+_EFFECT_COLOR_OPTS = [
+    ("halation-color", "Glow color (default #ff5522)."),
+    ("leak-color", "Light-leak color (default #ff8a3d)."),
+    ("duotone-dark", "Duotone shadow color (default #1b2a4a)."),
+    ("duotone-light", "Duotone highlight color (default #ffd9a0)."),
+]
+
+
+def build_effects_parser() -> argparse.ArgumentParser:
+    from upscaler import effects
+
+    p = argparse.ArgumentParser(
+        prog="upscaler effects",
+        description="Effects and film looks: grain, halation, light leaks, vignette, "
+        "chromatic aberration, duotone, posterize, dither, halftone, scanlines and "
+        "glitch. They stack, and 0 turns one off. No AI.",
+    )
+    p.add_argument("input", type=Path, nargs="?", help="Image file, or a directory of images.")
+    p.add_argument(
+        "-o", "--output", type=Path,
+        help="Output file (format from the extension) or a directory for a folder of "
+        "images. Default: <name>_fx.png next to the input.",
+    )
+    p.add_argument("--look", choices=list(effects.PRESETS),
+                   help="Start from a ready-made look, then apply any flags on top.")
+    for name, help_text in _EFFECT_OPTS:
+        p.add_argument(f"--{name}", type=float, default=None, help=help_text)
+    for name, help_text in _EFFECT_INT_OPTS:
+        p.add_argument(f"--{name}", type=int, default=None, help=help_text)
+    for name, help_text in _EFFECT_COLOR_OPTS:
+        p.add_argument(f"--{name}", default=None, metavar="HEX", help=help_text)
+    _add_region_args(p, verb="affect", feather=15.0)
+    p.add_argument("-q", "--quality", type=int, default=92,
+                   help="Quality for JPEG/WebP outputs (default 92).")
+    return p
+
+
+def run_effects(argv: list[str]) -> int:
+    from upscaler import effects
+
+    args = build_effects_parser().parse_args(argv)
+    if args.input is None or not args.input.exists():
+        print(f"error: input not found: {args.input}", file=sys.stderr)
+        return 2
+    inputs = _gather_inputs(args.input) if args.input.is_dir() else [args.input]
+    if not inputs:
+        print(f"error: no images found in {args.input}", file=sys.stderr)
+        return 2
+    if len(inputs) > 1 and args.output and args.output.suffix:
+        print("error: --output must be a directory when processing a folder", file=sys.stderr)
+        return 2
+    mp, code = _region_from_args(args)
+    if code:
+        return code
+
+    p = effects.preset(args.look) if args.look else effects.EffectParams()
+    for name, _help in _EFFECT_OPTS + _EFFECT_INT_OPTS + _EFFECT_COLOR_OPTS:
+        value = getattr(args, name.replace("-", "_"))
+        if value is not None:
+            setattr(p, name.replace("-", "_"), value)
+
+    failed = 0
+    for src in inputs:
+        dst = _suffixed_output_path(src, args.output, "fx")
+        try:
+            with Image.open(src) as im:
+                img = im.convert("RGBA") if "A" in im.getbands() else im.convert("RGB")
+            region = _with_faces(mp, img, args.face_confidence, src.name)
+            if region is None:
+                continue
+            out = effects.apply(img, p, region)
+            if dst.suffix.lower() in (".jpg", ".jpeg", ".bmp"):
+                out = out.convert("RGB")
+            save_kw = {"quality": args.quality} if dst.suffix.lower() in (".jpg", ".jpeg", ".webp") else {}
+            out.save(dst, **save_kw)
+            print(f"{src.name}: {effects.describe(p, region)} → {dst}", file=sys.stderr)
+        except (Image.UnidentifiedImageError, OSError, ValueError, RuntimeError) as e:
+            print(f"error on {src.name}: {e}", file=sys.stderr)
+            failed += 1
+    return 1 if failed else 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="upscaler",
@@ -902,7 +1012,8 @@ def build_parser() -> argparse.ArgumentParser:
         "`upscaler batch <dir> -o <dir> --op upscale|convert|removebg`, "
         "`upscaler steam clip.mp4 -o <dir>` (Steam Workshop Showcase tiles), "
         "`upscaler blur photo.jpg --kind lens --shape ellipse --outside` (blur toolbox), "
-        "`upscaler adjust photo.jpg --auto` (color and light). "
+        "`upscaler adjust photo.jpg --auto` (color and light), "
+        "`upscaler effects photo.jpg --look \"Film grain\"` (effects and film looks). "
         "Add --face to restore faces after upscaling.",
     )
     p.add_argument(
@@ -978,6 +1089,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_blur(argv[1:])
     if argv and argv[0] == "adjust":
         return run_adjust(argv[1:])
+    if argv and argv[0] == "effects":
+        return run_effects(argv[1:])
 
     args = build_parser().parse_args(argv)
 

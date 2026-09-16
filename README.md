@@ -175,6 +175,26 @@ stop. The same region flags as `blur` apply any of it to just a shape, a
 graduated band, a painted mask or every detected face. The GUI's **Color & Light** tab has all of it
 with a live before/after.
 
+#### Effects & film looks (no AI)
+
+```bash
+upscaler effects photo.jpg --look "Film grain"
+upscaler effects photo.jpg --grain 30 --halation 50 --vignette 40      # stack them yourself
+upscaler effects photo.jpg --look "Newspaper print"                    # halftone dot screen
+upscaler effects photo.jpg --duotone 100 --duotone-dark "#10203f" --duotone-light "#f2c76b"
+upscaler effects photo.jpg --look "VHS glitch" --glitch-seed 42        # a different tear
+upscaler effects ./folder -o ./out --look Lomo
+```
+
+Eleven effects that **stack**: grain with adjustable coarseness, halation
+(the glow that bleeds out of highlights), light leaks, vignette, chromatic
+aberration, duotone, posterize, ordered dither, halftone dot screens,
+scanlines and glitch. Twelve looks combine them. Everything is sized relative
+to the photo, so a setting looks the same at any resolution, and the same
+region flags as `blur` restrict effects to a shape, a band, a painted mask or
+every detected face. The GUI's **Effects** tab has all of it with a live
+before/after.
+
 #### Blur (no AI)
 
 ```bash
@@ -239,7 +259,9 @@ A full local web app with a tab per tool: **Upscale & Enhance** (with deblur /
 denoise, JPEG de-blocking, face restore), **Colorize** (DDColor), **Remove
 Objects** (LaMa inpainting), **Remove BG**, **Video** upscaling, **Convert &
 Documents** (formats + image ⇄ PDF), **Batch**, **Color & Light** (exposure,
-contrast, white balance, vibrance, black & white, with one-click Auto), a
+contrast, white balance, vibrance, black & white, with one-click Auto),
+**Effects** (grain, halation, light leaks, vignette, duotone, halftone,
+dither, scanlines, glitch — twelve ready-made film looks), a
 **Blur** toolbox (gaussian,
 motion, spin, zoom, lens bokeh, pixelate, surface — whole image, a shaped or
 tilt-shift band, a painted mask, or every detected face), a **Lian Li Screen** composer for the 8.8″ case

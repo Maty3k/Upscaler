@@ -35,7 +35,8 @@ import gradio as gr
 import numpy as np
 from PIL import Image, ImageDraw, ImageEnhance
 
-from upscaler import adjust, background, blur, config, face, library, manage, panel, steam
+from upscaler import (adjust, background, blur, config, effects, face, library, manage,
+                      panel, steam)
 from upscaler.convert import FORMATS, convert, extension_for
 from upscaler.document import images_to_pdf, pdf_to_images
 from upscaler.deblur import Deblurrer, DeblurTooLargeError
@@ -1427,6 +1428,75 @@ def adjust_apply_ui(image, *vals, progress=gr.Progress()):
     return (img, out), path, f"✅ {adjust.describe(p, m)} · {out.width}×{out.height}px PNG"
 
 
+# ── Effects & film looks ──────────────────────────────────────────────────────
+# One ordered list so the params mapping, the preset fan-out and the control
+# column can't drift apart (a test checks it against EffectParams).
+_EFFECT_FIELDS = [
+    "grain", "grain_size", "halation", "halation_threshold", "halation_radius",
+    "halation_color", "leak", "leak_angle", "leak_color", "leak_softness",
+    "vignette", "vignette_radius", "vignette_feather", "aberration",
+    "duotone", "duotone_dark", "duotone_light", "posterize", "dither", "dither_levels",
+    "halftone", "halftone_cell", "halftone_angle",
+    "scanlines", "scanline_spacing", "glitch", "glitch_seed",
+]
+_EFFECT_COLORS = {"halation_color", "leak_color", "duotone_dark", "duotone_light"}
+_EFFECT_INTS = {"posterize", "dither_levels", "glitch_seed"}
+
+
+def _effect_params(*vals):
+    kw = {}
+    for name, value in zip(_EFFECT_FIELDS, vals):
+        if name in _EFFECT_COLORS:
+            kw[name] = str(value or "#ffffff")
+        elif name in _EFFECT_INTS:
+            kw[name] = int(value or 0)
+        else:
+            kw[name] = float(value)
+    return effects.EffectParams(**kw)
+
+
+def _effect_split(vals):
+    n = len(_EFFECT_FIELDS)
+    return _effect_params(*vals[:n]), _adjust_mask(*vals[n:])
+
+
+def _fan_effects(p):
+    return tuple(getattr(p, name) for name in _EFFECT_FIELDS)
+
+
+def effects_preview_ui(image, *vals):
+    """Live before/after at preview size."""
+    if image is None:
+        return None
+    img = image if isinstance(image, Image.Image) else Image.fromarray(image)
+    p, m = _effect_split(vals)
+    return effects.preview_pair(img, p, m)
+
+
+def effects_preset_ui(name):
+    """Load a look into the controls ("None" clears them)."""
+    return _fan_effects(effects.preset(name))
+
+
+def effects_apply_ui(image, *vals, progress=gr.Progress()):
+    if image is None:
+        raise gr.Error("Upload a photo to add effects to.")
+    img = image if isinstance(image, Image.Image) else Image.fromarray(image)
+    p, m = _effect_split(vals)
+    if m.shape == "painted" and m.painted is None:
+        raise gr.Error("Paint over the area for the effects first (or set the region to whole).")
+    if m.shape == "faces" and not m.faces:
+        raise gr.Error("No faces were found in this photo — pick another region.")
+    progress(0.2, desc="Rendering at full size…")
+    out = effects.apply(img, p, m)
+    progress(0.9, desc="Saving PNG…")
+    fd, path = tempfile.mkstemp(dir=_ensure_export_dir(), suffix=".png")
+    os.close(fd)
+    out.save(path, "PNG")
+    library.save_path(path, "effects")  # auto-add to the Library
+    return (img, out), path, f"✅ {effects.describe(p, m)} · {out.width}×{out.height}px PNG"
+
+
 # ── Blur toolbox ──────────────────────────────────────────────────────────────
 _BLUR_KIND_INFO = {
     "gaussian": "Soft, natural blur.",
@@ -2066,6 +2136,8 @@ ICON_PANEL = _svg('<rect x="2" y="8" width="20" height="8" rx="1.5"/>'
 ICON_LIGHT = _svg('<circle cx="12" cy="12" r="4.5"/><path d="M12 2v2.5M12 19.5V22'
                   'M2 12h2.5M19.5 12H22M4.9 4.9l1.8 1.8M17.3 17.3l1.8 1.8'
                   'M19.1 4.9l-1.8 1.8M6.7 17.3l-1.8 1.8"/>')
+ICON_FX = _svg('<rect x="2.5" y="5" width="19" height="14" rx="2"/>'
+               '<path d="M2.5 9h3M2.5 15h3M18.5 9h3M18.5 15h3M9 5v14M15 5v14"/>')
 ICON_BLUR = _svg('<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4.5"/>'
                  '<path d="M12 3v2M12 19v2M3 12h2M19 12h2"/>')
 ICON_STEAM = _svg('<rect x="1.5" y="8" width="3.4" height="8" rx=".8"/>'
@@ -2801,6 +2873,239 @@ def build_demo() -> gr.Blocks:
                         )
                         ad_file = gr.File(label="Download PNG")
                         ad_info = gr.Markdown()
+
+            # ---- Tab: Effects & film looks (no AI) ----
+            with gr.Tab("Effects"):
+                gr.HTML(_section_head(
+                    "Looks", "Effects & film looks",
+                    "Grain, halation, light leaks, vignettes, duotone, halftone, "
+                    "dithering, scanlines and glitch — stack as many as you like, or "
+                    "start from a look. Everything is sized relative to the photo, so "
+                    "it looks the same at any resolution.",
+                    icon=ICON_FX,
+                ))
+                with gr.Row(equal_height=False):
+                    with gr.Column(scale=1):
+                        fx_in = gr.Image(
+                            label="Input", type="pil", image_mode=None,
+                            sources=["upload", "clipboard"], height=300,
+                            elem_classes="drop", buttons=["download", "fullscreen"],
+                        )
+                        fx_preset = gr.Dropdown(
+                            effects.PRESET_NAMES, value=effects.PRESET_NONE,
+                            label="Look", filterable=False,
+                            info="A ready-made stack — every slider below stays editable "
+                            "afterwards. 'None' clears them all.",
+                        )
+                        with gr.Accordion("Film", open=True):
+                            with gr.Row():
+                                fx_grain = gr.Slider(
+                                    0, 100, value=0, step=1, label="Grain",
+                                    info="Film grain, strongest in the midtones.",
+                                )
+                                fx_grain_size = gr.Slider(
+                                    1, 6, value=1, step=0.1, label="Grain size",
+                                    info="1 is fine, per-pixel grain; higher clumps it "
+                                    "into coarser, older-film specks.",
+                                )
+                            fx_halation = gr.Slider(
+                                0, 100, value=0, step=1, label="Halation / glow",
+                                info="Light bleeding out of bright areas, the way it "
+                                "does on film.",
+                            )
+                            with gr.Row():
+                                fx_hal_thresh = gr.Slider(
+                                    0, 99, value=65, step=1, label="Glow threshold",
+                                    info="How bright a pixel must be before it glows. "
+                                    "Lower spreads the glow further into the picture.",
+                                )
+                                fx_hal_radius = gr.Slider(
+                                    0.2, 10, value=2, step=0.1, label="Glow radius (%)",
+                                    info="How far the glow spreads, relative to the photo.",
+                                )
+                            fx_hal_color = gr.ColorPicker(
+                                value="#ff5522", label="Glow color",
+                                info="Classic film halation is warm orange-red; a pale "
+                                "cream gives a dreamy white glow.",
+                            )
+                            fx_leak = gr.Slider(
+                                0, 100, value=0, step=1, label="Light leak",
+                                info="A colored wash across the frame, like light "
+                                "catching the film.",
+                            )
+                            with gr.Row():
+                                fx_leak_angle = gr.Slider(
+                                    0, 360, value=45, step=1, label="Leak direction (°)",
+                                    info="Which side the light comes from.",
+                                )
+                                fx_leak_soft = gr.Slider(
+                                    1, 100, value=60, step=1, label="Leak softness",
+                                    info="Low keeps it to one edge; high washes the "
+                                    "whole frame.",
+                                )
+                            fx_leak_color = gr.ColorPicker(value="#ff8a3d", label="Leak color",
+                                                           info="The color of the wash.")
+                        with gr.Accordion("Lens", open=False):
+                            fx_vignette = gr.Slider(
+                                -100, 100, value=0, step=1, label="Vignette",
+                                info="Positive darkens the corners, negative brightens "
+                                "them.",
+                            )
+                            with gr.Row():
+                                fx_vig_radius = gr.Slider(
+                                    0, 99, value=60, step=1, label="Vignette size (%)",
+                                    info="How much of the middle stays untouched.",
+                                )
+                                fx_vig_feather = gr.Slider(
+                                    1, 100, value=50, step=1, label="Vignette softness",
+                                    info="How gradually it fades in toward the corners.",
+                                )
+                            fx_aberration = gr.Slider(
+                                0, 100, value=0, step=1, label="Chromatic aberration",
+                                info="Red and blue fringing toward the corners, like a "
+                                "cheap lens.",
+                            )
+                        with gr.Accordion("Print", open=False):
+                            fx_duotone = gr.Slider(
+                                0, 100, value=0, step=1, label="Duotone",
+                                info="Recolors the photo between two colors by "
+                                "brightness.",
+                            )
+                            with gr.Row():
+                                fx_duo_dark = gr.ColorPicker(value="#1b2a4a", label="Shadow color",
+                                                             info="What the dark areas become.")
+                                fx_duo_light = gr.ColorPicker(value="#ffd9a0", label="Highlight color",
+                                                              info="What the bright areas become.")
+                            fx_posterize = gr.Slider(
+                                0, 32, value=0, step=1, label="Posterize levels",
+                                info="Flattens the photo into this many brightness steps "
+                                "per color. 0 = off.",
+                            )
+                            with gr.Row():
+                                fx_dither = gr.Slider(
+                                    0, 100, value=0, step=1, label="Dither",
+                                    info="Ordered dithering — retro computer graphics.",
+                                )
+                                fx_dither_levels = gr.Slider(
+                                    2, 16, value=4, step=1, label="Dither levels",
+                                    info="Colors per channel. 2 gives the classic 8-color "
+                                    "look; pair with black & white for true 1-bit.",
+                                )
+                            fx_halftone = gr.Slider(
+                                0, 100, value=0, step=1, label="Halftone",
+                                info="A dot screen, like newspaper or comic printing.",
+                            )
+                            with gr.Row():
+                                fx_ht_cell = gr.Slider(
+                                    0.2, 5, value=1, step=0.1, label="Dot size (%)",
+                                    info="Bigger dots read as a comic; small ones as "
+                                    "newsprint.",
+                                )
+                                fx_ht_angle = gr.Slider(
+                                    0, 90, value=45, step=1, label="Screen angle (°)",
+                                    info="The angle of the dot grid. 45 is traditional.",
+                                )
+                        with gr.Accordion("Screen", open=False):
+                            with gr.Row():
+                                fx_scanlines = gr.Slider(
+                                    0, 100, value=0, step=1, label="Scanlines",
+                                    info="Dark horizontal lines, like an old CRT.",
+                                )
+                                fx_scan_spacing = gr.Slider(
+                                    1, 20, value=3, step=0.5, label="Line spacing",
+                                    info="How far apart the lines sit, relative to the "
+                                    "photo.",
+                                )
+                            with gr.Row():
+                                fx_glitch = gr.Slider(
+                                    0, 100, value=0, step=1, label="Glitch",
+                                    info="Displaced bands and torn color channels, like "
+                                    "damaged tape.",
+                                )
+                                fx_glitch_seed = gr.Slider(
+                                    0, 999, value=7, step=1, label="Glitch seed",
+                                    info="Change it for a different random tear; the same "
+                                    "seed always gives the same one.",
+                                )
+                        with gr.Accordion("Where to apply", open=False):
+                            fx_shape = gr.Radio(
+                                blur.SHAPES, value="whole", label="Region",
+                                info="whole = the entire photo · rectangle / ellipse = a "
+                                "shape you position · band = a straight strip · painted = "
+                                "wherever you brush · faces = every face found "
+                                "automatically.",
+                            )
+                            with gr.Row():
+                                fx_x = gr.Slider(0, 100, value=50, step=1, label="Centre X (%)",
+                                                 visible=False, info="Shape position.")
+                                fx_y = gr.Slider(0, 100, value=50, step=1, label="Centre Y (%)",
+                                                 visible=False, info="Shape position.")
+                            with gr.Row():
+                                fx_w = gr.Slider(1, 100, value=50, step=1, label="Width (%)",
+                                                 visible=False, info="Shape size.")
+                                fx_h = gr.Slider(1, 100, value=50, step=1, label="Height (%)",
+                                                 visible=False, info="Shape size, or how "
+                                                 "thick the band is.")
+                            fx_mangle = gr.Slider(-90, 90, value=0, step=1, label="Band tilt (°)",
+                                                  visible=False, info="Rotate the strip.")
+                            fx_round = gr.Slider(0, 100, value=0, step=1,
+                                                 label="Corner roundness (%)", visible=False,
+                                                 info="0 = sharp corners, 100 = a pill.")
+                            fx_feather = gr.Slider(0, 50, value=15, step=0.5, label="Feather (%)",
+                                                   visible=False,
+                                                   info="How softly the effects fade out at "
+                                                   "the edge of the region.")
+                            fx_outside = gr.Checkbox(value=False, label="Apply outside the shape",
+                                                     visible=False,
+                                                     info="Affect everything except the shape.")
+                            fx_facepad = gr.Slider(
+                                -25, 100, value=25, step=1, label="Face padding (%)",
+                                visible=False,
+                                info="Grows the oval around each detected face.",
+                            )
+                            fx_faces_note = gr.Markdown(visible=False, elem_classes="notes")
+                            fx_faces_state = gr.State([])
+                            fx_editor = gr.ImageEditor(
+                                label="Paint where to apply", type="pil", height=360,
+                                sources=[], layers=False, transforms=(), visible=False,
+                                brush=gr.Brush(colors=["#ffffff"], color_mode="fixed",
+                                               default_size=40),
+                            )
+                        with gr.Accordion("Tips", open=False):
+                            gr.Markdown(
+                                "* **Start from a look**, then dial the sliders back — "
+                                "most effects read best at half the strength you first "
+                                "reach for.\n"
+                                "* **Grain size matters more than amount** for an old-film "
+                                "feel: 2–3 with a modest amount beats fine grain turned "
+                                "up.\n"
+                                "* **Halation needs highlights** — if nothing glows, lower "
+                                "the glow threshold.\n"
+                                "* **Grade first, then add effects**: set the mood in "
+                                "Color & Light, then 'Use as input' here.\n"
+                                "* **For a true 1-bit look**, make it black & white in "
+                                "Color & Light first, then dither with 2 levels.\n"
+                                "* **Effects can be local too** — a halftone in just a "
+                                "painted area, or grain everywhere except the faces.",
+                                elem_classes="notes",
+                            )
+                        with gr.Row():
+                            fx_btn = gr.Button("Apply (full size)", variant="primary",
+                                               size="lg", scale=3)
+                            fx_use = gr.Button("↪ Use as input", variant="secondary", scale=2)
+                            fx_clear = gr.Button("↺ Clear", variant="secondary", scale=1)
+                    with gr.Column(scale=1, elem_classes="sticky-col"):
+                        fx_preview = gr.ImageSlider(
+                            # max_height, not height — see `out` slider above.
+                            label="Live preview — before / after (drag the divider)",
+                            type="pil", max_height=340, elem_classes=["loupe"],
+                        )
+                        fx_out = gr.ImageSlider(
+                            label="Result at full size — before / after", type="pil",
+                            max_height=340, elem_classes=["loupe"], interactive=False,
+                        )
+                        fx_file = gr.File(label="Download PNG")
+                        fx_info = gr.Markdown()
 
             # ---- Tab: Blur toolbox (no AI) ----
             with gr.Tab("Blur"):
@@ -4052,6 +4357,46 @@ def build_demo() -> gr.Blocks:
         ad_use.click(lambda pair: (pair[1] if pair else None), ad_out, ad_in)
         ad_clear.click(lambda: (None, None, None, None, None), None,
                        [ad_in, ad_preview, ad_out, ad_file, ad_info])
+
+        # ---- Effects wiring ----
+        _fx_controls = [fx_grain, fx_grain_size, fx_halation, fx_hal_thresh, fx_hal_radius,
+                        fx_hal_color, fx_leak, fx_leak_angle, fx_leak_color, fx_leak_soft,
+                        fx_vignette, fx_vig_radius, fx_vig_feather, fx_aberration,
+                        fx_duotone, fx_duo_dark, fx_duo_light, fx_posterize, fx_dither,
+                        fx_dither_levels, fx_halftone, fx_ht_cell, fx_ht_angle,
+                        fx_scanlines, fx_scan_spacing, fx_glitch, fx_glitch_seed]
+        _fx_region = [fx_shape, fx_x, fx_y, fx_w, fx_h, fx_mangle, fx_round, fx_feather,
+                      fx_outside, fx_facepad, fx_faces_state, fx_editor]
+        _fx_inputs = [fx_in] + _fx_controls + _fx_region
+        fx_shape.change(
+            _region_vis, fx_shape,
+            [fx_x, fx_y, fx_w, fx_h, fx_mangle, fx_round, fx_feather, fx_outside,
+             fx_facepad, fx_editor],
+            show_progress="hidden",
+        ).then(detect_faces_ui, [fx_in, fx_shape], [fx_faces_state, fx_faces_note],
+               show_progress="hidden") \
+         .then(effects_preview_ui, _fx_inputs, fx_preview, show_progress="hidden")
+        fx_in.change(blur_on_image, fx_in, fx_editor, show_progress="hidden")
+        fx_in.change(detect_faces_ui, [fx_in, fx_shape], [fx_faces_state, fx_faces_note],
+                     show_progress="hidden") \
+             .then(effects_preview_ui, _fx_inputs, fx_preview, show_progress="hidden")
+        for _c in _fx_controls + _fx_region[1:]:
+            if isinstance(_c, gr.State):
+                continue
+            (_c.change if _c is fx_editor else _c.input)(
+                effects_preview_ui, _fx_inputs, fx_preview,
+                show_progress="hidden", trigger_mode="always_last",
+            )
+        # A look writes every control at once, which fires .change and not
+        # .input — so the preview is refreshed explicitly afterwards.
+        fx_preset.input(effects_preset_ui, fx_preset, _fx_controls, show_progress="hidden") \
+            .then(effects_preview_ui, _fx_inputs, fx_preview, show_progress="hidden")
+        fx_btn.click(
+            effects_apply_ui, _fx_inputs, [fx_out, fx_file, fx_info], show_progress_on=[fx_out],
+        )
+        fx_use.click(lambda pair: (pair[1] if pair else None), fx_out, fx_in)
+        fx_clear.click(lambda: (None, None, None, None, None), None,
+                       [fx_in, fx_preview, fx_out, fx_file, fx_info])
 
         # ---- Blur toolbox wiring ----
         _bl_inputs = [bl_in, bl_kind, bl_strength, bl_angle, bl_cx, bl_cy, bl_highlights,
