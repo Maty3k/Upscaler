@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 # PyPI distribution name ("upscaler" is taken); the import package and the
 # CLI command are still plain `upscaler`.
 name = "local-upscaler"
-version = "0.6.1"
+version = "0.7.0"
 description = "Local, open-source image upscaling + sharpening. Wraps pretrained Real-ESRGAN weights."
 readme = "README.md"
 requires-python = ">=3.9"
