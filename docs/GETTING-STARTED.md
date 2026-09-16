@@ -133,7 +133,7 @@ Each tab is a separate tool, all local:
 | **Effects** | Film looks — grain, glow, light leaks, vignette, halftone, retro dithering and glitch |
 | **Blur** | Eight kinds of blur — soft, motion, bokeh, pixelate, tilt-shift — on the whole photo, a shape, where you paint, or every face it finds |
 | **Video** | Upscale whole videos frame-by-frame (slow but works) |
-| **Convert & Documents** | Convert between PNG/JPEG/WebP/HEIC/…, images ⇄ PDF |
+| **Convert & Documents** | Convert between PNG/JPEG/WebP/HEIC/…, squeeze a photo under a size limit, images ⇄ PDF |
 | **Batch** | Apply one operation to a whole folder of images |
 | **Lian Li** | Compose media for the Lian Li 8.8″ case screen at its exact size |
 | **Steam** | Cut a picture or clip into the five tiles of a Steam profile Workshop Showcase |

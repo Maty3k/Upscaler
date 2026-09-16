@@ -175,6 +175,27 @@ stop. The same region flags as `blur` apply any of it to just a shape, a
 graduated band, a painted mask or every detected face. The GUI's **Color & Light** tab has all of it
 with a live before/after.
 
+#### Fit a file-size budget (no AI)
+
+```bash
+upscaler optimize photo.jpg -t 500KB               # under half a meg, best quality that fits
+upscaler optimize photo.jpg -t 2MB -f JPEG         # when the site won't take WebP
+upscaler optimize ./folder -o ./out -t 1MB         # a whole folder for an email
+upscaler optimize photo.jpg -t 200KB --no-resize   # keep the dimensions, whatever it costs
+upscaler optimize photo.jpg -t 300KB --max-edge 1920
+```
+
+Encoder quality is **searched, not guessed**: the picture is encoded into
+memory and measured over and over, because how many bytes a photo takes
+depends entirely on what is in it. The result is the highest quality that
+still fits. The picture is only shrunk if quality alone can't reach the
+target, and the scale is estimated from how far over budget it was rather
+than stepped down blindly. `auto` picks WebP, which carries the same picture
+in roughly half a JPEG's bytes. Metadata is always stripped, which drops the
+GPS coordinates along with the bytes, and a file that already fits is left
+alone rather than needlessly re-encoded. The GUI has it under
+**Convert → Fit a file-size budget**.
+
 #### Watermark (no AI)
 
 ```bash
@@ -321,7 +342,8 @@ contrast, white balance, vibrance, black & white, with one-click Auto),
 dither, scanlines, glitch — twelve ready-made film looks), **Sharpen** (unsharp,
 high-pass, edge-aware and texture, with halo control), **Crop & Frame** (any
 aspect, straighten, lean correction, exact sizes, borders and shadows),
-**Watermark** (text or logo, in a corner or tiled), a
+**Watermark** (text or logo, in a corner or tiled), a file-size
+budget fitter, a
 **Blur** toolbox (gaussian,
 motion, spin, zoom, lens bokeh, pixelate, surface — whole image, a shaped or
 tilt-shift band, a painted mask, or every detected face), a **Lian Li Screen** composer for the 8.8″ case

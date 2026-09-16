@@ -1323,6 +1323,91 @@ def run_watermark(argv: list[str]) -> int:
     return 1 if failed else 0
 
 
+def build_optimize_parser() -> argparse.ArgumentParser:
+    from upscaler import optimize as op
+
+    p = argparse.ArgumentParser(
+        prog="upscaler optimize",
+        description="Fit a photo under a file-size budget, losing as little as "
+        "possible: the encoder quality is searched for the highest setting that "
+        "still fits, and the picture is only shrunk if quality alone can't get "
+        "there. Metadata is always stripped. No AI.",
+    )
+    p.add_argument("input", type=Path, nargs="?", help="Image file, or a directory of images.")
+    p.add_argument(
+        "-o", "--output", type=Path,
+        help="Output file, or a directory for a folder of images. The extension "
+        "follows the chosen format; default is next to the input.",
+    )
+    p.add_argument("-t", "--target", default="500KB",
+                   help="The budget: 500KB, 2MB, 1.5 MB (default 500KB).")
+    p.add_argument("-f", "--format", choices=op.BUDGET_FORMATS, default=op.AUTO,
+                   help="Output format (default auto, which picks WebP).")
+    p.add_argument("--min-quality", type=int, default=40,
+                   help="How far quality may fall before resizing instead (default 40).")
+    p.add_argument("--max-quality", type=int, default=95, help="Quality ceiling (default 95).")
+    p.add_argument("--no-resize", action="store_true",
+                   help="Keep the original dimensions even if the budget can't be met.")
+    p.add_argument("--max-edge", type=int, default=0, metavar="PX",
+                   help="Cap the long edge before starting (0 = leave it).")
+    p.add_argument("--force", action="store_true",
+                   help="Re-encode even when the source file is already under budget "
+                   "(by default it is left alone, since re-encoding only loses quality).")
+    return p
+
+
+def run_optimize(argv: list[str]) -> int:
+    from upscaler import optimize as op
+
+    args = build_optimize_parser().parse_args(argv)
+    if args.input is None or not args.input.exists():
+        print(f"error: input not found: {args.input}", file=sys.stderr)
+        return 2
+    inputs = _gather_inputs(args.input) if args.input.is_dir() else [args.input]
+    if not inputs:
+        print(f"error: no images found in {args.input}", file=sys.stderr)
+        return 2
+    if len(inputs) > 1 and args.output and args.output.suffix:
+        print("error: --output must be a directory when processing a folder", file=sys.stderr)
+        return 2
+    target = op.parse_size(args.target)
+    if target is None:
+        print(f"error: can't read the size {args.target!r} — try 500KB or 2MB", file=sys.stderr)
+        return 2
+
+    p = op.OptimizeParams(target=args.target, fmt=args.format,
+                          min_quality=args.min_quality, max_quality=args.max_quality,
+                          allow_resize=not args.no_resize, max_edge=args.max_edge)
+    failed = over = 0
+    for src in inputs:
+        try:
+            # Re-encoding a file that already fits only throws away quality, so
+            # leave it alone unless asked.
+            if not args.force and src.stat().st_size <= target:
+                print(f"{src.name}: already {op.human_size(src.stat().st_size)}, "
+                      "under budget (skipped)", file=sys.stderr)
+                continue
+            with Image.open(src) as im:
+                img = im.convert("RGBA") if "A" in im.getbands() else im.convert("RGB")
+            res = op.optimize(img, p)
+            if args.output and args.output.suffix:
+                dst = args.output
+                dst.parent.mkdir(parents=True, exist_ok=True)
+            else:
+                out_dir = args.output if args.output else src.parent
+                out_dir.mkdir(parents=True, exist_ok=True)
+                dst = out_dir / f"{src.stem}_opt.{res.extension}"
+            dst.write_bytes(res.data)
+            print(f"{src.name}: {op.human_size(src.stat().st_size)} → "
+                  f"{op.describe(res)} → {dst}", file=sys.stderr)
+            if not res.fits:
+                over += 1
+        except (Image.UnidentifiedImageError, OSError, ValueError) as e:
+            print(f"error on {src.name}: {e}", file=sys.stderr)
+            failed += 1
+    return 1 if (failed or over) else 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="upscaler",
@@ -1338,7 +1423,8 @@ def build_parser() -> argparse.ArgumentParser:
         "`upscaler effects photo.jpg --look \"Film grain\"` (effects and film looks), "
         "`upscaler sharpen photo.jpg --preset Standard` (sharpening toolbox), "
         "`upscaler crop photo.jpg --aspect 1:1 --border 6` (crop and frame), "
-        "`upscaler watermark ./folder --text \"© Me\"` (signature or logo). "
+        "`upscaler watermark ./folder --text \"© Me\"` (signature or logo), "
+        "`upscaler optimize photo.jpg -t 500KB` (fit a file-size budget). "
         "Add --face to restore faces after upscaling.",
     )
     p.add_argument(
@@ -1422,6 +1508,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_frame(argv[1:])
     if argv and argv[0] == "watermark":
         return run_watermark(argv[1:])
+    if argv and argv[0] == "optimize":
+        return run_optimize(argv[1:])
 
     args = build_parser().parse_args(argv)
 

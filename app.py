@@ -42,7 +42,8 @@ from upscaler.document import images_to_pdf, pdf_to_images
 from upscaler.deblur import Deblurrer, DeblurTooLargeError
 from upscaler.engine import (CancelledError, OutputTooLargeError, Upscaler,
                              resolve_device)
-from upscaler import fit, frame as frame_tools, watermark as wm_tools
+from upscaler import fit, frame as frame_tools, optimize as opt_tools
+from upscaler import watermark as wm_tools
 from upscaler.models.registry import (
     COLORIZE_MODELS,
     DEBLUR_MODELS,
@@ -769,7 +770,8 @@ def upscale_video_ui(video_path, model, out_size, sharpen, smooth, trim_start,
     return out, compare, f"✅ Done — preview and download below.{extra}", scrub
 
 
-_CONVERT_METHODS = ["Change image format", "Images → PDF", "PDF → Images"]
+_CONVERT_METHODS = ["Change image format", "Fit a file-size budget",
+                    "Images → PDF", "PDF → Images"]
 
 # Output-size presets for upscaling: AI-upscale with the model, then fit the
 # longest edge to this many pixels (None = leave at the model's native scale).
@@ -834,11 +836,37 @@ def _crop_preview(image, out_size, custom_size, position_pct):
 
 def _switch_method(choice):
     """Show only the group for the selected conversion method."""
-    return (
-        gr.update(visible=choice == _CONVERT_METHODS[0]),
-        gr.update(visible=choice == _CONVERT_METHODS[1]),
-        gr.update(visible=choice == _CONVERT_METHODS[2]),
+    return tuple(gr.update(visible=choice == m) for m in _CONVERT_METHODS)
+
+
+def optimize_ui(image, target, fmt, min_quality, allow_resize, max_edge,
+                progress=gr.Progress()):
+    """Encode the photo down to a file-size budget and report what it cost."""
+    if image is None:
+        raise gr.Error("Upload an image to fit to a size.")
+    img = image if isinstance(image, Image.Image) else Image.fromarray(image)
+    p = opt_tools.OptimizeParams(
+        target=str(target or ""), fmt=fmt, min_quality=int(min_quality),
+        allow_resize=bool(allow_resize), max_edge=int(max_edge or 0),
     )
+    progress(0.2, desc="Searching for the best quality that fits…")
+    try:
+        res = opt_tools.optimize(img, p)
+    except ValueError as e:
+        raise gr.Error(str(e)) from e
+
+    fd, path = tempfile.mkstemp(dir=_ensure_export_dir(), suffix=f".{res.extension}")
+    os.close(fd)
+    with open(path, "wb") as fh:
+        fh.write(res.data)
+    library.save_path(path, "optimized")  # auto-add to the Library
+
+    shown = Image.open(io.BytesIO(res.data))
+    mark = "✅" if res.fits else "⚠"
+    note = (f"{mark} {opt_tools.describe(res)}\n\n"
+            f"Budget **{opt_tools.human_size(res.target_bytes)}** · "
+            f"result **{opt_tools.human_size(res.nbytes)}**")
+    return (img, shown), path, note
 
 
 # -- Batch processing (one operation over many images) -----------------------
@@ -4046,14 +4074,17 @@ def build_demo() -> gr.Blocks:
                 gr.HTML(_section_head(
                     "Convert", "Convert & Documents",
                     "Change an image's format, combine several images into a PDF, "
-                    "or split a PDF back into images. Pick a task below to begin.",
+                    "fit a photo under a file-size limit, combine several images "
+                    "into a PDF, or split a PDF back into images. Pick a task below "
+                    "to begin.",
                     icon=ICON_CONVERT,
                 ))
                 method = gr.Dropdown(
                     _CONVERT_METHODS, value=_CONVERT_METHODS[0],
                     label="What do you want to do?", filterable=False,
-                    info="Pick your task: change an image's format, build a PDF from "
-                    "images, or split a PDF back into images.",
+                    info="Pick your task: change an image's format, squeeze one under "
+                    "a size limit, build a PDF from images, or split a PDF back into "
+                    "images.",
                 )
                 with gr.Accordion("Tips", open=False):
                     gr.Markdown(
@@ -4067,6 +4098,67 @@ def build_demo() -> gr.Blocks:
                         "if you'll print them.",
                         elem_classes="notes",
                     )
+
+                # -- Method B: fit a file-size budget --
+                with gr.Column(visible=False) as grp_budget:
+                    with gr.Row(equal_height=False):
+                        with gr.Column(scale=1):
+                            opt_in = gr.Image(
+                                label="Image", type="pil", image_mode=None,
+                                sources=["upload", "clipboard"], height=300,
+                                elem_classes="drop", buttons=["download", "fullscreen"],
+                            )
+                            opt_target = gr.Textbox(
+                                value="500 KB", label="Target size",
+                                placeholder="500 KB",
+                                info="The most the file may weigh — 500KB, 2MB, 1.5 MB. "
+                                "Handy for email limits, forum uploads and Steam.",
+                            )
+                            opt_fmt = gr.Dropdown(
+                                opt_tools.BUDGET_FORMATS, value=opt_tools.AUTO,
+                                label="Format", filterable=False,
+                                info="auto picks WebP, which carries the same picture in "
+                                "about half a JPEG's bytes. Choose JPEG if whatever you "
+                                "are uploading to won't take WebP.",
+                            )
+                            with gr.Row():
+                                opt_minq = gr.Slider(
+                                    1, 95, value=40, step=1, label="Quality floor",
+                                    info="How far quality may drop before it starts "
+                                    "shrinking the picture instead.",
+                                )
+                                opt_maxedge = gr.Number(
+                                    value=0, label="Max width/height (px)", precision=0,
+                                    info="Cap the long edge first. 0 leaves the size "
+                                    "alone.",
+                                )
+                            opt_resize = gr.Checkbox(
+                                value=True, label="Shrink the picture if it still won't fit",
+                                info="Off keeps the original dimensions no matter what, "
+                                "which may mean the budget can't be met.",
+                            )
+                            with gr.Accordion("Tips", open=False):
+                                gr.Markdown(
+                                    "* **Quality is searched, not guessed** — it tries "
+                                    "the highest setting that still fits, because how "
+                                    "big a photo encodes depends on what's in it.\n"
+                                    "* **auto means WebP.** Pick JPEG only if the site "
+                                    "you're uploading to refuses it.\n"
+                                    "* **Metadata is always stripped**, which drops the "
+                                    "GPS coordinates along with the bytes.\n"
+                                    "* **If it can't reach the target**, lower the "
+                                    "quality floor or allow shrinking.",
+                                    elem_classes="notes",
+                                )
+                            opt_btn = gr.Button("Fit the budget", variant="primary",
+                                                size="lg")
+                        with gr.Column(scale=1):
+                            opt_out = gr.ImageSlider(
+                                label="Before / after — drag to compare", type="pil",
+                                max_height=340, elem_classes=["loupe"], interactive=False,
+                            )
+                            opt_file = gr.File(label="Download")
+                            opt_info = gr.Markdown()
 
                 # -- Method A: change image format --
                 with gr.Column(visible=True) as grp_format:
@@ -4141,8 +4233,13 @@ def build_demo() -> gr.Blocks:
                         )
                             pdf_extract_info = gr.Markdown()
 
+                opt_btn.click(
+                    optimize_ui,
+                    [opt_in, opt_target, opt_fmt, opt_minq, opt_resize, opt_maxedge],
+                    [opt_out, opt_file, opt_info], show_progress_on=[opt_out],
+                )
                 method.change(
-                    _switch_method, method, [grp_format, grp_topdf, grp_frompdf],
+                    _switch_method, method, [grp_format, grp_budget, grp_topdf, grp_frompdf],
                     show_progress="hidden",  # instant visibility toggle, no flash
                 )
 
