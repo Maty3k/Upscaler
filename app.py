@@ -42,7 +42,7 @@ from upscaler.document import images_to_pdf, pdf_to_images
 from upscaler.deblur import Deblurrer, DeblurTooLargeError
 from upscaler.engine import (CancelledError, OutputTooLargeError, Upscaler,
                              resolve_device)
-from upscaler import fit, frame as frame_tools
+from upscaler import fit, frame as frame_tools, watermark as wm_tools
 from upscaler.models.registry import (
     COLORIZE_MODELS,
     DEBLUR_MODELS,
@@ -1498,6 +1498,75 @@ def effects_apply_ui(image, *vals, progress=gr.Progress()):
     return (img, out), path, f"✅ {effects.describe(p, m)} · {out.width}×{out.height}px PNG"
 
 
+# ── Watermark ─────────────────────────────────────────────────────────────────
+_WM_FIELDS = [
+    "kind", "text", "font", "size", "color", "outline", "outline_width", "shadow",
+    "logo_scale", "position", "margin", "rotation", "opacity", "tile_gap", "tile_angle",
+]
+_WM_TEXT = {"kind", "text", "font", "color", "outline", "position"}
+
+
+def _wm_params(*vals):
+    kw = {}
+    for name, value in zip(_WM_FIELDS, vals):
+        kw[name] = ("" if value is None else str(value)) if name in _WM_TEXT else float(value)
+    return wm_tools.WatermarkParams(**kw)
+
+
+def _wm_vis(kind, position):
+    """Show the controls the chosen mark and placement actually use."""
+    is_text = kind == "text"
+    tiled = position == wm_tools.TILED
+    return (
+        gr.update(visible=is_text),      # text box
+        gr.update(visible=is_text),      # font
+        gr.update(visible=is_text),      # size
+        gr.update(visible=is_text),      # colour
+        gr.update(visible=is_text),      # outline colour
+        gr.update(visible=is_text),      # outline width
+        gr.update(visible=is_text),      # shadow
+        gr.update(visible=not is_text),  # logo upload
+        gr.update(visible=not is_text),  # logo scale
+        gr.update(visible=not tiled),    # margin
+        gr.update(visible=tiled),        # tile gap
+        gr.update(visible=tiled),        # tile angle
+    )
+
+
+def watermark_preview_ui(image, logo, *vals):
+    if image is None:
+        return None, gr.update(value="")
+    img = image if isinstance(image, Image.Image) else Image.fromarray(image)
+    p = _wm_params(*vals)
+    if p.kind == "logo" and logo is None:
+        return wm_tools.preview(img, p), gr.update(
+            value="⚠ Upload a logo image, or switch the mark back to text.")
+    return wm_tools.preview(img, p, logo), gr.update(value=wm_tools.describe(p))
+
+
+def watermark_preset_ui(name):
+    p = wm_tools.preset(name)
+    return tuple(getattr(p, f) for f in _WM_FIELDS)
+
+
+def watermark_apply_ui(image, logo, *vals, progress=gr.Progress()):
+    if image is None:
+        raise gr.Error("Upload a photo to watermark.")
+    img = image if isinstance(image, Image.Image) else Image.fromarray(image)
+    p = _wm_params(*vals)
+    progress(0.3, desc="Stamping at full size…")
+    try:
+        out = wm_tools.apply(img, p, logo)
+    except ValueError as e:
+        raise gr.Error(str(e)) from e
+    progress(0.9, desc="Saving PNG…")
+    fd, path = tempfile.mkstemp(dir=_ensure_export_dir(), suffix=".png")
+    os.close(fd)
+    out.save(path, "PNG")
+    library.save_path(path, "watermark")  # auto-add to the Library
+    return out, path, f"✅ {wm_tools.describe(p)} · {out.width}×{out.height}px PNG"
+
+
 # ── Crop & frame ──────────────────────────────────────────────────────────────
 _FRAME_FIELDS = [
     "rotate", "flip_h", "flip_v", "keystone_h", "keystone_v", "straighten",
@@ -2285,6 +2354,8 @@ ICON_PANEL = _svg('<rect x="2" y="8" width="20" height="8" rx="1.5"/>'
 ICON_LIGHT = _svg('<circle cx="12" cy="12" r="4.5"/><path d="M12 2v2.5M12 19.5V22'
                   'M2 12h2.5M19.5 12H22M4.9 4.9l1.8 1.8M17.3 17.3l1.8 1.8'
                   'M19.1 4.9l-1.8 1.8M6.7 17.3l-1.8 1.8"/>')
+ICON_WM = _svg('<rect x="3" y="4.5" width="18" height="15" rx="2"/>'
+               '<path d="M8 15.5h8M8 12h5"/>')
 ICON_CROP = _svg('<path d="M6.5 2v15.5H22"/><path d="M2 6.5h15.5V22"/>')
 ICON_SHARP = _svg('<path d="M12 3.5 20.5 20.5 12 16 3.5 20.5z"/>')
 ICON_FX = _svg('<rect x="2.5" y="5" width="19" height="14" rx="2"/>'
@@ -2444,7 +2515,10 @@ def build_demo() -> gr.Blocks:
     cfg = config.load()
     _cfg_model = cfg["model"] if cfg["model"] in MODELS else "realesrgan-x2plus"
     _cfg_device = cfg["device"] if cfg["device"] in _DEVICES else "auto"
-    with gr.Blocks(title="Upscaler") as demo:
+    # fill_width: Gradio otherwise centres the whole app inside a fixed max
+    # width, which left ~130px of dead gutter on each side at 1200px and was
+    # the real reason the tab bar ran out of room.
+    with gr.Blocks(title="Upscaler", fill_width=True) as demo:
         gr.HTML(
             '<div id="hero">'
             f'<div class="brandrow"><span class="logo">{ICON_LOGO}</span>'
@@ -3401,6 +3475,132 @@ def build_demo() -> gr.Blocks:
                         )
                         bl_file = gr.File(label="Download PNG")
                         bl_info = gr.Markdown()
+
+            # ---- Tab: Watermark (no AI) ----
+            with gr.Tab("Watermark"):
+                gr.HTML(_section_head(
+                    "Credit", "Watermark",
+                    "Sign your work with text or a logo — in a corner, or tiled across "
+                    "the whole frame for a proof copy. Sizes are a share of the photo, "
+                    "so one setting suits every picture in a folder.",
+                    icon=ICON_WM,
+                ))
+                with gr.Row(equal_height=False):
+                    with gr.Column(scale=1):
+                        wm_in = gr.Image(
+                            label="Input", type="pil", image_mode=None,
+                            sources=["upload", "clipboard"], height=280,
+                            elem_classes="drop", buttons=["download", "fullscreen"],
+                        )
+                        wm_preset = gr.Dropdown(
+                            wm_tools.PRESET_NAMES, value=wm_tools.PRESET_NONE,
+                            label="Preset", filterable=False,
+                            info="A starting point — everything stays editable. 'None' "
+                            "clears the watermark.",
+                        )
+                        wm_kind = gr.Radio(
+                            wm_tools.KINDS, value="text", label="Mark",
+                            info="Your name or a caption, or an image such as a logo.",
+                        )
+                        wm_text = gr.Textbox(
+                            value="© Your Name", label="Text", lines=2,
+                            info="What to stamp on the photo.",
+                        )
+                        with gr.Row():
+                            wm_font = gr.Dropdown(
+                                wm_tools.FONT_NAMES, value=wm_tools.DEFAULT_FONT,
+                                label="Font", filterable=True, info="The typeface.",
+                            )
+                            wm_size = gr.Slider(
+                                0.5, 30, value=4, step=0.1, label="Text size (%)",
+                                info="As a share of the photo's short side, so it looks "
+                                "the same on every picture.",
+                            )
+                        with gr.Row():
+                            wm_color = gr.ColorPicker(value="#ffffff", label="Text color")
+                            wm_outline = gr.ColorPicker(value="#000000", label="Outline color",
+                                                        info="Keeps white text readable on "
+                                                        "a bright sky.")
+                        with gr.Row():
+                            wm_outline_w = gr.Slider(
+                                0, 30, value=8, step=0.5, label="Outline width (%)",
+                                info="Thickness of the outline, relative to the text.",
+                            )
+                            wm_shadow = gr.Slider(
+                                0, 100, value=45, step=1, label="Shadow",
+                                info="A soft drop shadow behind the text.",
+                            )
+                        wm_logo = gr.Image(
+                            label="Logo image (a transparent PNG works best)", type="pil",
+                            image_mode="RGBA", sources=["upload", "clipboard"], height=140,
+                            visible=False,
+                        )
+                        wm_logo_scale = gr.Slider(
+                            1, 100, value=18, step=0.5, label="Logo size (%)", visible=False,
+                            info="Width of the logo as a share of the photo's width.",
+                        )
+                        wm_position = gr.Dropdown(
+                            wm_tools.POSITIONS, value=wm_tools.DEFAULT_POSITION,
+                            label="Position", filterable=False,
+                            info="Where the mark sits — or 'tiled' to repeat it across "
+                            "the whole frame, which survives being cropped out.",
+                        )
+                        with gr.Row():
+                            wm_margin = gr.Slider(
+                                0, 25, value=3, step=0.5, label="Margin (%)",
+                                info="Distance from the edge.",
+                            )
+                            wm_opacity = gr.Slider(
+                                0, 100, value=70, step=1, label="Opacity",
+                                info="How strongly the mark shows.",
+                            )
+                        wm_rotation = gr.Slider(
+                            -180, 180, value=0, step=1, label="Rotation (°)",
+                            info="Tilt the mark.",
+                        )
+                        with gr.Row():
+                            wm_tile_gap = gr.Slider(
+                                2, 50, value=14, step=0.5, label="Tile spacing (%)",
+                                visible=False, info="Gap between repeats.",
+                            )
+                            wm_tile_angle = gr.Slider(
+                                -90, 90, value=30, step=1, label="Tile angle (°)",
+                                visible=False, info="Angle of the repeating pattern.",
+                            )
+                        with gr.Accordion("Tips", open=False):
+                            gr.Markdown(
+                                "* **Keep the outline on** — white text vanishes on a "
+                                "bright sky without it.\n"
+                                "* **'tiled' is the proof watermark**: it can't be "
+                                "cropped off, so use a low opacity and let it sit over "
+                                "the whole picture.\n"
+                                "* **A transparent PNG logo** composites cleanly; the "
+                                "Remove BG tab will make you one.\n"
+                                "* **Sizes are relative**, so the same settings suit a "
+                                "phone snap and a 4K frame — batch a whole folder from "
+                                "the command line with `upscaler watermark`.\n"
+                                "* **Watermark last**, after cropping and colour, or the "
+                                "crop may cut your signature off.",
+                                elem_classes="notes",
+                            )
+                        with gr.Row():
+                            wm_btn = gr.Button("Apply (full size)", variant="primary",
+                                               size="lg", scale=3)
+                            wm_use = gr.Button("↪ Use as input", variant="secondary", scale=2)
+                            wm_clear = gr.Button("↺ Clear", variant="secondary", scale=1)
+                    with gr.Column(scale=1, elem_classes="sticky-col"):
+                        wm_preview = gr.Image(
+                            label="Preview", height=380, buttons=["fullscreen"],
+                            elem_classes=["loupe"],
+                        )
+                        wm_note = gr.Markdown(elem_classes="notes")
+                        wm_out = gr.Image(
+                            label="Result at full size", height=340, type="pil",
+                            buttons=["download", "fullscreen"], elem_classes=["loupe"],
+                            interactive=False,
+                        )
+                        wm_file = gr.File(label="Download PNG")
+                        wm_info = gr.Markdown()
 
             # ---- Tab: Crop & frame (no AI) ----
             with gr.Tab("Crop"):
@@ -4902,6 +5102,30 @@ def build_demo() -> gr.Blocks:
         bl_use.click(lambda pair: (pair[1] if pair else None), bl_out, bl_in)
         bl_clear.click(lambda: (None, None, None, None, None), None,
                        [bl_in, bl_preview, bl_out, bl_file, bl_info])
+
+        # ---- Watermark wiring ----
+        _wm_controls = [wm_kind, wm_text, wm_font, wm_size, wm_color, wm_outline,
+                        wm_outline_w, wm_shadow, wm_logo_scale, wm_position, wm_margin,
+                        wm_rotation, wm_opacity, wm_tile_gap, wm_tile_angle]
+        _wm_inputs = [wm_in, wm_logo] + _wm_controls    # order must match _WM_FIELDS
+        _wm_vis_out = [wm_text, wm_font, wm_size, wm_color, wm_outline, wm_outline_w,
+                       wm_shadow, wm_logo, wm_logo_scale, wm_margin, wm_tile_gap,
+                       wm_tile_angle]
+        for _c in (wm_kind, wm_position):
+            _c.change(_wm_vis, [wm_kind, wm_position], _wm_vis_out, show_progress="hidden")
+        for _c in [wm_in, wm_logo] + _wm_controls:
+            _c.change(watermark_preview_ui, _wm_inputs, [wm_preview, wm_note],
+                      show_progress="hidden", trigger_mode="always_last")
+        wm_preset.input(watermark_preset_ui, wm_preset, _wm_controls,
+                        show_progress="hidden") \
+            .then(_wm_vis, [wm_kind, wm_position], _wm_vis_out, show_progress="hidden") \
+            .then(watermark_preview_ui, _wm_inputs, [wm_preview, wm_note],
+                  show_progress="hidden")
+        wm_btn.click(watermark_apply_ui, _wm_inputs, [wm_out, wm_file, wm_info],
+                     show_progress_on=[wm_out])
+        wm_use.click(lambda im: im, wm_out, wm_in)
+        wm_clear.click(lambda: (None, None, None, None, None), None,
+                       [wm_in, wm_preview, wm_out, wm_file, wm_info])
 
         # ---- Crop & frame wiring ----
         _fr_controls = [fr_rotate, fr_fliph, fr_flipv, fr_kh, fr_kv, fr_straighten,

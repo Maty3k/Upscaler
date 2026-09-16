@@ -1211,6 +1211,118 @@ def run_frame(argv: list[str]) -> int:
     return 1 if failed else 0
 
 
+def build_watermark_parser() -> argparse.ArgumentParser:
+    from upscaler import watermark as wm
+
+    p = argparse.ArgumentParser(
+        prog="upscaler watermark",
+        description="Stamp a signature, caption or logo onto a photo — in a corner or "
+        "tiled across the whole frame. Sizes are a share of the photo, so one setting "
+        "suits a whole folder of mixed pictures. No AI.",
+    )
+    p.add_argument("input", type=Path, nargs="?", help="Image file, or a directory of images.")
+    p.add_argument(
+        "-o", "--output", type=Path,
+        help="Output file (format from the extension) or a directory for a folder of "
+        "images. Default: <name>_wm.png next to the input.",
+    )
+    p.add_argument("--preset", choices=list(wm.PRESETS),
+                   help="Start from a preset, then apply any flags on top.")
+    p.add_argument("--text", default=None, help='The text to stamp (default "© Your Name").')
+    p.add_argument("--logo", type=Path, default=None,
+                   help="Stamp this image instead of text (a transparent PNG works best).")
+    p.add_argument("--font", default=None, help="Font name; see --list-fonts.")
+    p.add_argument("--list-fonts", action="store_true", help="List the available fonts and exit.")
+    p.add_argument("--size", type=float, default=None,
+                   help="Text size as %% of the photo's short side (default 4).")
+    p.add_argument("--logo-size", type=float, default=None,
+                   help="Logo width as %% of the photo's width (default 18).")
+    p.add_argument("--color", default=None, metavar="HEX", help="Text color (default #ffffff).")
+    p.add_argument("--outline", default=None, metavar="HEX", help="Outline color (default #000000).")
+    p.add_argument("--outline-width", type=float, default=None,
+                   help="Outline thickness as %% of the text size (default 8; 0 = none).")
+    p.add_argument("--shadow", type=float, default=None, help="Drop shadow 0..100 (default 45).")
+    p.add_argument("--position", choices=wm.POSITIONS, default=None,
+                   help=f"Where it sits (default {wm.DEFAULT_POSITION}), or 'tiled'.")
+    p.add_argument("--margin", type=float, default=None,
+                   help="Distance from the edge, %% of the short side (default 3).")
+    p.add_argument("--opacity", type=float, default=None, help="0..100 (default 70).")
+    p.add_argument("--rotation", type=float, default=None, metavar="DEG", help="Tilt the mark.")
+    p.add_argument("--tile-gap", type=float, default=None,
+                   help="--position tiled: gap between repeats, %% of the short side.")
+    p.add_argument("--tile-angle", type=float, default=None,
+                   help="--position tiled: angle of the pattern in degrees.")
+    p.add_argument("-q", "--quality", type=int, default=92,
+                   help="Quality for JPEG/WebP outputs (default 92).")
+    return p
+
+
+def run_watermark(argv: list[str]) -> int:
+    from upscaler import watermark as wm
+
+    args = build_watermark_parser().parse_args(argv)
+    if args.list_fonts:
+        for name in wm.FONT_NAMES:
+            print(name)
+        return 0
+    if args.input is None or not args.input.exists():
+        print(f"error: input not found: {args.input}", file=sys.stderr)
+        return 2
+    inputs = _gather_inputs(args.input) if args.input.is_dir() else [args.input]
+    if not inputs:
+        print(f"error: no images found in {args.input}", file=sys.stderr)
+        return 2
+    if len(inputs) > 1 and args.output and args.output.suffix:
+        print("error: --output must be a directory when processing a folder", file=sys.stderr)
+        return 2
+
+    logo = None
+    if args.logo:
+        if not args.logo.is_file():
+            print(f"error: logo not found: {args.logo}", file=sys.stderr)
+            return 2
+        logo = Image.open(args.logo).convert("RGBA")
+
+    p = wm.preset(args.preset) if args.preset else wm.WatermarkParams()
+    if args.logo and args.preset is None:
+        p.kind = "logo"          # --logo alone is enough to mean "stamp this"
+    for flag, field in (("text", "text"), ("font", "font"), ("size", "size"),
+                        ("logo_size", "logo_scale"), ("color", "color"),
+                        ("outline", "outline"), ("outline_width", "outline_width"),
+                        ("shadow", "shadow"), ("position", "position"),
+                        ("margin", "margin"), ("opacity", "opacity"),
+                        ("rotation", "rotation"), ("tile_gap", "tile_gap"),
+                        ("tile_angle", "tile_angle")):
+        value = getattr(args, flag)
+        if value is not None:
+            setattr(p, field, value)
+    if args.text is not None:
+        p.kind = "text"
+    if p.kind == "logo" and logo is None:
+        print("error: --logo is required for a logo watermark", file=sys.stderr)
+        return 2
+    if args.font and args.font not in wm.FONTS:
+        print(f"error: unknown font {args.font!r} — see --list-fonts", file=sys.stderr)
+        return 2
+
+    failed = 0
+    for src in inputs:
+        dst = _suffixed_output_path(src, args.output, "wm")
+        try:
+            with Image.open(src) as im:
+                img = im.convert("RGBA") if "A" in im.getbands() else im.convert("RGB")
+            out = wm.apply(img, p, logo)
+            if dst.suffix.lower() in (".jpg", ".jpeg", ".bmp"):
+                out = out.convert("RGB")
+            save_kw = {"quality": args.quality} if dst.suffix.lower() in (".jpg", ".jpeg", ".webp") else {}
+            out.save(dst, **save_kw)
+            print(f"{src.name}: {wm.describe(p)} → {dst}", file=sys.stderr)
+        except (Image.UnidentifiedImageError, OSError, ValueError) as e:
+            print(f"error on {src.name}: {e}", file=sys.stderr)
+            failed += 1
+    return 1 if failed else 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="upscaler",
@@ -1225,7 +1337,8 @@ def build_parser() -> argparse.ArgumentParser:
         "`upscaler adjust photo.jpg --auto` (color and light), "
         "`upscaler effects photo.jpg --look \"Film grain\"` (effects and film looks), "
         "`upscaler sharpen photo.jpg --preset Standard` (sharpening toolbox), "
-        "`upscaler crop photo.jpg --aspect 1:1 --border 6` (crop and frame). "
+        "`upscaler crop photo.jpg --aspect 1:1 --border 6` (crop and frame), "
+        "`upscaler watermark ./folder --text \"© Me\"` (signature or logo). "
         "Add --face to restore faces after upscaling.",
     )
     p.add_argument(
@@ -1307,6 +1420,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_sharpen(argv[1:])
     if argv and argv[0] == "crop":
         return run_frame(argv[1:])
+    if argv and argv[0] == "watermark":
+        return run_watermark(argv[1:])
 
     args = build_parser().parse_args(argv)
 

@@ -175,6 +175,23 @@ stop. The same region flags as `blur` apply any of it to just a shape, a
 graduated band, a painted mask or every detected face. The GUI's **Color & Light** tab has all of it
 with a live before/after.
 
+#### Watermark (no AI)
+
+```bash
+upscaler watermark photo.jpg --text "© Your Name"
+upscaler watermark ./folder -o ./out --text "© Studio" --position "bottom left"
+upscaler watermark photo.jpg --preset "Proof (tiled)"        # can't be cropped off
+upscaler watermark photo.jpg --logo logo.png --logo-size 20 --opacity 85
+upscaler watermark photo.jpg --text DRAFT --position tiled --tile-angle 45 --opacity 20
+upscaler watermark --list-fonts
+```
+
+Text or an image, placed in any of nine positions or **tiled** across the whole
+frame, with opacity, rotation and margin. Text gets an outline and a soft
+shadow by default, because a white signature is invisible on a bright sky
+without them. Every size is a share of the photo, so one setting suits a whole
+folder of mixed pictures — which is the point of running it over a directory.
+
 #### Crop & frame (no AI)
 
 ```bash
@@ -303,7 +320,8 @@ contrast, white balance, vibrance, black & white, with one-click Auto),
 **Effects** (grain, halation, light leaks, vignette, duotone, halftone,
 dither, scanlines, glitch — twelve ready-made film looks), **Sharpen** (unsharp,
 high-pass, edge-aware and texture, with halo control), **Crop & Frame** (any
-aspect, straighten, lean correction, exact sizes, borders and shadows), a
+aspect, straighten, lean correction, exact sizes, borders and shadows),
+**Watermark** (text or logo, in a corner or tiled), a
 **Blur** toolbox (gaussian,
 motion, spin, zoom, lens bokeh, pixelate, surface — whole image, a shaped or
 tilt-shift band, a painted mask, or every detected face), a **Lian Li Screen** composer for the 8.8″ case

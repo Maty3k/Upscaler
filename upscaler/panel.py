@@ -39,60 +39,11 @@ MAX_FPS = 60
 VIDEO_EXTS = {".mp4", ".mov", ".webm", ".mkv", ".avi", ".m4v"}
 STILL_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff"}
 
-# Candidate fonts (first that exists wins); falls back to PIL's bitmap font.
-_FONT_DIRS = [
-    "/System/Library/Fonts",
-    "/System/Library/Fonts/Supplemental",
-    "/Library/Fonts",
-    os.path.expanduser("~/Library/Fonts"),
-    "C:/Windows/Fonts",
-    "/usr/share/fonts",
-    "/usr/local/share/fonts",
-]
-# Nice display families shown first in the picker (only those that exist are kept).
-_CURATED = [
-    "Arial Bold", "Arial", "Arial Black", "Helvetica", "HelveticaNeue", "Impact",
-    "Futura", "Gill Sans", "Avenir Next", "Avenir", "Optima", "Trebuchet MS",
-    "Verdana", "Verdana Bold", "Georgia", "Georgia Bold", "Times New Roman",
-    "Baskerville", "Didot", "Palatino", "Copperplate", "American Typewriter",
-    "Courier New Bold", "Courier New", "Menlo", "Monaco", "Andale Mono",
-    "Chalkboard", "Chalkduster", "Marker Felt", "Noteworthy", "Bradley Hand",
-    "Snell Roundhand", "Apple Chancery", "Papyrus", "Comic Sans MS",
-    "arialbd", "arial", "impact", "DejaVuSans-Bold", "DejaVuSans",
-]
-_FONT_SKIP = ("emoji", "braille", "symbol", "wingding", "webding", "dingbat",
-              "bookshelf", "opensymbol")
-
-
-def _discover_fonts() -> dict[str, str]:
-    """Map a display name → font file path for usable display fonts on this
-    machine. Curated families come first; everything else follows so the picker
-    is rich but the good options are at the top."""
-    found: dict[str, str] = {}
-    for d in _FONT_DIRS:
-        if not os.path.isdir(d):
-            continue
-        for root, _dirs, files in os.walk(d):
-            for f in files:
-                if f.lower().endswith((".ttf", ".ttc", ".otf")):
-                    found.setdefault(os.path.splitext(f)[0], os.path.join(root, f))
-    fonts: dict[str, str] = {}
-    for stem in _CURATED:
-        if stem in found:
-            fonts[stem] = found[stem]
-    for stem, path in sorted(found.items()):
-        if stem in fonts:
-            continue
-        if any(j in stem.lower() for j in _FONT_SKIP):
-            continue
-        fonts[stem] = path
-    return fonts or {"Default": ""}
-
-
-FONTS = _discover_fonts()
-FONT_NAMES = list(FONTS)
-DEFAULT_FONT = next((n for n in ("Arial Bold", "Impact", "Helvetica") if n in FONTS),
-                    FONT_NAMES[0])
+# Fonts live in their own module so lighter tools can draw text without
+# importing this one; re-exported here because callers already use panel.FONTS.
+from upscaler.fonts import (  # noqa: E402,F401
+    FONTS, FONT_NAMES, DEFAULT_FONT, _load_font,
+)
 
 
 # An overlay is a plain dict so it round-trips through Gradio state easily:
@@ -187,24 +138,6 @@ def _hex(c: str) -> tuple[int, int, int]:
         return tuple(int(c[i:i + 2], 16) for i in (0, 2, 4))  # type: ignore[return-value]
     except ValueError:
         return (0, 0, 0)
-
-
-@lru_cache(maxsize=128)
-def _load_font(name: str, size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
-    size = max(8, int(size))
-    path = FONTS.get(name)
-    if path:
-        try:
-            return ImageFont.truetype(path, size)
-        except Exception:
-            pass
-    for p in FONTS.values():  # fall back to any working font
-        if p:
-            try:
-                return ImageFont.truetype(p, size)
-            except Exception:
-                continue
-    return ImageFont.load_default()
 
 
 def _background(cw: int, ch: int, p: PanelParams) -> Image.Image:

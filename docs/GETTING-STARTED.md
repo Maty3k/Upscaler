@@ -127,6 +127,7 @@ Each tab is a separate tool, all local:
 | **Objects** | Paint over something (a person, a sign, a wire) and it disappears |
 | **Remove BG** | Cut out the subject, transparent background |
 | **Color & Light** | Brightness, contrast, color and black & white — with a one-click Auto |
+| **Watermark** | Sign your photos with text or a logo, in a corner or tiled across the frame |
 | **Crop** | Crop to any shape, straighten a tilted photo, add a border or a drop shadow |
 | **Sharpen** | Bring out detail four different ways, with halo control so edges stay natural |
 | **Effects** | Film looks — grain, glow, light leaks, vignette, halftone, retro dithering and glitch |
