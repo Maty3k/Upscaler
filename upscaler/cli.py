@@ -1285,6 +1285,14 @@ def build_watermark_parser() -> argparse.ArgumentParser:
                    help="--position tiled: gap between repeats, %% of the short side.")
     p.add_argument("--tile-angle", type=float, default=None,
                    help="--position tiled: angle of the pattern in degrees.")
+    p.add_argument("--behind", action="store_true",
+                   help="Put the mark BEHIND the subject: the subject is cut out and "
+                   "the text laid on the background, so a headline passes behind the "
+                   'person. Needs the background-removal model (pip install -e ".[onnx]").')
+    p.add_argument("--cutout-feather", type=int, default=None, metavar="PX",
+                   help="--behind: soften the cut-out edge where it meets the text.")
+    p.add_argument("--subject-shadow", type=float, default=None,
+                   help="--behind: the subject's shadow onto the mark, 0..100.")
     p.add_argument("-q", "--quality", type=int, default=92,
                    help="Quality for JPEG/WebP outputs (default 92).")
     return p
@@ -1325,12 +1333,16 @@ def run_watermark(argv: list[str]) -> int:
                         ("shadow", "shadow"), ("position", "position"),
                         ("margin", "margin"), ("opacity", "opacity"),
                         ("rotation", "rotation"), ("tile_gap", "tile_gap"),
-                        ("tile_angle", "tile_angle")):
+                        ("tile_angle", "tile_angle"),
+                        ("cutout_feather", "cutout_feather"),
+                        ("subject_shadow", "subject_shadow")):
         value = getattr(args, flag)
         if value is not None:
             setattr(p, field, value)
     if args.text is not None:
         p.kind = "text"
+    if args.behind:
+        p.behind = True
     if p.kind == "logo" and logo is None:
         print("error: --logo is required for a logo watermark", file=sys.stderr)
         return 2

@@ -6,6 +6,8 @@ import numpy as np
 import pytest
 from PIL import Image, ImageDraw
 
+from dataclasses import replace
+
 from upscaler import watermark as wm
 from upscaler.cli import main
 
@@ -149,6 +151,100 @@ def test_unknown_kind_or_position_is_rejected():
         wm.apply(_photo(), wm.WatermarkParams(kind="hologram"))
     with pytest.raises(ValueError):
         wm.apply(_photo(), wm.WatermarkParams(position="nowhere"))
+
+
+# ── behind the subject ────────────────────────────────────────────────────────
+
+def _subject_photo(w=300, h=300):
+    """A bright disc on a dark ground, and the matching cut-out — so the
+    layering can be checked without running the background model."""
+    img = Image.new("RGB", (w, h), (20, 20, 30))
+    ImageDraw.Draw(img).ellipse([w // 4, h // 4, w * 3 // 4, h * 3 // 4],
+                                fill=(240, 230, 210))
+    cut = img.convert("RGBA")
+    mask = Image.new("L", (w, h), 0)
+    ImageDraw.Draw(mask).ellipse([w // 4, h // 4, w * 3 // 4, h * 3 // 4], fill=255)
+    cut.putalpha(mask)
+    return img, cut
+
+
+def test_behind_hides_the_mark_where_the_subject_is():
+    """The whole point: the text must survive outside the subject and be
+    covered by it inside."""
+    img, cut = _subject_photo()
+    p = wm.WatermarkParams(text="WIDE WORD", size=14, opacity=100, position="center",
+                           behind=True, outline_width=0, shadow=0, subject_shadow=0)
+    behind = _arr(wm.apply(img, p, cutout=cut))
+    front = _arr(wm.apply(img, replace(p, behind=False)))
+    base = _arr(img)
+    centre = (150, 150)
+    # in front, the middle of the subject is painted over; behind, it is not
+    assert not np.allclose(front[centre], base[centre], atol=2)
+    assert np.allclose(behind[centre], base[centre], atol=2)
+    # and both changed something outside the subject
+    assert not np.array_equal(behind, base)
+
+
+def test_behind_keeps_the_subject_pixels_exactly():
+    img, cut = _subject_photo()
+    p = wm.WatermarkParams(text="AAAAAAAA", size=20, opacity=100, position="center",
+                           behind=True, outline_width=0, shadow=0, subject_shadow=0)
+    out = _arr(wm.apply(img, p, cutout=cut))
+    inner = (slice(110, 190), slice(110, 190))     # well inside the disc
+    assert np.abs(out[inner] - _arr(img)[inner]).max() <= 1
+
+
+def test_the_subject_shadow_darkens_what_is_behind_it():
+    img, cut = _subject_photo()
+    base = dict(text="WIDE WORD", size=14, opacity=100, position="center",
+                behind=True, outline_width=0, shadow=0)
+    lit = _arr(wm.apply(img, wm.WatermarkParams(**base, subject_shadow=0), cutout=cut))
+    shaded = _arr(wm.apply(img, wm.WatermarkParams(**base, subject_shadow=100), cutout=cut))
+    ring = (slice(70, 80), slice(120, 180))        # just outside the disc's edge
+    assert shaded[ring].mean() < lit[ring].mean()
+
+
+def test_tiled_can_go_behind_too():
+    img, cut = _subject_photo()
+    p = wm.WatermarkParams(text="X", size=10, opacity=100, position=wm.TILED,
+                           behind=True, outline_width=0, shadow=0, subject_shadow=0)
+    out = _arr(wm.apply(img, p, cutout=cut))
+    assert np.allclose(out[(150, 150)], _arr(img)[(150, 150)], atol=2)   # subject clean
+    assert not np.array_equal(out, _arr(img))                            # frame marked
+
+
+def test_a_supplied_cutout_is_used_rather_than_the_model(monkeypatch):
+    """The preview passes a cut-out it already has; the model must not run
+    again on every slider move."""
+    img, cut = _subject_photo()
+    calls = []
+    monkeypatch.setattr(wm, "subject_cutout",
+                        lambda i, p: calls.append(1) or cut)
+    p = wm.WatermarkParams(text="HI", behind=True, opacity=100)
+    wm.apply(img, p, cutout=cut)
+    assert calls == []
+    wm.apply(img, p)
+    assert calls == [1]
+
+
+def test_behind_presets_and_describe():
+    img, cut = _subject_photo()
+    for name in ("Headline behind subject", "Name behind subject"):
+        p = wm.preset(name)
+        assert p.behind
+        assert not np.array_equal(_arr(wm.apply(img, p, cutout=cut)), _arr(img))
+    assert "behind the subject" in wm.describe(wm.preset("Headline behind subject"))
+    assert "behind" not in wm.describe(wm.preset("Corner signature"))
+
+
+def test_preview_survives_a_missing_background_model(monkeypatch):
+    def boom(img, p):
+        raise RuntimeError("background removal needs onnxruntime")
+
+    monkeypatch.setattr(wm, "subject_cutout", boom)
+    img, _cut = _subject_photo()
+    out = wm.preview(img, wm.WatermarkParams(text="HI", behind=True))
+    assert out.size[0] > 0            # the photo comes back rather than an exception
 
 
 # ── odds and ends ─────────────────────────────────────────────────────────────

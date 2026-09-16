@@ -16,6 +16,13 @@ Two habits worth knowing:
   outline and shadow, and both are on by default;
 * "tiled" repeats the mark across the whole frame at an angle, which is the
   proof-copy watermark that survives being cropped out.
+
+**Behind the subject.** Tick ``behind`` and the mark is laid on the background
+and the cut-out subject put back on top, so a headline appears to pass behind
+the person. Placement and layering are separate: any position, including
+tiled, can go behind. It is a layering change rather than a new tool — the
+text renderer and the cut-out both already existed — and it needs the same
+onnxruntime background removal the Remove BG tab uses.
 """
 
 from __future__ import annotations
@@ -59,6 +66,11 @@ class WatermarkParams:
     opacity: float = 70.0        # 0..100
     tile_gap: float = 14.0       # % of the short side, between repeats
     tile_angle: float = 30.0     # degrees, for the tiled pattern
+    # ── behind the subject ──
+    behind: bool = False         # lay the mark under the cut-out subject
+    cutout_model: str = ""       # background-removal model; "" = its default
+    cutout_feather: int = 1      # px of softening on the cut-out edge
+    subject_shadow: float = 35.0  # 0..100, the subject's shadow onto the mark
 
     def is_identity(self) -> bool:
         """True when nothing would be drawn."""
@@ -86,6 +98,12 @@ PRESETS: dict[str, WatermarkParams] = {
                                    position="bottom right"),
     "Logo tiled": WatermarkParams(kind="logo", logo_scale=12, opacity=18,
                                   position=TILED, tile_angle=25, tile_gap=16),
+    "Headline behind subject": WatermarkParams(
+        text="SUMMER", size=26, opacity=100, position="center", behind=True,
+        outline_width=0, shadow=0, subject_shadow=40),
+    "Name behind subject": WatermarkParams(
+        text="YOUR NAME", size=15, opacity=100, position="middle left",
+        margin=6, behind=True, outline_width=0, shadow=0, subject_shadow=30),
 }
 PRESET_NAMES = [PRESET_NONE] + list(PRESETS)
 
@@ -213,9 +231,43 @@ def _tiled_layer(mark: Image.Image, p: WatermarkParams,
     return canvas.crop((left, top, left + w, top + h))
 
 
+def subject_cutout(img: Image.Image, p: WatermarkParams) -> Image.Image:
+    """The subject lifted off its background, as RGBA.
+
+    Kept separate so a caller that already has a cut-out, or wants to show one,
+    doesn't have to run the model twice.
+    """
+    from upscaler import background
+
+    kw = {"model": p.cutout_model} if p.cutout_model else {}
+    return background.remove_background(img.convert("RGB"),
+                                        feather=max(0, int(p.cutout_feather)), **kw)
+
+
+def _subject_shadow(subject: Image.Image, amount: float) -> "Image.Image | None":
+    """A soft shadow of the subject, to fall on whatever is behind it. Without
+    it the text reads as a sticker pasted under a cut-out; with it the subject
+    looks like it is actually in front."""
+    if amount <= 0:
+        return None
+    from PIL import ImageFilter
+
+    blur_px = max(2.0, min(subject.size) * 0.012)
+    alpha = subject.getchannel("A").filter(ImageFilter.GaussianBlur(blur_px))
+    faded = np.asarray(alpha, dtype=np.float32) * (min(100.0, amount) / 100.0 * 0.8)
+    shade = Image.new("RGBA", subject.size, (0, 0, 0, 0))
+    shade.putalpha(Image.fromarray(faded.round().astype(np.uint8), "L"))
+    return shade
+
+
 def apply(img: Image.Image, p: WatermarkParams,
-          logo: "Image.Image | None" = None) -> Image.Image:
-    """Stamp the watermark onto the photo. Alpha is carried through."""
+          logo: "Image.Image | None" = None,
+          cutout: "Image.Image | None" = None) -> Image.Image:
+    """Stamp the watermark onto the photo. Alpha is carried through.
+
+    ``cutout`` lets a caller pass a subject it has already lifted, so a live
+    preview doesn't re-run the background model on every slider move.
+    """
     if p.position not in POSITIONS:
         raise ValueError(f"unknown position {p.position!r} — expected one of {POSITIONS}")
     if p.kind not in KINDS:
@@ -235,20 +287,34 @@ def apply(img: Image.Image, p: WatermarkParams,
         layer = Image.new("RGBA", base.size, (0, 0, 0, 0))
         margin_px = int(round(max(0.0, p.margin) / 100.0 * min(base.size)))
         layer.alpha_composite(mark, _anchor_xy(p.position, mark.size, base.size, margin_px))
-    out = Image.alpha_composite(base, layer)
+    if p.behind:
+        subject = cutout if cutout is not None else subject_cutout(img, p)
+        if subject.size != base.size:
+            subject = subject.resize(base.size, Image.LANCZOS)
+        shade = _subject_shadow(subject, p.subject_shadow)
+        if shade is not None:
+            layer = Image.alpha_composite(layer, shade)
+        # background, then the mark, then the subject back on top
+        out = Image.alpha_composite(Image.alpha_composite(base, layer), subject)
+    else:
+        out = Image.alpha_composite(base, layer)
     return out if had_alpha else out.convert("RGB")
 
 
 def preview(img: Image.Image, p: WatermarkParams, logo: "Image.Image | None" = None,
-            max_edge: int = 1000) -> Image.Image:
+            max_edge: int = 1000, cutout: "Image.Image | None" = None) -> Image.Image:
     """The result at preview size. Every measure is relative, so it matches
     the full-size export."""
     scale = min(1.0, max_edge / max(img.size))
     small = img if scale >= 1.0 else img.resize(
         (max(1, round(img.width * scale)), max(1, round(img.height * scale))), Image.LANCZOS)
+    small_cutout = None
+    if p.behind and cutout is not None:
+        small_cutout = cutout if cutout.size == small.size else cutout.resize(
+            small.size, Image.LANCZOS)
     try:
-        return apply(small, p, logo)
-    except ValueError:
+        return apply(small, p, logo, small_cutout)
+    except (ValueError, RuntimeError):
         return small
 
 
@@ -261,6 +327,8 @@ def describe(p: WatermarkParams) -> str:
     if p.kind == "text":
         bits.append(f"{p.size:g}% size")
     bits.append("tiled" if p.position == TILED else p.position)
+    if p.behind:
+        bits.append("behind the subject")
     bits.append(f"{p.opacity:g}% opacity")
     if p.rotation % 360:
         bits.append(f"rotated {p.rotation:g}°")

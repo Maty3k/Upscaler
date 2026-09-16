@@ -9,6 +9,9 @@ pretrained [Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN) weights.
 colorize black-and-white · remove objects · cut out backgrounds ·
 depth-of-field blur · upscale video frame by frame
 
+**Part AI, part design:** put a headline **behind the subject**, so the text
+passes behind the person in the photo
+
 **Without AI, and instantly:** color and light with one-click Auto · film
 effects and looks · sharpen · blur · crop, straighten and frame · watermark ·
 convert formats · fit a file-size budget · see and strip the GPS location a
@@ -268,11 +271,20 @@ upscaler watermark ./folder -o ./out --text "© Studio" --position "bottom left"
 upscaler watermark photo.jpg --preset "Proof (tiled)"        # can't be cropped off
 upscaler watermark photo.jpg --logo logo.png --logo-size 20 --opacity 85
 upscaler watermark photo.jpg --text DRAFT --position tiled --tile-angle 45 --opacity 20
+upscaler watermark photo.jpg --text SUMMER --size 26 --position center --behind \
+    --opacity 100 --outline-width 0 --shadow 0        # the headline goes behind the subject
 upscaler watermark --list-fonts
 ```
 
 Text or an image, placed in any of nine positions or **tiled** across the whole
-frame, with opacity, rotation and margin. Text gets an outline and a soft
+frame, with opacity, rotation and margin.
+
+**`--behind` puts the mark behind the subject.** The subject is cut out, the
+text is laid on the background, and the subject goes back on top, so a headline
+passes behind the person in the photo. Placement and layering are separate, so
+any position works, tiled included, and a soft shadow from the subject onto the
+text keeps it from reading as a sticker. It needs the same background-removal
+model as the Remove BG tab, from the `[onnx]` extra. Text gets an outline and a soft
 shadow by default, because a white signature is invisible on a bright sky
 without them. Every size is a share of the photo, so one setting suits a whole
 folder of mixed pictures — which is the point of running it over a directory.

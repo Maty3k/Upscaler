@@ -1673,15 +1673,50 @@ def effects_apply_ui(image, *vals, progress=gr.Progress()):
 _WM_FIELDS = [
     "kind", "text", "font", "size", "color", "outline", "outline_width", "shadow",
     "logo_scale", "position", "margin", "rotation", "opacity", "tile_gap", "tile_angle",
+    "behind", "cutout_feather", "subject_shadow",
 ]
+_WM_BOOL = {"behind"}
 _WM_TEXT = {"kind", "text", "font", "color", "outline", "position"}
 
 
 def _wm_params(*vals):
     kw = {}
     for name, value in zip(_WM_FIELDS, vals):
-        kw[name] = ("" if value is None else str(value)) if name in _WM_TEXT else float(value)
+        if name in _WM_TEXT:
+            kw[name] = "" if value is None else str(value)
+        elif name in _WM_BOOL:
+            kw[name] = bool(value)
+        elif name == "cutout_feather":
+            kw[name] = int(value or 0)
+        else:
+            kw[name] = float(value)
     return wm_tools.WatermarkParams(**kw)
+
+
+def wm_cutout_ui(image, behind, feather):
+    """Lift the subject off its background, once, so every slider afterwards
+    stays instant instead of re-running the model on each move."""
+    if image is None or not behind:
+        return None, gr.update(visible=False, value="")
+    img = image if isinstance(image, Image.Image) else Image.fromarray(image)
+    p = wm_tools.WatermarkParams(cutout_feather=int(feather or 0))
+    try:
+        cut = wm_tools.subject_cutout(img, p)
+    except (RuntimeError, ValueError, OSError) as e:
+        return None, gr.update(visible=True, value=f"⚠ {e}")
+    covered = np.asarray(cut.getchannel("A"), dtype=np.float32) > 128
+    share = float(covered.mean()) * 100.0
+    note = (f"Subject lifted — it covers **{share:.0f}%** of the frame. The mark "
+            "goes behind it.")
+    if share < 1:
+        note = ("⚠ Almost nothing was found to put the text behind. This works on "
+                "photos with a clear subject, like a person or an object.")
+    return cut, gr.update(visible=True, value=note)
+
+
+def _wm_behind_vis(behind):
+    """The cut-out controls appear only when the mark goes behind."""
+    return (gr.update(visible=bool(behind)), gr.update(visible=bool(behind)))
 
 
 def _wm_vis(kind, position):
@@ -1704,15 +1739,16 @@ def _wm_vis(kind, position):
     )
 
 
-def watermark_preview_ui(image, logo, *vals):
+def watermark_preview_ui(image, logo, cutout, *vals):
     if image is None:
         return None, gr.update(value="")
     img = image if isinstance(image, Image.Image) else Image.fromarray(image)
     p = _wm_params(*vals)
     if p.kind == "logo" and logo is None:
-        return wm_tools.preview(img, p), gr.update(
+        return wm_tools.preview(img, p, cutout=cutout), gr.update(
             value="⚠ Upload a logo image, or switch the mark back to text.")
-    return wm_tools.preview(img, p, logo), gr.update(value=wm_tools.describe(p))
+    return (wm_tools.preview(img, p, logo, cutout=cutout),
+            gr.update(value=wm_tools.describe(p)))
 
 
 def watermark_preset_ui(name):
@@ -1720,15 +1756,15 @@ def watermark_preset_ui(name):
     return tuple(getattr(p, f) for f in _WM_FIELDS)
 
 
-def watermark_apply_ui(image, logo, *vals, progress=gr.Progress()):
+def watermark_apply_ui(image, logo, cutout, *vals, progress=gr.Progress()):
     if image is None:
         raise gr.Error("Upload a photo to watermark.")
     img = image if isinstance(image, Image.Image) else Image.fromarray(image)
     p = _wm_params(*vals)
     progress(0.3, desc="Stamping at full size…")
     try:
-        out = wm_tools.apply(img, p, logo)
-    except ValueError as e:
+        out = wm_tools.apply(img, p, logo, cutout)
+    except (ValueError, RuntimeError) as e:
         raise gr.Error(str(e)) from e
     progress(0.9, desc="Saving PNG…")
     fd, path = tempfile.mkstemp(dir=_ensure_export_dir(), suffix=".png")
@@ -3682,9 +3718,9 @@ def build_demo() -> gr.Blocks:
             with gr.Tab("Watermark"):
                 gr.HTML(_section_head(
                     "Credit", "Watermark",
-                    "Sign your work with text or a logo — in a corner, or tiled across "
-                    "the whole frame for a proof copy. Sizes are a share of the photo, "
-                    "so one setting suits every picture in a folder.",
+                    "Sign your work with text or a logo — in a corner, tiled across the "
+                    "whole frame for a proof copy, or **behind the subject**, so a "
+                    "headline passes behind the person in the photo.",
                     icon=ICON_WM,
                 ))
                 with gr.Row(equal_height=False):
@@ -3760,6 +3796,27 @@ def build_demo() -> gr.Blocks:
                             -180, 180, value=0, step=1, label="Rotation (°)",
                             info="Tilt the mark.",
                         )
+                        wm_behind = gr.Checkbox(
+                            value=False, label="Put it behind the subject",
+                            info="Cuts the subject out and lays the text on the "
+                            "background, so a headline passes behind a person. Works "
+                            "with any position, tiled included.",
+                        )
+                        wm_behind_note = gr.Markdown(visible=False, elem_classes="notes")
+                        wm_cutout_state = gr.State(None)
+                        with gr.Row():
+                            wm_cut_feather = gr.Slider(
+                                0, 10, value=1, step=1, label="Cut-out edge softness (px)",
+                                visible=False,
+                                info="Softens the edge where the subject meets the text. "
+                                "1 or 2 hides a ragged cut-out.",
+                            )
+                            wm_subject_shadow = gr.Slider(
+                                0, 100, value=35, step=1, label="Subject shadow",
+                                visible=False,
+                                info="A soft shadow from the subject onto the text. "
+                                "Without it the text reads as pasted under a sticker.",
+                            )
                         with gr.Row():
                             wm_tile_gap = gr.Slider(
                                 2, 50, value=14, step=0.5, label="Tile spacing (%)",
@@ -3782,7 +3839,11 @@ def build_demo() -> gr.Blocks:
                                 "phone snap and a 4K frame — batch a whole folder from "
                                 "the command line with `upscaler watermark`.\n"
                                 "* **Watermark last**, after cropping and colour, or the "
-                                "crop may cut your signature off.",
+                                "crop may cut your signature off.\n"
+                                "* **Behind the subject:** a big word, centred, no "
+                                "outline, opacity 100. Works best on a photo with one "
+                                "clear subject. Needs the background-removal model, "
+                                "which the `[onnx]` extra installs.",
                                 elem_classes="notes",
                             )
                         with gr.Row():
@@ -5475,18 +5536,37 @@ def build_demo() -> gr.Blocks:
         _wm_controls = [wm_kind, wm_text, wm_font, wm_size, wm_color, wm_outline,
                         wm_outline_w, wm_shadow, wm_logo_scale, wm_position, wm_margin,
                         wm_rotation, wm_opacity, wm_tile_gap, wm_tile_angle]
-        _wm_inputs = [wm_in, wm_logo] + _wm_controls    # order must match _WM_FIELDS
+        _wm_controls += [wm_behind, wm_cut_feather, wm_subject_shadow]
+        # order after the three fixed inputs must match _WM_FIELDS
+        _wm_inputs = [wm_in, wm_logo, wm_cutout_state] + _wm_controls
         _wm_vis_out = [wm_text, wm_font, wm_size, wm_color, wm_outline, wm_outline_w,
                        wm_shadow, wm_logo, wm_logo_scale, wm_margin, wm_tile_gap,
                        wm_tile_angle]
         for _c in (wm_kind, wm_position):
             _c.change(_wm_vis, [wm_kind, wm_position], _wm_vis_out, show_progress="hidden")
-        for _c in [wm_in, wm_logo] + _wm_controls:
+        for _c in (wm_behind, wm_cut_feather):
+            _c.change(wm_cutout_ui, [wm_in, wm_behind, wm_cut_feather],
+                      [wm_cutout_state, wm_behind_note]) \
+                .then(watermark_preview_ui, _wm_inputs, [wm_preview, wm_note],
+                      show_progress="hidden")
+        wm_behind.change(_wm_behind_vis, wm_behind,
+                         [wm_cut_feather, wm_subject_shadow], show_progress="hidden")
+        wm_in.change(wm_cutout_ui, [wm_in, wm_behind, wm_cut_feather],
+                     [wm_cutout_state, wm_behind_note]) \
+            .then(watermark_preview_ui, _wm_inputs, [wm_preview, wm_note],
+                  show_progress="hidden")
+        for _c in [wm_logo] + _wm_controls:
+            if _c in (wm_behind, wm_cut_feather):
+                continue                      # handled above: cut-out first, then preview
             _c.change(watermark_preview_ui, _wm_inputs, [wm_preview, wm_note],
                       show_progress="hidden", trigger_mode="always_last")
         wm_preset.input(watermark_preset_ui, wm_preset, _wm_controls,
                         show_progress="hidden") \
             .then(_wm_vis, [wm_kind, wm_position], _wm_vis_out, show_progress="hidden") \
+            .then(_wm_behind_vis, wm_behind, [wm_cut_feather, wm_subject_shadow],
+                  show_progress="hidden") \
+            .then(wm_cutout_ui, [wm_in, wm_behind, wm_cut_feather],
+                  [wm_cutout_state, wm_behind_note]) \
             .then(watermark_preview_ui, _wm_inputs, [wm_preview, wm_note],
                   show_progress="hidden")
         wm_btn.click(watermark_apply_ui, _wm_inputs, [wm_out, wm_file, wm_info],
