@@ -8,7 +8,7 @@ from PIL import Image, ImageDraw
 def _vals(**over):
     base = dict(kind="gaussian", strength=30, angle=0, cx=50, cy=50, highlights=0, threshold=25,
                 shape="whole", x=50, y=50, w=50, h=50, mangle=0, roundness=0, feather=10,
-                outside=False, progressive=True, editor=None)
+                outside=False, progressive=True, face_pad=25, faces=None, editor=None)
     base.update(over)
     return list(base.values())
 
@@ -33,13 +33,15 @@ def test_app_blur_visibility_helpers():
     assert len(kind) == 6 and kind[1]["visible"] and kind[2]["visible"] and not kind[0]["visible"]
     assert "Rotation" in kind[5]
     shape = app._blur_shape_vis("band")
-    assert len(shape) == 10
+    assert len(shape) == 11
     assert shape[7]["value"] is True            # band defaults to "blur outside"
-    assert shape[4]["visible"] and not shape[5]["visible"] and not shape[9]["visible"]
+    assert shape[4]["visible"] and not shape[5]["visible"] and not shape[10]["visible"]
     whole = app._blur_shape_vis("whole")
-    assert not any(u["visible"] for u in whole[:7]) and not whole[9]["visible"]
+    assert not any(u["visible"] for u in whole[:7]) and not whole[10]["visible"]
     painted = app._blur_shape_vis("painted")
-    assert painted[9]["visible"] and painted[7]["value"] is False
+    assert painted[10]["visible"] and painted[7]["value"] is False
+    faces = app._blur_shape_vis("faces")
+    assert faces[9]["visible"] and not faces[10]["visible"]   # padding shown, brush hidden
 
 
 def test_app_blur_preview_and_apply(tmp_path, monkeypatch):
@@ -59,6 +61,8 @@ def test_app_blur_preview_and_apply(tmp_path, monkeypatch):
     assert "pixelate" in info and "inside the ellipse" in info
     with pytest.raises(gr.Error):
         app.blur_apply_ui(img, *_vals(shape="painted"), progress=lambda *a, **k: None)
+    with pytest.raises(gr.Error):   # region = faces, but none were detected
+        app.blur_apply_ui(img, *_vals(shape="faces"), progress=lambda *a, **k: None)
     with pytest.raises(gr.Error):
         app.blur_apply_ui(None, *_vals(), progress=lambda *a, **k: None)
 

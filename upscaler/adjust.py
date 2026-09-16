@@ -322,5 +322,9 @@ def describe(p: AdjustParams, m: blur.MaskParams | None = None) -> str:
         bits.append("black & white" + (f" · {_num(p.tone_strength)}% tone" if p.tone_strength else ""))
     where = ""
     if m is not None and (m.shape != "whole" or m.outside):
-        where = f" · {'outside' if m.outside else 'inside'} the {m.shape}"
+        shape = m.shape
+        if shape == "faces":
+            n = len(m.faces or [])
+            shape = f"{n} face{'s' if n != 1 else ''}"
+        where = f" · {'outside' if m.outside else 'inside'} the {shape}"
     return (", ".join(bits) or "no changes") + where

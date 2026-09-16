@@ -11,6 +11,8 @@ behind the ``[face]`` extra and are imported lazily with a clear message.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import numpy as np
 from PIL import Image
 
@@ -26,6 +28,62 @@ _TEMPLATE = np.array(
      [201.26117, 371.41043], [313.08905, 371.15118]], dtype=np.float32,
 )
 _SIZE = 512
+
+
+DETECT_HINT = 'Face detection needs OpenCV. Install it with: pip install -e ".[face]"'
+# Detection runs on a copy no larger than this: YuNet is trained around this
+# scale, and it keeps a 4K photo fast. Boxes come back as fractions, so the
+# result fits any size the caller then works at.
+_DETECT_EDGE = 1024
+
+
+def _cv2():
+    """OpenCV only — face *detection* needs no torch and no spandrel, so
+    blurring faces works without the heavy half of the [face] extra."""
+    try:
+        import cv2
+    except ImportError as e:
+        raise RuntimeError(DETECT_HINT) from e
+    return cv2
+
+
+@dataclass(frozen=True)
+class Face:
+    """A detected face as fractions of the image (0..1), so it survives any
+    resize: the live preview and the full-size export agree."""
+    x: float
+    y: float
+    w: float
+    h: float
+    confidence: float
+
+    def box(self) -> "tuple[float, float, float, float]":
+        return (self.x, self.y, self.w, self.h)
+
+
+def detect_faces(image: Image.Image, confidence: float = 0.6) -> "list[Face]":
+    """Every face YuNet finds, as fractions of the image. Empty list if none.
+
+    Needs OpenCV; the ~230KB detector downloads on first use.
+    """
+    cv2 = _cv2()
+    rgb = image.convert("RGB")
+    scale = min(1.0, _DETECT_EDGE / max(rgb.size))
+    small = rgb if scale >= 1.0 else rgb.resize(
+        (max(1, round(rgb.width * scale)), max(1, round(rgb.height * scale))), Image.BILINEAR)
+    bgr = cv2.cvtColor(np.asarray(small), cv2.COLOR_RGB2BGR)
+    h, w = bgr.shape[:2]
+    det = cv2.FaceDetectorYN.create(str(ensure_weights(FACE_DETECTOR)), "", (w, h),
+                                    max(0.05, min(0.99, float(confidence))))
+    det.setInputSize((w, h))
+    _, faces = det.detect(bgr)
+    if faces is None:
+        return []
+    out = []
+    for f in faces:
+        fx, fy, fw, fh = (float(v) for v in f[:4])
+        out.append(Face(x=fx / w, y=fy / h, w=fw / w, h=fh / h, confidence=float(f[-1])))
+    return sorted(out, key=lambda c: c.x)
 
 
 def _deps():

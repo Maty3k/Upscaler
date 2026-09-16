@@ -678,6 +678,12 @@ def _add_region_args(p: argparse.ArgumentParser, verb: str, feather: float = 10.
                    help=f"{verb.capitalize()} outside the shape instead of inside it.")
     p.add_argument("--mask", type=Path,
                    help=f"Painted mask image (white = {verb}) for --shape painted.")
+    p.add_argument("--face-pad", type=float, default=25.0, metavar="PCT",
+                   help="--shape faces: grow each detected face's oval by this %% "
+                   "(default 25, enough for hair and chin).")
+    p.add_argument("--face-confidence", type=float, default=0.6, metavar="C",
+                   help="--shape faces: detector confidence 0.05-0.99 (default 0.6; "
+                   "lower finds more faces and more false positives).")
 
 
 def _region_from_args(args) -> "tuple[object, int]":
@@ -694,7 +700,24 @@ def _region_from_args(args) -> "tuple[object, int]":
         shape=args.shape, x=args.x, y=args.y, w=args.w, h=args.h, angle=args.mask_angle,
         roundness=args.roundness, feather=args.feather, outside=args.outside,
         progressive=not getattr(args, "no_progressive", True), painted=painted,
+        face_pad=args.face_pad,
     ), 0
+
+
+def _with_faces(mp, img, confidence: float, name: str):
+    """Fill in a "faces" mask by detecting them in this image. Returns the mask
+    unchanged for every other shape, and None when nothing was found (the
+    caller skips the file rather than writing an identical copy)."""
+    from upscaler import face
+
+    if mp.shape != "faces":
+        return mp
+    found = face.detect_faces(img, confidence=confidence)
+    if not found:
+        print(f"{name}: no faces found (skipped)", file=sys.stderr)
+        return None
+    print(f"{name}: {len(found)} face(s) found", file=sys.stderr)
+    return replace(mp, faces=[f.box() for f in found])
 
 
 def _suffixed_output_path(src: Path, out: Path | None, suffix: str) -> Path:
@@ -745,13 +768,16 @@ def run_blur(argv: list[str]) -> int:
         try:
             with Image.open(src) as im:
                 img = im.convert("RGBA") if "A" in im.getbands() else im.convert("RGB")
-            out = blur.apply(img, bp, mp)
+            region = _with_faces(mp, img, args.face_confidence, src.name)
+            if region is None:
+                continue
+            out = blur.apply(img, bp, region)
             if dst.suffix.lower() in (".jpg", ".jpeg", ".bmp"):
                 out = out.convert("RGB")
             save_kw = {"quality": args.quality} if dst.suffix.lower() in (".jpg", ".jpeg", ".webp") else {}
             out.save(dst, **save_kw)
-            print(f"{src.name}: {blur.describe(bp, mp, img.size)} → {dst}", file=sys.stderr)
-        except (Image.UnidentifiedImageError, OSError, ValueError) as e:
+            print(f"{src.name}: {blur.describe(bp, region, img.size)} → {dst}", file=sys.stderr)
+        except (Image.UnidentifiedImageError, OSError, ValueError, RuntimeError) as e:
             print(f"error on {src.name}: {e}", file=sys.stderr)
             failed += 1
     return 1 if failed else 0
@@ -850,13 +876,16 @@ def run_adjust(argv: list[str]) -> int:
                 value = getattr(args, name.replace("-", "_"))
                 if value is not None:
                     setattr(p, name.replace("-", "_"), value)
-            out = adjust.apply(img, p, mp)
+            region = _with_faces(mp, img, args.face_confidence, src.name)
+            if region is None:
+                continue
+            out = adjust.apply(img, p, region)
             if dst.suffix.lower() in (".jpg", ".jpeg", ".bmp"):
                 out = out.convert("RGB")
             save_kw = {"quality": args.quality} if dst.suffix.lower() in (".jpg", ".jpeg", ".webp") else {}
             out.save(dst, **save_kw)
-            print(f"{src.name}: {adjust.describe(p, mp)} → {dst}", file=sys.stderr)
-        except (Image.UnidentifiedImageError, OSError, ValueError) as e:
+            print(f"{src.name}: {adjust.describe(p, region)} → {dst}", file=sys.stderr)
+        except (Image.UnidentifiedImageError, OSError, ValueError, RuntimeError) as e:
             print(f"error on {src.name}: {e}", file=sys.stderr)
             failed += 1
     return 1 if failed else 0

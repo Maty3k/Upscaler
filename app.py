@@ -35,7 +35,7 @@ import gradio as gr
 import numpy as np
 from PIL import Image, ImageDraw, ImageEnhance
 
-from upscaler import adjust, background, blur, config, library, manage, panel, steam
+from upscaler import adjust, background, blur, config, face, library, manage, panel, steam
 from upscaler.convert import FORMATS, convert, extension_for
 from upscaler.document import images_to_pdf, pdf_to_images
 from upscaler.deblur import Deblurrer, DeblurTooLargeError
@@ -1318,6 +1318,31 @@ def steam_export_ui(media, fit, zoom, off_x, off_y, bg_color, transparent, tile_
     return gallery, zpath, msg
 
 
+def detect_faces_ui(image, shape):
+    """Find the faces in the input when the region is set to "faces".
+
+    Returns the boxes (as fractions, so one detection serves both the
+    downscaled preview and the full-size export) plus a status line. Never
+    raises: without OpenCV the tab keeps working for every other region.
+    """
+    if image is None or shape != "faces":
+        return [], gr.update(visible=False, value="")
+    img = image if isinstance(image, Image.Image) else Image.fromarray(image)
+    try:
+        found = face.detect_faces(img)
+    except (RuntimeError, OSError) as e:
+        return [], gr.update(visible=True, value=f"⚠ {e}")
+    if not found:
+        return [], gr.update(
+            visible=True,
+            value="⚠ No faces found. Try a clearer or larger photo, or use the "
+                  "ellipse / painted region instead.")
+    return ([f.box() for f in found],
+            gr.update(visible=True,
+                      value=f"✅ Found **{len(found)}** face"
+                            f"{'s' if len(found) != 1 else ''}."))
+
+
 # ── Color & light ─────────────────────────────────────────────────────────────
 # The tab's controls, in the order they're passed to the handlers. Keeping one
 # list means the params mapping, the preset fan-out and Reset can't drift apart.
@@ -1338,14 +1363,16 @@ def _adjust_params(*vals):
     return adjust.AdjustParams(**kw)
 
 
-def _adjust_mask(shape, x, y, w, h, mangle, roundness, feather, outside, editor):
+def _adjust_mask(shape, x, y, w, h, mangle, roundness, feather, outside, face_pad,
+                 faces, editor):
     painted = None
     if shape == "painted":
         _bg, painted = _mask_from_editor(editor)
     return blur.MaskParams(shape=shape, x=float(x), y=float(y), w=float(w), h=float(h),
                            angle=float(mangle), roundness=float(roundness),
                            feather=float(feather), outside=bool(outside),
-                           progressive=False, painted=painted)
+                           progressive=False, painted=painted,
+                           faces=list(faces or []), face_pad=float(face_pad))
 
 
 def _adjust_split(vals):
@@ -1388,6 +1415,8 @@ def adjust_apply_ui(image, *vals, progress=gr.Progress()):
     p, m = _adjust_split(vals)
     if m.shape == "painted" and m.painted is None:
         raise gr.Error("Paint over the area to adjust first (or set the region to whole).")
+    if m.shape == "faces" and not m.faces:
+        raise gr.Error("No faces were found in this photo — pick another region.")
     progress(0.2, desc="Adjusting at full size…")
     out = adjust.apply(img, p, m)
     progress(0.9, desc="Saving PNG…")
@@ -1439,13 +1468,14 @@ def _region_vis(shape):
         gr.update(visible=shape == "rectangle"),      # roundness
         gr.update(visible=shape != "whole"),          # feather
         gr.update(visible=shape != "whole", value=(shape == "band")),   # outside
+        gr.update(visible=shape == "faces"),          # face padding
         gr.update(visible=shape == "painted"),        # editor
     )
 
 
 def _blur_shape_vis(shape):
-    """_region_vis plus the blur-only "graded edge" toggle, which sits between
-    "outside" and the paint editor in the Blur tab's output list."""
+    """_region_vis plus the blur-only "graded edge" toggle, which sits right
+    after "outside" in the Blur tab's output list."""
     v = _region_vis(shape)
     return v[:8] + (gr.update(visible=shape != "whole"),) + v[8:]
 
@@ -1456,14 +1486,16 @@ def _blur_params(kind, strength, angle, cx, cy, highlights, threshold):
                            highlights=float(highlights), threshold=float(threshold))
 
 
-def _mask_params(shape, x, y, w, h, mangle, roundness, feather, outside, progressive, editor):
+def _mask_params(shape, x, y, w, h, mangle, roundness, feather, outside, progressive,
+                 face_pad, faces, editor):
     painted = None
     if shape == "painted":
         _bg, painted = _mask_from_editor(editor)
     return blur.MaskParams(shape=shape, x=float(x), y=float(y), w=float(w), h=float(h),
                            angle=float(mangle), roundness=float(roundness),
                            feather=float(feather), outside=bool(outside),
-                           progressive=bool(progressive), painted=painted)
+                           progressive=bool(progressive), painted=painted,
+                           faces=list(faces or []), face_pad=float(face_pad))
 
 
 def _blur_split(vals):
@@ -1489,6 +1521,8 @@ def blur_apply_ui(image, *vals, progress=gr.Progress()):
     bp, mp = _blur_split(vals)
     if mp.shape == "painted" and mp.painted is None:
         raise gr.Error("Paint over the area to blur first (or pick another region shape).")
+    if mp.shape == "faces" and not mp.faces:
+        raise gr.Error("No faces were found in this photo — pick another region.")
     progress(0.2, desc="Blurring at full size…")
     out = blur.apply(img, bp, mp)
     progress(0.9, desc="Saving PNG…")
@@ -2690,7 +2724,8 @@ def build_demo() -> gr.Blocks:
                                 info="whole = the entire photo · rectangle / ellipse = a "
                                 "shape you position · band = a straight strip, which with "
                                 "'outside' is a graduated filter for skies · painted = "
-                                "wherever you brush.",
+                                "wherever you brush · faces = every face found "
+                                "automatically.",
                             )
                             with gr.Row():
                                 ad_x = gr.Slider(0, 100, value=50, step=1, label="Centre X (%)",
@@ -2715,6 +2750,14 @@ def build_demo() -> gr.Blocks:
                             ad_outside = gr.Checkbox(value=False, label="Apply outside the shape",
                                                      visible=False,
                                                      info="Adjust everything except the shape.")
+                            ad_facepad = gr.Slider(
+                                -25, 100, value=25, step=1, label="Face padding (%)",
+                                visible=False,
+                                info="Grows the oval around each detected face — more "
+                                "covers hair and chin, less keeps it tight.",
+                            )
+                            ad_faces_note = gr.Markdown(visible=False, elem_classes="notes")
+                            ad_faces_state = gr.State([])
                             ad_editor = gr.ImageEditor(
                                 label="Paint where to adjust", type="pil", height=360,
                                 sources=[], layers=False, transforms=(), visible=False,
@@ -2728,6 +2771,8 @@ def build_demo() -> gr.Blocks:
                                 "from the photo itself.\n"
                                 "* **Vibrance before saturation** for people — it "
                                 "leaves skin tones alone.\n"
+                                "* **Brighten just the faces** with region = faces — "
+                                "it finds them, you lift the exposure.\n"
                                 "* **Darken a bright sky** with region = band, "
                                 "'apply outside' off, a big feather, and negative "
                                 "exposure. That's a graduated filter.\n"
@@ -2806,7 +2851,8 @@ def build_demo() -> gr.Blocks:
                                 blur.SHAPES, value="whole", label="Region",
                                 info="whole = everything · rectangle / ellipse = a shape "
                                 "you position · band = a straight strip (tilt-shift) · "
-                                "painted = wherever you brush.",
+                                "painted = wherever you brush · faces = every face found "
+                                "automatically, for privacy.",
                             )
                             with gr.Row():
                                 bl_x = gr.Slider(0, 100, value=50, step=1, label="Centre X (%)",
@@ -2842,6 +2888,14 @@ def build_demo() -> gr.Blocks:
                                     info="Ramp the blur up through the feather (half → full) "
                                     "instead of cross-fading one blur — smoother tilt-shift.",
                                 )
+                            bl_facepad = gr.Slider(
+                                -25, 100, value=25, step=1, label="Face padding (%)",
+                                visible=False,
+                                info="Grows the oval around each detected face — more "
+                                "covers hair and chin, less keeps it tight.",
+                            )
+                            bl_faces_note = gr.Markdown(visible=False, elem_classes="notes")
+                            bl_faces_state = gr.State([])
                             bl_editor = gr.ImageEditor(
                                 label="Paint where to blur", type="pil", height=360,
                                 sources=[], layers=False, transforms=(), visible=False,
@@ -2850,7 +2904,12 @@ def build_demo() -> gr.Blocks:
                             )
                         with gr.Accordion("Tips", open=False):
                             gr.Markdown(
-                                "* **Hide a face or a plate:** pixelate + ellipse, "
+                                "* **Hide every face at once:** region = faces, "
+                                "pixelate, strength 45+. It finds them for you.\n"
+                                "* **Portrait mode:** region = faces with 'blur outside' "
+                                "and lens blur — the face stays sharp, the background "
+                                "goes soft.\n"
+                                "* **Hide a plate or a sign:** pixelate + ellipse, "
                                 "strength 50+, a little feather.\n"
                                 "* **Tilt-shift / miniature look:** gaussian or lens + "
                                 "band, tick 'blur outside', feather 15–25, graded edge on.\n"
@@ -3960,16 +4019,23 @@ def build_demo() -> gr.Blocks:
                         ad_saturation, ad_vibrance, ad_mono, ad_mr, ad_mg, ad_mb,
                         ad_tone, ad_tone_strength]      # order must match _ADJUST_FIELDS
         _ad_region = [ad_shape, ad_x, ad_y, ad_w, ad_h, ad_mangle, ad_round, ad_feather,
-                      ad_outside, ad_editor]
+                      ad_outside, ad_facepad, ad_faces_state, ad_editor]
         _ad_inputs = [ad_in] + _ad_controls + _ad_region
         ad_shape.change(
             _region_vis, ad_shape,
-            [ad_x, ad_y, ad_w, ad_h, ad_mangle, ad_round, ad_feather, ad_outside, ad_editor],
+            [ad_x, ad_y, ad_w, ad_h, ad_mangle, ad_round, ad_feather, ad_outside,
+             ad_facepad, ad_editor],
             show_progress="hidden",
-        ).then(adjust_preview_ui, _ad_inputs, ad_preview, show_progress="hidden")
+        ).then(detect_faces_ui, [ad_in, ad_shape], [ad_faces_state, ad_faces_note],
+               show_progress="hidden") \
+         .then(adjust_preview_ui, _ad_inputs, ad_preview, show_progress="hidden")
         ad_in.change(blur_on_image, ad_in, ad_editor, show_progress="hidden")
-        ad_in.change(adjust_preview_ui, _ad_inputs, ad_preview, show_progress="hidden")
+        ad_in.change(detect_faces_ui, [ad_in, ad_shape], [ad_faces_state, ad_faces_note],
+                     show_progress="hidden") \
+             .then(adjust_preview_ui, _ad_inputs, ad_preview, show_progress="hidden")
         for _c in _ad_controls + _ad_region[1:]:
+            if isinstance(_c, gr.State):   # holds the detected faces; fires no events
+                continue
             (_c.change if _c is ad_editor else _c.input)(
                 adjust_preview_ui, _ad_inputs, ad_preview,
                 show_progress="hidden", trigger_mode="always_last",
@@ -3990,7 +4056,8 @@ def build_demo() -> gr.Blocks:
         # ---- Blur toolbox wiring ----
         _bl_inputs = [bl_in, bl_kind, bl_strength, bl_angle, bl_cx, bl_cy, bl_highlights,
                       bl_threshold, bl_shape, bl_x, bl_y, bl_w, bl_h, bl_mangle, bl_round,
-                      bl_feather, bl_outside, bl_progressive, bl_editor]
+                      bl_feather, bl_outside, bl_progressive, bl_facepad, bl_faces_state,
+                      bl_editor]
         bl_kind.change(
             _blur_kind_vis, bl_kind,
             [bl_angle, bl_cx, bl_cy, bl_highlights, bl_threshold, bl_kind],
@@ -3999,14 +4066,18 @@ def build_demo() -> gr.Blocks:
         bl_shape.change(
             _blur_shape_vis, bl_shape,
             [bl_x, bl_y, bl_w, bl_h, bl_mangle, bl_round, bl_feather, bl_outside,
-             bl_progressive, bl_editor],
+             bl_progressive, bl_facepad, bl_editor],
             show_progress="hidden",
-        ).then(blur_preview_ui, _bl_inputs, bl_preview, show_progress="hidden")
+        ).then(detect_faces_ui, [bl_in, bl_shape], [bl_faces_state, bl_faces_note],
+               show_progress="hidden") \
+         .then(blur_preview_ui, _bl_inputs, bl_preview, show_progress="hidden")
         bl_in.change(blur_on_image, bl_in, bl_editor, show_progress="hidden")
-        bl_in.change(blur_preview_ui, _bl_inputs, bl_preview, show_progress="hidden")
+        bl_in.change(detect_faces_ui, [bl_in, bl_shape], [bl_faces_state, bl_faces_note],
+                     show_progress="hidden") \
+             .then(blur_preview_ui, _bl_inputs, bl_preview, show_progress="hidden")
         for _c in _bl_inputs[1:]:
-            if _c is bl_shape:
-                continue   # handled above (visibility first, then preview)
+            if _c is bl_shape or isinstance(_c, gr.State):
+                continue   # shape is handled above; State fires no events
             (_c.change if _c is bl_editor else _c.input)(
                 blur_preview_ui, _bl_inputs, bl_preview,
                 show_progress="hidden", trigger_mode="always_last",

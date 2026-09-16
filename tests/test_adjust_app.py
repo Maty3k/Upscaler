@@ -13,7 +13,7 @@ def _vals(**over):
                     (0, 0, 0, 0, 0, 100, 1.0, 0, 0, 0, 0, 0, 0, False, 30, 59, 11, "#d8b070", 0)))
     base.update({k: v for k, v in over.items() if k in base})
     region = [over.get("shape", "whole"), 50, 50, 50, 50, 0, 0, 15,
-              over.get("outside", False), over.get("editor")]
+              over.get("outside", False), 25, over.get("faces"), over.get("editor")]
     return list(base.values()) + region
 
 
@@ -76,6 +76,8 @@ def test_app_adjust_preview_and_apply(tmp_path, monkeypatch):
         app.adjust_apply_ui(None, *_vals(), progress=lambda *a, **k: None)
     with pytest.raises(gr.Error):
         app.adjust_apply_ui(img, *_vals(shape="painted"), progress=lambda *a, **k: None)
+    with pytest.raises(gr.Error):   # region = faces, but none were detected
+        app.adjust_apply_ui(img, *_vals(shape="faces"), progress=lambda *a, **k: None)
     with pytest.raises(gr.Error):
         app.adjust_auto_ui(None, *_vals())
 
@@ -84,8 +86,9 @@ def test_app_region_vis_shared_by_both_tabs():
     pytest.importorskip("gradio")
     import app
 
-    nine = app._region_vis("band")
-    assert len(nine) == 9 and nine[7]["value"] is True        # band → "outside" on
-    ten = app._blur_shape_vis("band")
-    assert len(ten) == 10 and ten[8]["visible"] is True       # blur's extra "graded" toggle
-    assert ten[:8] == nine[:8] and ten[9] == nine[8]
+    ten = app._region_vis("band")
+    assert len(ten) == 10 and ten[7]["value"] is True         # band → "outside" on
+    eleven = app._blur_shape_vis("band")
+    assert len(eleven) == 11 and eleven[8]["visible"] is True  # blur's extra "graded" toggle
+    assert eleven[:8] == ten[:8] and eleven[9:] == ten[8:]
+    assert app._region_vis("faces")[8]["visible"] is True      # face padding

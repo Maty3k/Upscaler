@@ -18,10 +18,11 @@ Kinds
 
 Masks
     whole, rectangle (rounded), ellipse, band (a straight strip — tilt-shift
-    when combined with "outside"), painted (a brush mask). ``feather`` softens
-    the edge, ``outside`` flips which side gets blurred, ``progressive`` ramps
-    the strength through the feathered zone (half → full) instead of
-    cross-fading one blur, which is what makes tilt-shift look graded.
+    when combined with "outside"), painted (a brush mask), and faces (an oval
+    over every detected face — the privacy blur). ``feather`` softens the edge,
+    ``outside`` flips which side gets blurred, ``progressive`` ramps the
+    strength through the feathered zone (half → full) instead of cross-fading
+    one blur, which is what makes tilt-shift look graded.
 """
 
 from __future__ import annotations
@@ -33,7 +34,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFilter
 
 KINDS = ["gaussian", "box", "motion", "spin", "zoom", "lens", "pixelate", "surface"]
-SHAPES = ["whole", "rectangle", "ellipse", "band", "painted"]
+SHAPES = ["whole", "rectangle", "ellipse", "band", "painted", "faces"]
 
 MAX_RADIUS_FRAC = 0.10   # strength 100 → radius = 10% of the short side
 MAX_SPIN_DEG = 40.0      # strength 100 → ±20° of spin
@@ -65,6 +66,11 @@ class MaskParams:
     outside: bool = False     # blur outside the shape instead of inside it
     progressive: bool = True  # ramp half → full strength across the feather
     painted: Image.Image | None = None   # brush mask (L), any size
+    # "faces": boxes as fractions of the image (x, y, w, h), from
+    # upscaler.face.detect_faces — fractions so one detection serves both the
+    # downscaled preview and the full-size export.
+    faces: list | None = None
+    face_pad: float = 25.0    # grow each face box by this % (hair, chin, ears)
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -280,6 +286,17 @@ def build_mask(size: tuple[int, int], m: MaskParams) -> Image.Image:
         else:
             weight = (dist <= half).astype(np.float32)
         mask = Image.fromarray((weight * 255).astype(np.uint8), "L")
+    elif m.shape == "faces":
+        mask = Image.new("L", size, 0)
+        d = ImageDraw.Draw(mask)
+        pad = max(-50.0, float(m.face_pad)) / 100.0
+        for box in (m.faces or []):
+            fx, fy, fw, fh = (float(v) for v in box[:4])
+            cx2, cy2 = (fx + fw / 2) * w, (fy + fh / 2) * h
+            rx, ry = fw * w * (1 + pad) / 2, fh * h * (1 + pad) / 2
+            d.ellipse([cx2 - rx, cy2 - ry, cx2 + rx, cy2 + ry], fill=255)
+        if feather_px > 0.5:
+            mask = mask.filter(ImageFilter.GaussianBlur(feather_px / 2.0))
     else:  # painted
         if m.painted is None:
             mask = Image.new("L", size, 0)
@@ -343,8 +360,12 @@ def describe(p: BlurParams, m: MaskParams, size: tuple[int, int]) -> str:
         amount = f"{max(2, round(r))}px blocks"
     else:
         amount = f"{r:.1f}px radius"
+    shape = m.shape
+    if shape == "faces":
+        n = len(m.faces or [])
+        shape = f"{n} face{'s' if n != 1 else ''}"
     where = "whole image" if m.shape == "whole" else (
-        f"{'outside' if m.outside else 'inside'} the {m.shape}"
+        f"{'outside' if m.outside else 'inside'} the {shape}"
         + (f", {m.feather:g}% feather" if m.feather > 0 else "")
         + (", graded" if m.progressive and m.feather > 0 else ""))
     return f"{p.kind} · strength {p.strength:g} ({amount}) · {where}"
