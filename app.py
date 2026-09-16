@@ -1928,7 +1928,7 @@ gradio-app { display: block; min-height: 100vh;
 
 /* Cheap transitions on interactive controls ONLY — color/border, no box-shadow
    or transform on every .block (that caused heavy repaints / ~20fps jank). */
-button, .tab-nav button, .drop, .item, .dropdown-arrow {
+button, .drop, .item, .dropdown-arrow {
     transition: background-color .18s ease, border-color .18s ease, color .18s ease; }
 /* transform/box-shadow only on the single button being hovered (cheap). */
 .gradio-container button.primary {
@@ -1936,7 +1936,6 @@ button, .tab-nav button, .drop, .item, .dropdown-arrow {
 .gradio-container button.primary:hover { transform: translateY(-1px);
     box-shadow: 0 6px 18px rgba(13,148,136,.28); }
 .gradio-container button.primary:active { transform: translateY(0); box-shadow: none; }
-.tab-nav button:hover { color: var(--body-text-color) !important; }
 
 /* Entrance motion kept to a single subtle hero fade (opacity only). Sections,
    tab bodies and accordion bodies render statically — no movement on every tab
@@ -2044,14 +2043,13 @@ ul.options::-webkit-scrollbar-track { background: transparent; }
 @media (max-width: 720px) {
     #topbar { position: static; justify-content: flex-end; margin-top: 4px; } }
 
-/* tab bar: accent the selected tab */
+/* tab bar: accent the selected tab.
+   Gradio measures this strip and moves whatever doesn't fit into a "…" menu —
+   and those tabs are NOT rendered in the bar at all, so no amount of
+   flex-wrap brings them back. With a dozen-plus tools the only fix is to make
+   the buttons narrower, so the whole toolset stays one click away. */
 .tabitem { padding-top: 28px !important; }
-.tab-nav { gap: 2px; }
-.tab-nav button { font-weight: 600 !important; font-size: 0.98rem !important;
-    color: var(--body-text-color-subdued) !important; border: none !important;
-    border-bottom: 2px solid transparent !important; border-radius: 0 !important; }
-.tab-nav button.selected { color: var(--ac) !important;
-    border-bottom: 2px solid var(--ac) !important; }
+.tab-container button { padding: 0 9px !important; }
 
 /* section heads: accent eyebrow w/ icon + underlined title */
 .sec-head { margin-bottom: 8px; }
@@ -2626,7 +2624,7 @@ def build_demo() -> gr.Blocks:
                 gr.HTML(_section_head(
                     "Cut-out", "Remove Background",
                     "Lift the subject cleanly off its background with AI and save a "
-                    "transparent PNG. It drops straight into the Lian Li Screen tab "
+                    "transparent PNG. It drops straight into the Lian Li tab "
                     "as a sticker.",
                     icon=ICON_AI,
                 ))
@@ -3564,7 +3562,7 @@ def build_demo() -> gr.Blocks:
                                    cancels=[batch_evt])
 
             # ---- Tab: Lian Li 8.8" Screen builder ----
-            with gr.Tab("Lian Li Screen"):
+            with gr.Tab("Lian Li"):
                 gr.HTML(_section_head(
                     "Panel", "Lian Li 8.8″ Screen",
                     "Compose media at the panel's exact size (1920×480 or 480×1920, "
@@ -3866,7 +3864,7 @@ def build_demo() -> gr.Blocks:
                         pn_info = gr.Markdown()
 
             # ---- Tab: Steam Workshop Showcase (five tiles from one picture/clip) ----
-            with gr.Tab("Steam Showcase"):
+            with gr.Tab("Steam"):
                 gr.HTML(_section_head(
                     "Steam", "Workshop Showcase tiles",
                     "Turn a photo, GIF or video into the five tiles Steam shows side by "

@@ -132,8 +132,8 @@ Each tab is a separate tool, all local:
 | **Video** | Upscale whole videos frame-by-frame (slow but works) |
 | **Convert & Documents** | Convert between PNG/JPEG/WebP/HEIC/…, images ⇄ PDF |
 | **Batch** | Apply one operation to a whole folder of images |
-| **Lian Li Screen** | Compose media for the Lian Li 8.8″ case screen at its exact size |
-| **Steam Showcase** | Cut a picture or clip into the five tiles of a Steam profile Workshop Showcase |
+| **Lian Li** | Compose media for the Lian Li 8.8″ case screen at its exact size |
+| **Steam** | Cut a picture or clip into the five tiles of a Steam profile Workshop Showcase |
 | **Library** | Everything you've exported, in one place |
 
 ---
