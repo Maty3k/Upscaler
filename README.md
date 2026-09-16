@@ -1,10 +1,22 @@
 # Upscaler
 
-**Free, private AI photo enhancement on your own computer.** Upscale, sharpen,
-deblur, colorize, remove objects and backgrounds, upscale videos — the same
-kind of results the paid cloud upscalers charge a subscription for, running
-100% locally on top of pretrained
-[Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN) weights.
+**A free, private photo editor that runs on your own computer.** It started as
+an AI upscaler and grew into the whole darkroom — the kind of results the paid
+cloud services charge a subscription for, running 100% locally on top of
+pretrained [Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN) weights.
+
+**With AI:** upscale and enlarge · deblur and denoise · restore faces ·
+colorize black-and-white · remove objects · cut out backgrounds ·
+depth-of-field blur · upscale video frame by frame
+
+**Without AI, and instantly:** color and light with one-click Auto · film
+effects and looks · sharpen · blur · crop, straighten and frame · watermark ·
+convert formats · fit a file-size budget · see and strip the GPS location a
+photo records · images ⇄ PDF · Steam showcase tiles · a composer for the
+Lian Li 8.8″ case screen
+
+**Over a whole folder:** batch any one of them, or save a chain of edits as a
+recipe and run the lot in one command.
 
 - **No subscription, no credits, no watermark** — open source, Apache-2.0
 - **No upload** — your photos never leave your machine; works offline after

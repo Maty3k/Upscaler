@@ -2698,9 +2698,10 @@ def build_demo() -> gr.Blocks:
             '<div id="hero">'
             f'<div class="brandrow"><span class="logo">{ICON_LOGO}</span>'
             '<span class="brand">Upscaler</span></div>'
-            '<div class="sub">Enlarge, sharpen and clean up your photos with AI — '
-            "then convert formats, clean up video, build PDFs or cut out "
-            "backgrounds. Every tool runs on your own machine; nothing is ever "
+            '<div class="sub">Enlarge, restore and colorize photos with AI, then '
+            "develop them: color and light, film effects, sharpen, blur, crop, "
+            "watermark, strip the GPS location, hit a size limit — or batch a whole "
+            "folder. Every tool runs on your own machine; nothing is ever "
             "uploaded.</div>"
             f'<span class="pill"><span class="dot"></span>Running locally · {device_name}</span>'
             "</div>"
