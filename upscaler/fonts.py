@@ -82,4 +82,9 @@ def _load_font(name: str, size: int) -> ImageFont.FreeTypeFont | ImageFont.Image
                 return ImageFont.truetype(p, size)
             except Exception:
                 continue
-    return ImageFont.load_default()
+    try:
+        # Pillow's own face, at the size asked for — so text still scales on a
+        # machine with no system fonts at all, such as a bare CI container.
+        return ImageFont.load_default(size=size)
+    except TypeError:                         # Pillow < 10.1 takes no size
+        return ImageFont.load_default()

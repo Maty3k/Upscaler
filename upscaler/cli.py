@@ -1492,6 +1492,139 @@ def run_screenshot(argv: list[str]) -> int:
     return 1 if failed else 0
 
 
+def build_design_parser() -> argparse.ArgumentParser:
+    from upscaler import design as dz
+
+    p = argparse.ArgumentParser(
+        prog="upscaler design",
+        description="Lay a photo and a few words onto a finished graphic: a YouTube "
+        "thumbnail, a quote card, an event poster, a title slide. Templates carry the "
+        "design; you fill in the slots. Every measurement is a share of the canvas, so "
+        "the same template renders at any size. No AI (except a cut-out template).",
+    )
+    p.add_argument("template", nargs="?",
+                   help="A built-in template name, or a path to a saved .json one.")
+    p.add_argument("-o", "--output", type=Path,
+                   help="Where to write it. Default: <template>.png in the "
+                   "current directory.")
+    p.add_argument("--list", action="store_true", dest="list_templates",
+                   help="List the templates that ship, and exit.")
+    p.add_argument("--slots", action="store_true",
+                   help="Show what this template asks you to fill in, and exit.")
+    p.add_argument("--set", action="append", default=[], metavar="SLOT=TEXT",
+                   help="Fill a slot, e.g. --set headline=\"I tried it for 30 days\". "
+                   "Repeat for each one.")
+    p.add_argument("--photo", type=Path, help="The photo the template asks for.")
+    p.add_argument("--logo", type=Path, help="The logo the template asks for.")
+    p.add_argument("--palette", choices=dz.PALETTE_NAMES, default=None,
+                   help="Restyle the whole design with a named palette.")
+    for role in dz.ROLES:
+        p.add_argument(f"--{role}", default=None, metavar="HEX",
+                       help=f"Override the palette's {role} colour.")
+    p.add_argument("--canvas", default=None,
+                   help="Render at another canvas: a name from the app, or 1200x800.")
+    p.add_argument("--save", type=Path, metavar="FILE.json",
+                   help="Write the template out as JSON you can edit, and exit.")
+    p.add_argument("-q", "--quality", type=int, default=92,
+                   help="Quality for JPEG/WebP outputs (default 92).")
+    return p
+
+
+def _design_template(name: str):
+    """A built-in template by name, or one loaded from a .json path."""
+    from upscaler import design as dz
+
+    path = Path(name)
+    if path.suffix.lower() == ".json" or path.is_file():
+        if not path.is_file():
+            raise dz.DesignError(f"no template file at {path}")
+        return dz.load(path)
+    return dz.built_in(name)
+
+
+def run_design(argv: list[str]) -> int:
+    from upscaler import design as dz
+
+    args = build_design_parser().parse_args(argv)
+    if args.list_templates:
+        for name in dz.BUILT_IN_NAMES:
+            tpl = dz.built_in(name)
+            print(f"{name}\n    {dz.describe(tpl)[len(name) + 2:]}\n    {tpl.note}")
+        return 0
+    if not args.template:
+        print("error: name a template, or use --list", file=sys.stderr)
+        return 2
+    try:
+        tpl = _design_template(args.template)
+    except dz.DesignError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+
+    if args.canvas:
+        tpl.canvas = args.canvas
+    if args.palette:
+        tpl.palette = dz.palette(args.palette)
+    for role in dz.ROLES:
+        value = getattr(args, role)
+        if value:
+            setattr(tpl.palette, role, value)
+
+    if args.save:
+        print(f"{dz.save(tpl, args.save)}", file=sys.stderr)
+        return 0
+    if args.slots:
+        for slot, kind in tpl.slots():
+            print(f"{slot:12s} {kind}")
+        return 0
+
+    texts = {}
+    for item in args.set:
+        key, sep, value = item.partition("=")
+        if not sep:
+            print(f"error: --set wants SLOT=TEXT, got {item!r}", file=sys.stderr)
+            return 2
+        texts[key.strip()] = value
+    known = {slot for slot, _ in tpl.slots()}
+    for key in texts:
+        if key not in known:
+            print(f"error: {tpl.name!r} has no slot {key!r} — "
+                  f"it takes {', '.join(sorted(known)) or 'none'}", file=sys.stderr)
+            return 2
+
+    photo = logo = None
+    for arg, label in ((args.photo, "photo"), (args.logo, "logo")):
+        if arg and not arg.is_file():
+            print(f"error: {label} not found: {arg}", file=sys.stderr)
+            return 2
+    if args.photo:
+        with Image.open(args.photo) as im:
+            photo = im.convert("RGBA") if "A" in im.getbands() else im.convert("RGB")
+    if args.logo:
+        logo = Image.open(args.logo).convert("RGBA")
+    if tpl.wants_photo() and photo is None:
+        print(f"error: {tpl.name!r} needs --photo", file=sys.stderr)
+        return 2
+
+    dst = args.output or Path(f"{tpl.name.lower().replace(' ', '-')}.png")
+    try:
+        out = dz.render(tpl, photo=photo, texts=texts, logo=logo)
+    except (dz.DesignError, RuntimeError, OSError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    if dst.suffix.lower() in (".jpg", ".jpeg", ".bmp"):
+        out = out.convert("RGB")
+    save_kw = ({"quality": args.quality}
+               if dst.suffix.lower() in (".jpg", ".jpeg", ".webp") else {})
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    out.save(dst, **save_kw)
+    gaps = dz.missing(tpl, photo, texts, logo)
+    if gaps:
+        print(f"note: still using the template's own copy for {', '.join(gaps)}",
+              file=sys.stderr)
+    print(f"{dz.describe(tpl)} → {dst}", file=sys.stderr)
+    return 0
+
+
 def build_optimize_parser() -> argparse.ArgumentParser:
     from upscaler import optimize as op
 
@@ -1773,6 +1906,7 @@ def build_parser() -> argparse.ArgumentParser:
         "`upscaler crop photo.jpg --aspect 1:1 --border 6` (crop and frame), "
         "`upscaler watermark ./folder --text \"© Me\"` (signature or logo), "
         "`upscaler screenshot grab.png --preset \"Indigo mesh\"` (beautify a capture), "
+        "`upscaler design \"Quote card\" --set quote=\"...\"` (design templates), "
         "`upscaler optimize photo.jpg -t 500KB` (fit a file-size budget), "
         "`upscaler metadata photo.jpg` (see what it reveals; --remove strips it), "
         "`upscaler recipe --list` (saved chains of edits, run over a folder). "
@@ -1861,6 +1995,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_watermark(argv[1:])
     if argv and argv[0] == "screenshot":
         return run_screenshot(argv[1:])
+    if argv and argv[0] == "design":
+        return run_design(argv[1:])
     if argv and argv[0] == "optimize":
         return run_optimize(argv[1:])
     if argv and argv[0] == "metadata":

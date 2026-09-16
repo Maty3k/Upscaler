@@ -286,7 +286,7 @@ def _spin(layer: Image.Image, p: ShotParams) -> Image.Image:
 
 
 # ── the background ────────────────────────────────────────────────────────────
-def _linear(w: int, h: int, c1, c2, angle: float) -> np.ndarray:
+def linear_wash(w: int, h: int, c1, c2, angle: float) -> np.ndarray:
     ang = np.deg2rad(angle)
     yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
     proj = xx * np.cos(ang) + yy * np.sin(ang)
@@ -296,7 +296,7 @@ def _linear(w: int, h: int, c1, c2, angle: float) -> np.ndarray:
             + np.asarray(c2, np.float32)[None, None, :] * t[..., None])
 
 
-def _mesh(w: int, h: int, c1, c2, angle: float) -> np.ndarray:
+def mesh_wash(w: int, h: int, c1, c2, angle: float) -> np.ndarray:
     """The soft multi-blob wash every screenshot tool ships: a base gradient
     with a few wide radial pools of related colour dropped on top.
 
@@ -304,7 +304,7 @@ def _mesh(w: int, h: int, c1, c2, angle: float) -> np.ndarray:
     same colours always give the same picture — a preview you can trust.
     """
     a1, a2 = np.asarray(c1, np.float32), np.asarray(c2, np.float32)
-    arr = _linear(w, h, a1, a2, angle)
+    arr = linear_wash(w, h, a1, a2, angle)
     mix = (a1 + a2) / 2.0
     blobs = (
         (0.16, 0.20, np.clip(a1 * 1.35 + 30, 0, 255), 0.85),
@@ -341,7 +341,8 @@ def background(size: "tuple[int, int]", shot: Image.Image, p: ShotParams) -> Ima
             ImageFilter.GaussianBlur(max(4.0, 0.05 * min(w, h))))
         return Image.eval(wash, lambda v: int(v * 0.82)).convert("RGBA")
     c1, c2 = _hex(p.color), _hex(p.color2)
-    arr = _mesh(w, h, c1, c2, p.angle) if kind == MESH else _linear(w, h, c1, c2, p.angle)
+    arr = (mesh_wash(w, h, c1, c2, p.angle) if kind == MESH
+           else linear_wash(w, h, c1, c2, p.angle))
     return Image.fromarray(arr.clip(0, 255).astype(np.uint8), "RGB").convert("RGBA")
 
 

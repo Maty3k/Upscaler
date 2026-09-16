@@ -46,6 +46,7 @@ from upscaler import depth as depth_tools
 from upscaler import fit, frame as frame_tools, metadata as md_tools
 from upscaler import optimize as opt_tools
 from upscaler import recipe as recipe_tools
+from upscaler import design as dz_tools
 from upscaler import screenshot as shot_tools
 from upscaler import watermark as wm_tools
 from upscaler.models.registry import (
@@ -1775,6 +1776,130 @@ def watermark_apply_ui(image, logo, cutout, *vals, progress=gr.Progress()):
     return out, path, f"✅ {wm_tools.describe(p)} · {out.width}×{out.height}px PNG"
 
 
+# ── Design templates ──────────────────────────────────────────────────────────
+DZ_SLOTS = 5          # how many text boxes the tab keeps for a template's slots
+
+
+def _dz_build(tpl_json, canvas, primary, secondary, accent, ink):
+    """The template the controls currently describe: structure from the JSON,
+    palette and canvas from the live pickers."""
+    tpl = dz_tools.from_json(tpl_json) if tpl_json else dz_tools.built_in(
+        dz_tools.BUILT_IN_NAMES[0])
+    tpl.palette = dz_tools.Palette(primary=primary or "#000000",
+                                   secondary=secondary or "#000000",
+                                   accent=accent or "#ffffff",
+                                   ink=ink or "#ffffff")
+    if canvas:
+        tpl.canvas = canvas
+    return tpl
+
+
+def _dz_texts(tpl, values):
+    """Pair the text boxes with the template's slots, in order."""
+    return {slot: value for slot, value in zip(tpl.text_slots(), values)
+            if value is not None}
+
+
+def _dz_fields(tpl):
+    """Label, prefill and show one box per text slot; hide the spare ones."""
+    slots = tpl.text_slots()
+    defaults = {}
+    for layer in tpl.layers:
+        if layer.kind == dz_tools.TEXT and layer.slot not in defaults:
+            defaults[layer.slot] = layer.text
+    out = []
+    for i in range(DZ_SLOTS):
+        if i < len(slots):
+            out.append(gr.update(visible=True, label=slots[i].replace("_", " ").title(),
+                                 value=defaults.get(slots[i], "")))
+        else:
+            out.append(gr.update(visible=False, value=""))
+    return out
+
+
+def design_pick_ui(name):
+    """Load a template that ships: its JSON, its palette, its canvas, its slots."""
+    tpl = dz_tools.built_in(name)
+    pal = tpl.palette
+    return (dz_tools.to_json(tpl), f"*{tpl.note}*", tpl.canvas,
+            pal.primary, pal.secondary, pal.accent, pal.ink,
+            *_dz_fields(tpl),
+            gr.update(visible=tpl.wants_photo()),
+            gr.update(visible=tpl.wants_logo()))
+
+
+def design_json_ui(text):
+    """Take an edited template. A broken one says so instead of blanking the tab."""
+    try:
+        tpl = dz_tools.from_json(text)
+    except dz_tools.DesignError as e:
+        return (gr.update(), f"⚠ {e}", gr.update(), *(gr.update() for _ in range(4)),
+                *(gr.update() for _ in range(DZ_SLOTS)), gr.update(), gr.update())
+    pal = tpl.palette
+    return (dz_tools.to_json(tpl), f"*{tpl.note}*" if tpl.note else "", tpl.canvas,
+            pal.primary, pal.secondary, pal.accent, pal.ink,
+            *_dz_fields(tpl),
+            gr.update(visible=tpl.wants_photo()),
+            gr.update(visible=tpl.wants_logo()))
+
+
+def design_cutout_ui(photo, tpl_json):
+    """Lift the subject once, for the templates that put type behind a person."""
+    try:
+        tpl = dz_tools.from_json(tpl_json) if tpl_json else None
+    except dz_tools.DesignError:
+        return None, gr.update(visible=False, value="")
+    if photo is None or tpl is None or not tpl.wants_subject():
+        return None, gr.update(visible=False, value="")
+    img = photo if isinstance(photo, Image.Image) else Image.fromarray(photo)
+    try:
+        cut = dz_tools.subject_cutout(img)
+    except (RuntimeError, ValueError, OSError) as e:
+        return None, gr.update(visible=True, value=f"⚠ {e}")
+    share = float((np.asarray(cut.getchannel("A"), np.float32) > 128).mean()) * 100
+    note = f"Subject lifted — it covers **{share:.0f}%** of the photo."
+    if share < 1:
+        note = ("⚠ Almost nothing was found to cut out. This template wants a photo "
+                "with one clear subject.")
+    return cut, gr.update(visible=True, value=note)
+
+
+def design_preview_ui(tpl_json, photo, logo, cutout, canvas, primary, secondary,
+                      accent, ink, *texts):
+    try:
+        tpl = _dz_build(tpl_json, canvas, primary, secondary, accent, ink)
+        img = photo if photo is None or isinstance(photo, Image.Image) \
+            else Image.fromarray(photo)
+        out = dz_tools.preview(tpl, photo=img, texts=_dz_texts(tpl, texts), logo=logo,
+                               cutout=cutout)
+    except (dz_tools.DesignError, RuntimeError, OSError) as e:
+        return None, gr.update(value=f"⚠ {e}")
+    gaps = dz_tools.missing(tpl, img, _dz_texts(tpl, texts), logo)
+    note = dz_tools.describe(tpl)
+    if gaps:
+        note += f" · still waiting for **{', '.join(gaps)}**"
+    return out, gr.update(value=note)
+
+
+def design_apply_ui(tpl_json, photo, logo, cutout, canvas, primary, secondary,
+                    accent, ink, *texts, progress=gr.Progress()):
+    progress(0.3, desc="Rendering at full size…")
+    try:
+        tpl = _dz_build(tpl_json, canvas, primary, secondary, accent, ink)
+        img = photo if photo is None or isinstance(photo, Image.Image) \
+            else Image.fromarray(photo)
+        out = dz_tools.render(tpl, photo=img, texts=_dz_texts(tpl, texts), logo=logo,
+                              cutout=cutout)
+    except (dz_tools.DesignError, RuntimeError, OSError) as e:
+        raise gr.Error(str(e)) from e
+    progress(0.9, desc="Saving PNG…")
+    fd, path = tempfile.mkstemp(dir=_ensure_export_dir(), suffix=".png")
+    os.close(fd)
+    out.save(path, "PNG")
+    library.save_path(path, "design")  # auto-add to the Library
+    return out, path, f"✅ {dz_tools.describe(tpl)} · {out.width}×{out.height}px PNG"
+
+
 # ── Screenshot beautifier ─────────────────────────────────────────────────────
 _SHOT_FIELDS = [
     "background", "color", "color2", "angle", "padding", "corner_radius", "rim",
@@ -2548,9 +2673,9 @@ ul.options::-webkit-scrollbar-track { background: transparent; }
    and those tabs are NOT rendered in the bar at all, so no amount of
    flex-wrap brings them back. With a dozen-plus tools the only fix is to make
    the buttons narrower, so the whole toolset stays one click away. Measured:
-   0.82rem is the largest type that keeps all 17 tools inline down to 1200px. */
+   0.78rem is the largest type that keeps all 18 tools inline down to 1200px. */
 .tabitem { padding-top: 28px !important; }
-.tab-container button { padding: 0 6px !important; font-size: 0.82rem !important; }
+.tab-container button { padding: 0 6px !important; font-size: 0.78rem !important; }
 
 /* section heads: accent eyebrow w/ icon + underlined title */
 .sec-head { margin-bottom: 8px; }
@@ -2642,6 +2767,10 @@ ICON_CROP = _svg('<path d="M6.5 2v15.5H22"/><path d="M2 6.5h15.5V22"/>')
 ICON_SHOT = _svg('<rect x="2.5" y="4" width="19" height="16" rx="2.5"/>'
                  '<path d="M2.5 8.5h19"/><circle cx="5.8" cy="6.25" r=".85"/>'
                  '<circle cx="8.6" cy="6.25" r=".85"/>')
+# a page with a heading rule and a picture block: a laid-out design
+ICON_DESIGN = _svg('<rect x="3.5" y="2.5" width="17" height="19" rx="2"/>'
+                   '<path d="M7 7h10"/><path d="M7 10.5h6"/>'
+                   '<rect x="7" y="14" width="10" height="4.5" rx="1"/>')
 ICON_SHARP = _svg('<path d="M12 3.5 20.5 20.5 12 16 3.5 20.5z"/>')
 ICON_FX = _svg('<rect x="2.5" y="5" width="19" height="14" rx="2"/>'
                '<path d="M2.5 9h3M2.5 15h3M18.5 9h3M18.5 15h3M9 5v14M15 5v14"/>')
@@ -2810,9 +2939,9 @@ def build_demo() -> gr.Blocks:
             '<span class="brand">Upscaler</span></div>'
             '<div class="sub">Enlarge, restore and colorize photos with AI, then '
             "develop them: color and light, film effects, sharpen, blur, crop, "
-            "watermark, beautify a screenshot, strip the GPS location, hit a size "
-            "limit — or batch a whole folder. Every tool runs on your own machine; "
-            "nothing is ever uploaded.</div>"
+            "watermark, beautify a screenshot, drop it into a design template, "
+            "strip the GPS location, hit a size limit — or batch a whole folder. "
+            "Every tool runs on your own machine; nothing is ever uploaded.</div>"
             f'<span class="pill"><span class="dot"></span>Running locally · {device_name}</span>'
             "</div>"
         )
@@ -3938,6 +4067,126 @@ def build_demo() -> gr.Blocks:
                         )
                         wm_file = gr.File(label="Download PNG")
                         wm_info = gr.Markdown()
+
+            # ---- Tab: Design templates (no AI, except the cut-out one) ----
+            with gr.Tab("Design"):
+                # The first template, resolved here so every control below opens
+                # already showing it — a load event would leave the tab blank
+                # until the browser had been round-tripped.
+                _dz0 = dz_tools.built_in(dz_tools.BUILT_IN_NAMES[0])
+                _dz0_slots = _dz0.text_slots()
+                _dz0_copy = {}
+                for _layer in _dz0.layers:
+                    if _layer.kind == dz_tools.TEXT:
+                        _dz0_copy.setdefault(_layer.slot, _layer.text)
+                gr.HTML(_section_head(
+                    "Compose", "Design Templates",
+                    "Start from a finished layout — a YouTube thumbnail, a quote card, "
+                    "an event poster, a title slide — and fill in the words and the "
+                    "photo. The template carries the design; a palette restyles the "
+                    "whole thing in one click.",
+                    icon=ICON_DESIGN,
+                ))
+                with gr.Row(equal_height=False):
+                    with gr.Column(scale=1):
+                        dz_template = gr.Dropdown(
+                            dz_tools.BUILT_IN_NAMES, value=dz_tools.BUILT_IN_NAMES[0],
+                            label="Template", filterable=False,
+                            info="Ten layouts for the things people actually make.",
+                        )
+                        dz_note = gr.Markdown(f"*{_dz0.note}*", elem_classes="notes")
+                        dz_photo = gr.Image(
+                            label="Photo", type="pil", image_mode=None,
+                            sources=["upload", "clipboard"], height=200,
+                            elem_classes="drop", buttons=["download", "fullscreen"],
+                            visible=_dz0.wants_photo(),
+                        )
+                        dz_cut_note = gr.Markdown(visible=False, elem_classes="notes")
+                        dz_cutout_state = gr.State(None)
+                        dz_logo = gr.Image(
+                            label="Logo (a transparent PNG works best)", type="pil",
+                            image_mode="RGBA", sources=["upload", "clipboard"],
+                            height=120, visible=_dz0.wants_logo(),
+                        )
+                        gr.HTML('<div class="col-label">Your words</div>')
+                        dz_texts = [
+                            gr.Textbox(
+                                value=(_dz0_copy.get(_dz0_slots[i], "")
+                                       if i < len(_dz0_slots) else ""),
+                                label=(_dz0_slots[i].replace("_", " ").title()
+                                       if i < len(_dz0_slots) else f"Text {i + 1}"),
+                                lines=1, visible=i < len(_dz0_slots),
+                            )
+                            for i in range(DZ_SLOTS)
+                        ]
+                        gr.HTML('<div class="col-label">Colour</div>')
+                        dz_palette = gr.Dropdown(
+                            dz_tools.PALETTE_NAMES, value=None, label="Palette",
+                            filterable=False,
+                            info="Restyles the whole design. The four colours below "
+                            "stay editable afterwards.",
+                        )
+                        with gr.Row():
+                            dz_primary = gr.ColorPicker(value=_dz0.palette.primary,
+                                                        label="Ground")
+                            dz_secondary = gr.ColorPicker(value=_dz0.palette.secondary,
+                                                          label="Second")
+                        with gr.Row():
+                            dz_accent = gr.ColorPicker(value=_dz0.palette.accent,
+                                                       label="Accent")
+                            dz_ink = gr.ColorPicker(value=_dz0.palette.ink, label="Ink")
+                        dz_canvas = gr.Dropdown(
+                            dz_tools.CANVAS_NAMES, value=_dz0.canvas,
+                            label="Canvas", filterable=False,
+                            info="The finished size. Every measurement is a share of "
+                            "the canvas, so a template holds together at any of them.",
+                        )
+                        with gr.Accordion("Template JSON (advanced)", open=False):
+                            gr.Markdown(
+                                "The template as plain JSON — layers, positions, "
+                                "colours. Edit it and press **Load** to see the "
+                                "change, or copy it somewhere as your own template.",
+                                elem_classes="notes",
+                            )
+                            dz_json = gr.Code(value=dz_tools.to_json(_dz0),
+                                              language="json", lines=14,
+                                              label="Template")
+                            dz_load = gr.Button("Load this template", size="sm")
+                        with gr.Accordion("Tips", open=False):
+                            gr.Markdown(
+                                "* **The words shrink to fit.** A long headline wraps "
+                                "and sizes itself down rather than running off the "
+                                "edge — so type what you mean and leave it.\n"
+                                "* **Palette first, then tweak.** Pick a palette for "
+                                "the mood, then nudge the four colours.\n"
+                                "* **The canvas is separate from the template.** A "
+                                "quote card renders just as well at story size.\n"
+                                "* **Subject spotlight** puts the word behind the "
+                                "person, so it wants a photo with one clear subject "
+                                "and the background-removal model from `[onnx]`.\n"
+                                "* **Make your own** by editing the JSON above — or "
+                                "from the command line with "
+                                "`upscaler design \"Quote card\" --save mine.json`.",
+                                elem_classes="notes",
+                            )
+                        with gr.Row():
+                            dz_btn = gr.Button("Render (full size)", variant="primary",
+                                               size="lg", scale=3)
+                            dz_clear = gr.Button("↺ Clear", variant="secondary",
+                                                 scale=1)
+                    with gr.Column(scale=1, elem_classes="sticky-col"):
+                        dz_preview = gr.Image(
+                            label="Preview", height=420, buttons=["fullscreen"],
+                            elem_classes=["loupe"],
+                        )
+                        dz_desc = gr.Markdown(elem_classes="notes")
+                        dz_out = gr.Image(
+                            label="Result at full size", height=340, type="pil",
+                            buttons=["download", "fullscreen"], elem_classes=["loupe"],
+                            interactive=False,
+                        )
+                        dz_file = gr.File(label="Download PNG")
+                        dz_info = gr.Markdown()
 
             # ---- Tab: Screenshot beautifier (no AI) ----
             with gr.Tab("Screenshot"):
@@ -5797,6 +6046,47 @@ def build_demo() -> gr.Blocks:
         wm_use.click(lambda im: im, wm_out, wm_in)
         wm_clear.click(lambda: (None, None, None, None, None), None,
                        [wm_in, wm_preview, wm_out, wm_file, wm_info])
+
+        # ---- Design templates wiring ----
+        _dz_pick_out = ([dz_json, dz_note, dz_canvas, dz_primary, dz_secondary,
+                         dz_accent, dz_ink] + dz_texts + [dz_photo, dz_logo])
+        _dz_inputs = ([dz_json, dz_photo, dz_logo, dz_cutout_state, dz_canvas,
+                       dz_primary, dz_secondary, dz_accent, dz_ink] + dz_texts)
+        _dz_live = [dz_canvas, dz_primary, dz_secondary, dz_accent, dz_ink] + dz_texts
+
+        def _dz_after_pick(chain):
+            """A new template means a new cut-out (or none) and a new preview."""
+            return chain.then(
+                design_cutout_ui, [dz_photo, dz_json], [dz_cutout_state, dz_cut_note],
+            ).then(design_preview_ui, _dz_inputs, [dz_preview, dz_desc],
+                   show_progress="hidden")
+
+        _dz_after_pick(dz_template.input(design_pick_ui, dz_template, _dz_pick_out,
+                                         show_progress="hidden"))
+        _dz_after_pick(dz_load.click(design_json_ui, dz_json, _dz_pick_out,
+                                     show_progress="hidden"))
+        dz_palette.input(
+            lambda name: tuple(getattr(dz_tools.palette(name), r) for r in dz_tools.ROLES),
+            dz_palette, [dz_primary, dz_secondary, dz_accent, dz_ink],
+            show_progress="hidden",
+        ).then(design_preview_ui, _dz_inputs, [dz_preview, dz_desc],
+               show_progress="hidden")
+        dz_photo.change(design_cutout_ui, [dz_photo, dz_json],
+                        [dz_cutout_state, dz_cut_note]) \
+            .then(design_preview_ui, _dz_inputs, [dz_preview, dz_desc],
+                  show_progress="hidden")
+        for _c in [dz_logo] + _dz_live:
+            _c.change(design_preview_ui, _dz_inputs, [dz_preview, dz_desc],
+                      show_progress="hidden", trigger_mode="always_last")
+        dz_btn.click(design_apply_ui, _dz_inputs, [dz_out, dz_file, dz_info],
+                     show_progress_on=[dz_out])
+        dz_clear.click(lambda: (None, None, None, None, None), None,
+                       [dz_photo, dz_preview, dz_out, dz_file, dz_info])
+        # The controls above already hold the first template, so the only thing
+        # left to do on open is draw it — with its own placeholder copy, so the
+        # tab shows a finished design rather than an empty box.
+        demo.load(design_preview_ui, _dz_inputs, [dz_preview, dz_desc],
+                  show_progress="hidden")
 
         # ---- Screenshot wiring ----
         _shot_controls = [shot_bg, shot_color, shot_color2, shot_angle, shot_padding, shot_radius,

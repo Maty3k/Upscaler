@@ -9,8 +9,9 @@ pretrained [Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN) weights.
 colorize black-and-white · remove objects · cut out backgrounds ·
 depth-of-field blur · upscale video frame by frame
 
-**Part AI, part design:** put a headline **behind the subject**, so the text
-passes behind the person in the photo
+**Part AI, part design:** **design templates** — a YouTube thumbnail, a quote
+card, an event poster — where you fill in the words and the photo · put a
+headline **behind the subject**, so the text passes behind the person
 
 **Without AI, and instantly:** color and light with one-click Auto · film
 effects and looks · sharpen · blur · crop, straighten and frame · watermark ·
@@ -308,6 +309,43 @@ keeps the whole photo and fills the margin instead of cropping, with a solid
 colour or a zoomed blurred copy of the photo. Then a border, rounded corners,
 a drop shadow, and an exact output size. Ten presets cover the common posts,
 mats and wallpapers.
+
+#### Design templates (no AI)
+
+```bash
+upscaler design --list                                   # the ten that ship
+upscaler design "Quote card" --set quote="Make it work, make it right" \
+    --set author="Kent Beck" --palette Ocean
+upscaler design "YouTube thumbnail" --photo frame.jpg --set headline="I tried it"
+upscaler design "Event poster" --photo hall.jpg --set title="Summer Session" \
+    --set date="Saturday 12 July" --set place="The Old Warehouse"
+upscaler design "Quote card" --canvas "Story / Reel · 1080×1920"   # same design, new size
+upscaler design "Quote card" --save mine.json            # edit it, then run mine.json
+```
+
+Every other tool changes a picture you already have. This one starts from a
+blank canvas of a known size and lays your photo and your words onto it.
+
+A template is an ordered list of **layers** — a photo, a block of colour, a
+line of type, a logo — and every measurement is a percentage of the canvas, so
+**the same template renders at any size**: a quote card works just as well at
+story size, and the preview is the export at a smaller scale rather than an
+approximation of it.
+
+Two kinds of indirection make a template worth keeping. Layers name **palette
+roles** (`accent`, `ink`) rather than hex, so one dropdown restyles the whole
+design — eight palettes ship, and `accent@80` fades a role without freezing a
+colour into the file. And they name **font roles** (`display`, `serif`) rather
+than a face that only exists on one operating system.
+
+Text is **fitted, not placed**: it wraps to its box and shrinks until it fits,
+so a long headline never runs off the edge of the picture. A layer carrying a
+**slot** name is the part you fill in; everything else is the design. One of
+the templates puts the word behind the person, using the same cut-out as the
+Watermark tab.
+
+Templates are plain JSON — `--save` one, edit it, and run it back, or edit it
+in place in the GUI's **Template JSON** panel.
 
 #### Screenshot beautifier (no AI)
 

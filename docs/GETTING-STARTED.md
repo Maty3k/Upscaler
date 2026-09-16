@@ -128,6 +128,7 @@ Each tab is a separate tool, all local:
 | **Remove BG** | Cut out the subject, transparent background |
 | **Color & Light** | Brightness, contrast, color and black & white — with a one-click Auto |
 | **Watermark** | Sign your photos with text or a logo — in a corner, tiled, or behind the subject so a headline passes behind the person |
+| **Design** | Start from a finished layout — thumbnail, quote card, poster, title slide — and fill in the words and the photo |
 | **Screenshot** | Make a screen capture presentable: padding, rounded corners and a shadow on a colour field, in a window or browser frame, leaned back in 3D |
 | **Crop** | Crop to any shape, straighten a tilted photo, add a border or a drop shadow |
 | **Sharpen** | Bring out detail four different ways, with halo control so edges stay natural |
