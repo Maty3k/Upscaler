@@ -26,6 +26,7 @@ All phases complete and on `main`. Test suite: **21 passing** (CPU, no downloads
 | — | SHA-256 checksums pinned on all weights | `models/registry.py`, `scripts/print_checksums.py` |
 | — | Served locally at `upscaler.test` via Herd nginx proxy → Gradio | (see [Serving](#5-serving-locally-via-herd)) |
 | — | **Color & Light** tab + `upscaler adjust` — exposure/contrast/tone/white balance/vibrance/B&W with Auto and 11 presets, linear-light exposure + WB, shares the Blur tab's region masks | `adjust.py` |
+| — | **Sharpen** tab + `upscaler sharpen` — unsharp / high-pass / edge-aware / two-scale texture, halo cap in output units, luma-only, shadow+highlight protection; pixel radius so the preview is a 1:1 crop | `sharpen.py` |
 | — | **Effects** tab + `upscaler effects` — 11 stacking effects (grain/halation/leak/vignette/aberration/duotone/posterize/dither/halftone/scanlines/glitch) + 12 looks, fixed stack order, shares the region masks | `effects.py` |
 | — | **Blur** tab + `upscaler blur` — 8 blur kinds (gaussian/box/motion/spin/zoom/lens/pixelate/surface) through whole/rectangle/ellipse/band/painted/faces masks (faces = auto-detected via YuNet, shared with Color & Light) with feather + graded ramp; pure PIL/numpy | `blur.py` |
 | — | **Steam Showcase** tab + `upscaler steam` — one picture/clip → the five Workshop Showcase tiles (still PNG, or looping APNG / GIF shrunk to a size budget) at Steam's CSS geometry | `steam.py` |

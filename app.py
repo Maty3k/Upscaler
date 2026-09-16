@@ -53,6 +53,7 @@ from upscaler.models.registry import (
     INPAINT_MODELS,
     MODELS,
 )
+from upscaler import sharpen as sharpen_tools
 from upscaler.sharpen import unsharp_mask
 
 # Cache loaded models so switching images doesn't reload weights every run.
@@ -1497,6 +1498,79 @@ def effects_apply_ui(image, *vals, progress=gr.Progress()):
     return (img, out), path, f"✅ {effects.describe(p, m)} · {out.width}×{out.height}px PNG"
 
 
+# ── Sharpen ───────────────────────────────────────────────────────────────────
+_SHARPEN_FIELDS = [
+    "kind", "amount", "radius", "threshold", "halo", "luminance_only",
+    "protect_shadows", "protect_highlights", "edge_sensitivity", "detail_balance",
+]
+
+
+def _sharpen_kind_vis(kind):
+    """Only the chosen kind's own control is shown."""
+    return (
+        gr.update(visible=kind == "smart"),      # edge sensitivity
+        gr.update(visible=kind == "texture"),    # detail balance
+    )
+
+
+def _sharpen_params(kind, amount, radius, threshold, halo, luminance_only,
+                    protect_shadows, protect_highlights, edge_sensitivity, detail_balance):
+    return sharpen_tools.SharpenParams(
+        kind=kind, amount=float(amount), radius=float(radius), threshold=float(threshold),
+        halo=float(halo), luminance_only=bool(luminance_only),
+        protect_shadows=float(protect_shadows), protect_highlights=float(protect_highlights),
+        edge_sensitivity=float(edge_sensitivity), detail_balance=float(detail_balance),
+    )
+
+
+def _sharpen_split(vals):
+    """(params, mask, preview centre) from the flat control list."""
+    n = len(_SHARPEN_FIELDS)
+    p = _sharpen_params(*vals[:n])
+    center = (float(vals[-2]) / 100.0, float(vals[-1]) / 100.0)
+    return p, _adjust_mask(*vals[n:-2]), center
+
+
+def sharpen_preview_ui(image, *vals):
+    """Live before/after at 1:1 — sharpening can only be judged at full size,
+    so this is a real crop of the photo, never a downscale."""
+    if image is None:
+        return None, gr.update()
+    img = image if isinstance(image, Image.Image) else Image.fromarray(image)
+    p, m, center = _sharpen_split(vals)
+    before, after = sharpen_tools.preview_pair(img, p, m, center=center)
+    note = (f"Showing a **1:1 crop** — {before.width}×{before.height} of "
+            f"{img.width}×{img.height}. Move the crop with the sliders above."
+            if before.size != img.size else
+            f"Showing the whole photo at 1:1 — {img.width}×{img.height}.")
+    return (before, after), gr.update(value=note)
+
+
+def sharpen_preset_ui(name):
+    p = sharpen_tools.preset(name)
+    return tuple(getattr(p, f) for f in _SHARPEN_FIELDS)
+
+
+def sharpen_apply_ui(image, *vals, progress=gr.Progress()):
+    if image is None:
+        raise gr.Error("Upload a photo to sharpen.")
+    img = image if isinstance(image, Image.Image) else Image.fromarray(image)
+    p, m, _center = _sharpen_split(vals)
+    if m.shape == "painted" and m.painted is None:
+        raise gr.Error("Paint over the area to sharpen first (or set the region to whole).")
+    if m.shape == "faces" and not m.faces:
+        raise gr.Error("No faces were found in this photo — pick another region.")
+    progress(0.2, desc="Sharpening at full size…")
+    out = sharpen_tools.apply(img, p, m)
+    progress(0.9, desc="Saving PNG…")
+    fd, path = tempfile.mkstemp(dir=_ensure_export_dir(), suffix=".png")
+    os.close(fd)
+    out.save(path, "PNG")
+    library.save_path(path, "sharpen")  # auto-add to the Library
+    return ((img, out), path,
+            f"✅ {sharpen_tools.describe(p, m, img.size)} · {out.width}×{out.height}px PNG")
+
+
 # ── Blur toolbox ──────────────────────────────────────────────────────────────
 _BLUR_KIND_INFO = {
     "gaussian": "Soft, natural blur.",
@@ -2049,7 +2123,7 @@ ul.options::-webkit-scrollbar-track { background: transparent; }
    flex-wrap brings them back. With a dozen-plus tools the only fix is to make
    the buttons narrower, so the whole toolset stays one click away. */
 .tabitem { padding-top: 28px !important; }
-.tab-container button { padding: 0 9px !important; }
+.tab-container button { padding: 0 7px !important; }
 
 /* section heads: accent eyebrow w/ icon + underlined title */
 .sec-head { margin-bottom: 8px; }
@@ -2134,6 +2208,7 @@ ICON_PANEL = _svg('<rect x="2" y="8" width="20" height="8" rx="1.5"/>'
 ICON_LIGHT = _svg('<circle cx="12" cy="12" r="4.5"/><path d="M12 2v2.5M12 19.5V22'
                   'M2 12h2.5M19.5 12H22M4.9 4.9l1.8 1.8M17.3 17.3l1.8 1.8'
                   'M19.1 4.9l-1.8 1.8M6.7 17.3l-1.8 1.8"/>')
+ICON_SHARP = _svg('<path d="M12 3.5 20.5 20.5 12 16 3.5 20.5z"/>')
 ICON_FX = _svg('<rect x="2.5" y="5" width="19" height="14" rx="2"/>'
                '<path d="M2.5 9h3M2.5 15h3M18.5 9h3M18.5 15h3M9 5v14M15 5v14"/>')
 ICON_BLUR = _svg('<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4.5"/>'
@@ -3248,6 +3323,176 @@ def build_demo() -> gr.Blocks:
                         )
                         bl_file = gr.File(label="Download PNG")
                         bl_info = gr.Markdown()
+
+            # ---- Tab: Sharpen (no AI) ----
+            with gr.Tab("Sharpen"):
+                gr.HTML(_section_head(
+                    "Detail", "Sharpen",
+                    "Four ways to bring out detail — the classic unsharp mask, a "
+                    "high-pass overlay, an edge-aware pass that leaves skin and sky "
+                    "alone, and a two-scale texture pass — with halo control so edges "
+                    "get crisp instead of outlined.",
+                    icon=ICON_SHARP,
+                ))
+                with gr.Row(equal_height=False):
+                    with gr.Column(scale=1):
+                        sh_in = gr.Image(
+                            label="Input", type="pil", image_mode=None,
+                            sources=["upload", "clipboard"], height=300,
+                            elem_classes="drop", buttons=["download", "fullscreen"],
+                        )
+                        sh_preset = gr.Dropdown(
+                            sharpen_tools.PRESET_NAMES, value=sharpen_tools.PRESET_NONE,
+                            label="Preset", filterable=False,
+                            info="A starting point — every control stays editable "
+                            "afterwards. 'None' turns sharpening off.",
+                        )
+                        sh_kind = gr.Radio(
+                            sharpen_tools.KINDS, value="unsharp", label="Method",
+                            info="unsharp = the classic · high-pass = lifts edges "
+                            "without changing overall tone · smart = only where there "
+                            "are real edges, so noise and skin are left alone · "
+                            "texture = two scales at once, for fine detail plus a "
+                            "little structure.",
+                        )
+                        sh_amount = gr.Slider(
+                            0, 300, value=80, step=1, label="Amount",
+                            info="How hard to push. 100 is a classic full-strength "
+                            "unsharp mask; 0 turns it off.",
+                        )
+                        with gr.Row():
+                            sh_radius = gr.Slider(
+                                sharpen_tools.MIN_RADIUS, sharpen_tools.MAX_RADIUS,
+                                value=1.0, step=0.1, label="Radius (px)",
+                                info="The width of the edges you're lifting. Around 1 "
+                                "suits most photos; go wider only for a very soft shot.",
+                            )
+                            sh_threshold = gr.Slider(
+                                0, 100, value=4, step=1, label="Threshold",
+                                info="Leaves flat areas alone, so grain and noise "
+                                "aren't amplified along with the detail.",
+                            )
+                        sh_halo = gr.Slider(
+                            0, 100, value=35, step=1, label="Halo limit",
+                            info="Caps the bright and dark rim an edge may gain. Lower "
+                            "keeps it honest; high lets edges outline themselves.",
+                        )
+                        sh_edge = gr.Slider(
+                            0, 100, value=50, step=1, label="Edge sensitivity",
+                            visible=False,
+                            info="How strictly the smart pass sticks to real edges. "
+                            "Higher protects more of the flat areas.",
+                        )
+                        sh_balance = gr.Slider(
+                            0, 100, value=50, step=1, label="Fine ↔ structure",
+                            visible=False,
+                            info="Low favours fine grit, high favours broader "
+                            "structure.",
+                        )
+                        with gr.Accordion("Protect", open=False):
+                            sh_lum = gr.Checkbox(
+                                value=True, label="Sharpen brightness only",
+                                info="Leaves color untouched, which avoids the colored "
+                                "fringes per-channel sharpening leaves on edges.",
+                            )
+                            with gr.Row():
+                                sh_shadows = gr.Slider(
+                                    0, 100, value=0, step=1, label="Protect shadows",
+                                    info="Holds back in the darkest areas, where "
+                                    "sharpening mostly finds noise.",
+                                )
+                                sh_highlights = gr.Slider(
+                                    0, 100, value=0, step=1, label="Protect highlights",
+                                    info="Holds back in the brightest areas, where a "
+                                    "halo shows most.",
+                                )
+                        with gr.Accordion("Where to sharpen", open=False):
+                            sh_shape = gr.Radio(
+                                blur.SHAPES, value="whole", label="Region",
+                                info="whole = the entire photo · rectangle / ellipse = a "
+                                "shape you position · band = a straight strip · painted = "
+                                "wherever you brush · faces = every face found "
+                                "automatically.",
+                            )
+                            with gr.Row():
+                                sh_x = gr.Slider(0, 100, value=50, step=1, label="Centre X (%)",
+                                                 visible=False, info="Shape position.")
+                                sh_y = gr.Slider(0, 100, value=50, step=1, label="Centre Y (%)",
+                                                 visible=False, info="Shape position.")
+                            with gr.Row():
+                                sh_w = gr.Slider(1, 100, value=50, step=1, label="Width (%)",
+                                                 visible=False, info="Shape size.")
+                                sh_h = gr.Slider(1, 100, value=50, step=1, label="Height (%)",
+                                                 visible=False, info="Shape size, or how "
+                                                 "thick the band is.")
+                            sh_mangle = gr.Slider(-90, 90, value=0, step=1, label="Band tilt (°)",
+                                                  visible=False, info="Rotate the strip.")
+                            sh_round = gr.Slider(0, 100, value=0, step=1,
+                                                 label="Corner roundness (%)", visible=False,
+                                                 info="0 = sharp corners, 100 = a pill.")
+                            sh_feather = gr.Slider(0, 50, value=15, step=0.5, label="Feather (%)",
+                                                   visible=False,
+                                                   info="How softly the sharpening fades out "
+                                                   "at the edge of the region.")
+                            sh_outside = gr.Checkbox(value=False, label="Sharpen outside the shape",
+                                                     visible=False,
+                                                     info="Sharpen everything except the shape.")
+                            sh_facepad = gr.Slider(
+                                -25, 100, value=25, step=1, label="Face padding (%)",
+                                visible=False,
+                                info="Grows the oval around each detected face.",
+                            )
+                            sh_faces_note = gr.Markdown(visible=False, elem_classes="notes")
+                            sh_faces_state = gr.State([])
+                            sh_editor = gr.ImageEditor(
+                                label="Paint where to sharpen", type="pil", height=360,
+                                sources=[], layers=False, transforms=(), visible=False,
+                                brush=gr.Brush(colors=["#ffffff"], color_mode="fixed",
+                                               default_size=40),
+                            )
+                        with gr.Accordion("Tips", open=False):
+                            gr.Markdown(
+                                "* **Judge it at 1:1** — the preview is a real crop, not "
+                                "a shrunken copy, because shrinking a photo hides "
+                                "exactly the artefacts you're looking for.\n"
+                                "* **Radius first, then amount.** Around 1px suits most "
+                                "photos; a wide radius plus a big amount is what makes "
+                                "pictures look crunchy.\n"
+                                "* **Watch the halo limit** — if edges grow a bright "
+                                "outline, lower it rather than lowering the amount.\n"
+                                "* **Raise the threshold on a noisy or high-ISO shot**, "
+                                "or use the smart method, so the noise stays put.\n"
+                                "* **Sharpen last**, after upscaling and color work.\n"
+                                "* **Portraits:** smart method, protect highlights, and "
+                                "region = faces if you only want the eyes and lips to "
+                                "come up.",
+                                elem_classes="notes",
+                            )
+                        with gr.Row():
+                            sh_btn = gr.Button("Apply (full size)", variant="primary",
+                                               size="lg", scale=3)
+                            sh_use = gr.Button("↪ Use as input", variant="secondary", scale=2)
+                            sh_clear = gr.Button("↺ Clear", variant="secondary", scale=1)
+                    with gr.Column(scale=1, elem_classes="sticky-col"):
+                        with gr.Row():
+                            sh_cx = gr.Slider(0, 100, value=50, step=1, label="Preview X (%)",
+                                              info="Which part of the photo the 1:1 crop "
+                                              "shows.")
+                            sh_cy = gr.Slider(0, 100, value=50, step=1, label="Preview Y (%)",
+                                              info="Which part of the photo the 1:1 crop "
+                                              "shows.")
+                        sh_preview = gr.ImageSlider(
+                            # max_height, not height — see `out` slider above.
+                            label="Live preview at 1:1 — before / after (drag the divider)",
+                            type="pil", max_height=340, elem_classes=["loupe"],
+                        )
+                        sh_crop_note = gr.Markdown(elem_classes="notes")
+                        sh_out = gr.ImageSlider(
+                            label="Result at full size — before / after", type="pil",
+                            max_height=340, elem_classes=["loupe"], interactive=False,
+                        )
+                        sh_file = gr.File(label="Download PNG")
+                        sh_info = gr.Markdown()
 
             # ---- Tab: Video upscaler (frame-by-frame) ----
             with gr.Tab("Video"):
@@ -4431,6 +4676,44 @@ def build_demo() -> gr.Blocks:
         bl_use.click(lambda pair: (pair[1] if pair else None), bl_out, bl_in)
         bl_clear.click(lambda: (None, None, None, None, None), None,
                        [bl_in, bl_preview, bl_out, bl_file, bl_info])
+
+        # ---- Sharpen wiring ----
+        _sh_controls = [sh_kind, sh_amount, sh_radius, sh_threshold, sh_halo, sh_lum,
+                        sh_shadows, sh_highlights, sh_edge, sh_balance]
+        _sh_region = [sh_shape, sh_x, sh_y, sh_w, sh_h, sh_mangle, sh_round, sh_feather,
+                      sh_outside, sh_facepad, sh_faces_state, sh_editor]
+        _sh_inputs = [sh_in] + _sh_controls + _sh_region + [sh_cx, sh_cy]
+        _sh_preview_out = [sh_preview, sh_crop_note]
+        sh_kind.change(_sharpen_kind_vis, sh_kind, [sh_edge, sh_balance],
+                       show_progress="hidden")
+        sh_shape.change(
+            _region_vis, sh_shape,
+            [sh_x, sh_y, sh_w, sh_h, sh_mangle, sh_round, sh_feather, sh_outside,
+             sh_facepad, sh_editor],
+            show_progress="hidden",
+        ).then(detect_faces_ui, [sh_in, sh_shape], [sh_faces_state, sh_faces_note],
+               show_progress="hidden") \
+         .then(sharpen_preview_ui, _sh_inputs, _sh_preview_out, show_progress="hidden")
+        sh_in.change(blur_on_image, sh_in, sh_editor, show_progress="hidden")
+        sh_in.change(detect_faces_ui, [sh_in, sh_shape], [sh_faces_state, sh_faces_note],
+                     show_progress="hidden") \
+             .then(sharpen_preview_ui, _sh_inputs, _sh_preview_out, show_progress="hidden")
+        for _c in _sh_controls + _sh_region[1:] + [sh_cx, sh_cy]:
+            if isinstance(_c, gr.State):
+                continue
+            (_c.change if _c is sh_editor else _c.input)(
+                sharpen_preview_ui, _sh_inputs, _sh_preview_out,
+                show_progress="hidden", trigger_mode="always_last",
+            )
+        sh_preset.input(sharpen_preset_ui, sh_preset, _sh_controls, show_progress="hidden") \
+            .then(_sharpen_kind_vis, sh_kind, [sh_edge, sh_balance], show_progress="hidden") \
+            .then(sharpen_preview_ui, _sh_inputs, _sh_preview_out, show_progress="hidden")
+        sh_btn.click(
+            sharpen_apply_ui, _sh_inputs, [sh_out, sh_file, sh_info], show_progress_on=[sh_out],
+        )
+        sh_use.click(lambda pair: (pair[1] if pair else None), sh_out, sh_in)
+        sh_clear.click(lambda: (None, None, None, None, None), None,
+                       [sh_in, sh_preview, sh_out, sh_file, sh_info])
 
         # ---- Steam showcase wiring ----
         # Order after the media file must match _steam_params.

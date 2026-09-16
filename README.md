@@ -175,6 +175,26 @@ stop. The same region flags as `blur` apply any of it to just a shape, a
 graduated band, a painted mask or every detected face. The GUI's **Color & Light** tab has all of it
 with a live before/after.
 
+#### Sharpen (no AI)
+
+```bash
+upscaler sharpen photo.jpg --preset Standard
+upscaler sharpen photo.jpg --amount 120 --radius 1.2 --halo 25
+upscaler sharpen portrait.jpg --preset "Portrait (skin-safe)"      # edge-aware, spares skin
+upscaler sharpen soft.jpg --kind high-pass --amount 180 --radius 2
+upscaler sharpen photo.jpg --kind texture --shape faces            # just the faces
+upscaler sharpen ./folder -o ./out --preset "After upscaling"
+```
+
+Four methods: the classic **unsharp** mask, a **high-pass** overlay that lifts
+edges without shifting overall tone, an edge-aware **smart** pass that leaves
+skin, sky and noise alone, and a two-scale **texture** pass. A **halo limit**
+caps how far an edge may overshoot, which is what separates sharpening from an
+outlined look, and sharpening runs on brightness only by default so edges don't
+pick up colored fringes. The radius is in **pixels**, because that is the scale
+real detail lives at — so the GUI's preview is a genuine 1:1 crop rather than a
+shrunken copy, which would hide the very artefacts you are checking for.
+
 #### Effects & film looks (no AI)
 
 ```bash
@@ -261,7 +281,8 @@ Objects** (LaMa inpainting), **Remove BG**, **Video** upscaling, **Convert &
 Documents** (formats + image ⇄ PDF), **Batch**, **Color & Light** (exposure,
 contrast, white balance, vibrance, black & white, with one-click Auto),
 **Effects** (grain, halation, light leaks, vignette, duotone, halftone,
-dither, scanlines, glitch — twelve ready-made film looks), a
+dither, scanlines, glitch — twelve ready-made film looks), **Sharpen** (unsharp,
+high-pass, edge-aware and texture, with halo control), a
 **Blur** toolbox (gaussian,
 motion, spin, zoom, lens bokeh, pixelate, surface — whole image, a shaped or
 tilt-shift band, a painted mask, or every detected face), a **Lian Li Screen** composer for the 8.8″ case

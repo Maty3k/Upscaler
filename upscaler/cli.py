@@ -1001,6 +1001,96 @@ def run_effects(argv: list[str]) -> int:
     return 1 if failed else 0
 
 
+def build_sharpen_parser() -> argparse.ArgumentParser:
+    from upscaler import sharpen as st
+
+    p = argparse.ArgumentParser(
+        prog="upscaler sharpen",
+        description="Sharpen a photo: unsharp mask, high-pass overlay, edge-aware "
+        "(leaves skin and sky alone) or two-scale texture, with halo control. The "
+        "radius is in pixels, because that is the scale real detail lives at. No AI.",
+    )
+    p.add_argument("input", type=Path, nargs="?", help="Image file, or a directory of images.")
+    p.add_argument(
+        "-o", "--output", type=Path,
+        help="Output file (format from the extension) or a directory for a folder of "
+        "images. Default: <name>_sharp.png next to the input.",
+    )
+    p.add_argument("--preset", choices=list(st.PRESETS),
+                   help="Start from a preset, then apply any flags on top.")
+    p.add_argument("--kind", choices=st.KINDS, default=None,
+                   help="Sharpening method (default unsharp).")
+    p.add_argument("--amount", type=float, default=None,
+                   help="How hard to push, 0..300 (100 = a classic full-strength unsharp).")
+    p.add_argument("--radius", type=float, default=None,
+                   help=f"Edge width in pixels, {st.MIN_RADIUS}..{st.MAX_RADIUS} (default 1).")
+    p.add_argument("--threshold", type=float, default=None,
+                   help="Leave flat areas alone, 0..100 (default 4).")
+    p.add_argument("--halo", type=float, default=None,
+                   help="Cap the bright/dark rim an edge may gain, 0..100 (default 35).")
+    p.add_argument("--all-channels", action="store_true",
+                   help="Sharpen every color channel instead of brightness only "
+                   "(brightness-only avoids colored fringes).")
+    p.add_argument("--protect-shadows", type=float, default=None, help="Hold back in the darks, 0..100.")
+    p.add_argument("--protect-highlights", type=float, default=None, help="Hold back in the brights, 0..100.")
+    p.add_argument("--edge-sensitivity", type=float, default=None,
+                   help="--kind smart: how strictly it follows edges, 0..100 (default 50).")
+    p.add_argument("--detail-balance", type=float, default=None,
+                   help="--kind texture: fine (0) … structure (100), default 50.")
+    _add_region_args(p, verb="sharpen", feather=15.0)
+    p.add_argument("-q", "--quality", type=int, default=92,
+                   help="Quality for JPEG/WebP outputs (default 92).")
+    return p
+
+
+def run_sharpen(argv: list[str]) -> int:
+    from upscaler import sharpen as st
+
+    args = build_sharpen_parser().parse_args(argv)
+    if args.input is None or not args.input.exists():
+        print(f"error: input not found: {args.input}", file=sys.stderr)
+        return 2
+    inputs = _gather_inputs(args.input) if args.input.is_dir() else [args.input]
+    if not inputs:
+        print(f"error: no images found in {args.input}", file=sys.stderr)
+        return 2
+    if len(inputs) > 1 and args.output and args.output.suffix:
+        print("error: --output must be a directory when processing a folder", file=sys.stderr)
+        return 2
+    mp, code = _region_from_args(args)
+    if code:
+        return code
+
+    p = st.preset(args.preset) if args.preset else st.SharpenParams()
+    for name in ("kind", "amount", "radius", "threshold", "halo", "protect_shadows",
+                 "protect_highlights", "edge_sensitivity", "detail_balance"):
+        value = getattr(args, name)
+        if value is not None:
+            setattr(p, name, value)
+    if args.all_channels:
+        p.luminance_only = False
+
+    failed = 0
+    for src in inputs:
+        dst = _suffixed_output_path(src, args.output, "sharp")
+        try:
+            with Image.open(src) as im:
+                img = im.convert("RGBA") if "A" in im.getbands() else im.convert("RGB")
+            region = _with_faces(mp, img, args.face_confidence, src.name)
+            if region is None:
+                continue
+            out = st.apply(img, p, region)
+            if dst.suffix.lower() in (".jpg", ".jpeg", ".bmp"):
+                out = out.convert("RGB")
+            save_kw = {"quality": args.quality} if dst.suffix.lower() in (".jpg", ".jpeg", ".webp") else {}
+            out.save(dst, **save_kw)
+            print(f"{src.name}: {st.describe(p, region, img.size)} → {dst}", file=sys.stderr)
+        except (Image.UnidentifiedImageError, OSError, ValueError, RuntimeError) as e:
+            print(f"error on {src.name}: {e}", file=sys.stderr)
+            failed += 1
+    return 1 if failed else 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="upscaler",
@@ -1013,7 +1103,8 @@ def build_parser() -> argparse.ArgumentParser:
         "`upscaler steam clip.mp4 -o <dir>` (Steam Workshop Showcase tiles), "
         "`upscaler blur photo.jpg --kind lens --shape ellipse --outside` (blur toolbox), "
         "`upscaler adjust photo.jpg --auto` (color and light), "
-        "`upscaler effects photo.jpg --look \"Film grain\"` (effects and film looks). "
+        "`upscaler effects photo.jpg --look \"Film grain\"` (effects and film looks), "
+        "`upscaler sharpen photo.jpg --preset Standard` (sharpening toolbox). "
         "Add --face to restore faces after upscaling.",
     )
     p.add_argument(
@@ -1091,6 +1182,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_adjust(argv[1:])
     if argv and argv[0] == "effects":
         return run_effects(argv[1:])
+    if argv and argv[0] == "sharpen":
+        return run_sharpen(argv[1:])
 
     args = build_parser().parse_args(argv)
 
