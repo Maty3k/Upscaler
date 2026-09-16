@@ -655,6 +655,16 @@ def build_blur_parser() -> argparse.ArgumentParser:
     p.add_argument("--threshold", type=float, default=25.0, help="surface: edge protection 0-100 (default 25).")
     _add_region_args(p, verb="blur")
     p.add_argument("--no-progressive", action="store_true", help="Cross-fade one blur instead of ramping half → full through the feather.")
+    p.add_argument("--focus", type=float, default=None,
+                   help="--shape depth: which distance stays sharp, 0 (farthest) to "
+                   "100 (nearest). Easier: use --focus-at.")
+    p.add_argument("--focus-at", default=None, metavar="X,Y",
+                   help="--shape depth: focus on the subject at this point, as "
+                   "percentages of width,height — the way you tap a phone screen.")
+    p.add_argument("--dof", type=float, default=25.0,
+                   help="--shape depth: how deep the sharp zone runs, 0-100 (default 25).")
+    p.add_argument("--depth-model", default=None,
+                   help="Depth network to use; see the notes in the model registry.")
     p.add_argument("-q", "--quality", type=int, default=92, help="Quality for JPEG/WebP outputs (default 92).")
     return p
 
@@ -664,8 +674,8 @@ def _add_region_args(p: argparse.ArgumentParser, verb: str, feather: float = 10.
     the effect lands on."""
     from upscaler import blur
 
-    p.add_argument("--shape", choices=blur.SHAPES, default="whole",
-                   help=f"Where to {verb} (default whole).")
+    p.add_argument("--shape", choices=blur.BLUR_SHAPES if verb == "blur" else blur.SHAPES,
+                   default="whole", help=f"Where to {verb} (default whole).")
     p.add_argument("--x", type=float, default=50.0, help="Shape centre X, %% of width.")
     p.add_argument("--y", type=float, default=50.0, help="Shape centre Y, %% of height.")
     p.add_argument("--w", type=float, default=50.0, help="Rectangle/ellipse width, %% of width.")
@@ -760,6 +770,17 @@ def run_blur(argv: list[str]) -> int:
     mp, code = _region_from_args(args)
     if code:
         return code
+    if mp.shape == blur.DEPTH:
+        mp = replace(mp, dof=args.dof, focus=args.focus if args.focus is not None else 70.0)
+        if args.focus_at:
+            try:
+                fx, fy = (float(v) for v in args.focus_at.split(","))
+            except ValueError:
+                print("error: --focus-at must be X,Y percentages, e.g. 50,60",
+                      file=sys.stderr)
+                return 2
+        else:
+            fx = fy = None
     bp = blur.BlurParams(kind=args.kind, strength=args.strength, angle=args.angle,
                          center_x=cx, center_y=cy, highlights=args.highlights,
                          threshold=args.threshold)
@@ -772,6 +793,17 @@ def run_blur(argv: list[str]) -> int:
             region = _with_faces(mp, img, args.face_confidence, src.name)
             if region is None:
                 continue
+            if region.shape == blur.DEPTH:
+                from upscaler import depth as depth_tools
+
+                dmap = depth_tools.estimate(
+                    img, **({"model": args.depth_model} if args.depth_model else {}))
+                focus = region.focus
+                if fx is not None:
+                    focus = depth_tools.focus_at(dmap, fx, fy)
+                    print(f"{src.name}: focusing at {fx:g},{fy:g} → {focus:g}",
+                          file=sys.stderr)
+                region = replace(region, depth=dmap, focus=focus)
             out = blur.apply(img, bp, region)
             if dst.suffix.lower() in (".jpg", ".jpeg", ".bmp"):
                 out = out.convert("RGB")

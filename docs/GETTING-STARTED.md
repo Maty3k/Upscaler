@@ -131,7 +131,7 @@ Each tab is a separate tool, all local:
 | **Crop** | Crop to any shape, straighten a tilted photo, add a border or a drop shadow |
 | **Sharpen** | Bring out detail four different ways, with halo control so edges stay natural |
 | **Effects** | Film looks — grain, glow, light leaks, vignette, halftone, retro dithering and glitch |
-| **Blur** | Eight kinds of blur — soft, motion, bokeh, pixelate, tilt-shift — on the whole photo, a shape, where you paint, or every face it finds |
+| **Blur** | Eight kinds of blur — soft, motion, bokeh, pixelate, tilt-shift — on the whole photo, a shape, where you paint, every face it finds, or a real depth of field |
 | **Video** | Upscale whole videos frame-by-frame (slow but works) |
 | **Convert & Documents** | Convert between PNG/JPEG/WebP/HEIC/…, squeeze a photo under a size limit, remove the GPS location a photo records, images ⇄ PDF |
 | **Batch** | Apply one operation to a whole folder of images |

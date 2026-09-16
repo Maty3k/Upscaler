@@ -42,6 +42,7 @@ from upscaler.document import images_to_pdf, pdf_to_images
 from upscaler.deblur import Deblurrer, DeblurTooLargeError
 from upscaler.engine import (CancelledError, OutputTooLargeError, Upscaler,
                              resolve_device)
+from upscaler import depth as depth_tools
 from upscaler import fit, frame as frame_tools, metadata as md_tools
 from upscaler import optimize as opt_tools
 from upscaler import watermark as wm_tools
@@ -1412,6 +1413,42 @@ def steam_export_ui(media, fit, zoom, off_x, off_y, bg_color, transparent, tile_
     return gallery, zpath, msg
 
 
+def estimate_depth_ui(image, shape):
+    """Work out how far away everything is, when the region is set to depth.
+
+    Returns the map itself (kept in State for the blur, and shown so you can
+    see what the model saw and click the part you want sharp) plus a status
+    line. Never raises: without onnxruntime the other regions keep working.
+    """
+    if image is None or shape != blur.DEPTH:
+        return None, gr.update(visible=False), gr.update(visible=False, value="")
+    img = image if isinstance(image, Image.Image) else Image.fromarray(image)
+    try:
+        dmap = depth_tools.estimate(img)
+    except (RuntimeError, OSError, ValueError) as e:
+        return None, gr.update(visible=False), gr.update(visible=True, value=f"⚠ {e}")
+    return (dmap, gr.update(visible=True, value=dmap),
+            gr.update(visible=True,
+                      value="Bright is near, dark is far. **Click the picture above "
+                            "where you want it sharp**, the way you tap to focus on a "
+                            "phone, then set how deep that sharp zone runs."))
+
+
+def depth_focus_from_click(dmap, evt: gr.SelectData):
+    """Clicking the depth map focuses there, like tapping a phone screen."""
+    if dmap is None or evt is None or evt.index is None:
+        return gr.update()
+    x, y = evt.index
+    return depth_tools.focus_at(dmap, x / max(1, dmap.width - 1) * 100.0,
+                                y / max(1, dmap.height - 1) * 100.0)
+
+
+def _blur_depth_vis(shape):
+    """The depth controls appear only when the region is depth."""
+    on = shape == blur.DEPTH
+    return (gr.update(visible=on), gr.update(visible=on))
+
+
 def detect_faces_ui(image, shape):
     """Find the faces in the input when the region is set to "faces".
 
@@ -1869,7 +1906,7 @@ def _blur_params(kind, strength, angle, cx, cy, highlights, threshold):
 
 
 def _mask_params(shape, x, y, w, h, mangle, roundness, feather, outside, progressive,
-                 face_pad, faces, editor):
+                 face_pad, faces, editor, dmap=None, focus=70.0, dof=25.0):
     painted = None
     if shape == "painted":
         _bg, painted = _mask_from_editor(editor)
@@ -1877,7 +1914,8 @@ def _mask_params(shape, x, y, w, h, mangle, roundness, feather, outside, progres
                            angle=float(mangle), roundness=float(roundness),
                            feather=float(feather), outside=bool(outside),
                            progressive=bool(progressive), painted=painted,
-                           faces=list(faces or []), face_pad=float(face_pad))
+                           faces=list(faces or []), face_pad=float(face_pad),
+                           depth=dmap, focus=float(focus), dof=float(dof))
 
 
 def _blur_split(vals):
@@ -1905,6 +1943,9 @@ def blur_apply_ui(image, *vals, progress=gr.Progress()):
         raise gr.Error("Paint over the area to blur first (or pick another region shape).")
     if mp.shape == "faces" and not mp.faces:
         raise gr.Error("No faces were found in this photo — pick another region.")
+    if mp.shape == blur.DEPTH and mp.depth is None:
+        raise gr.Error("The depth map isn't ready. Re-pick the depth region, or "
+                       'install onnxruntime with: pip install -e ".[onnx]"')
     progress(0.2, desc="Blurring at full size…")
     out = blur.apply(img, bp, mp)
     progress(0.9, desc="Saving PNG…")
@@ -3470,11 +3511,12 @@ def build_demo() -> gr.Blocks:
                         )
                         with gr.Accordion("Where to blur", open=True):
                             bl_shape = gr.Radio(
-                                blur.SHAPES, value="whole", label="Region",
+                                blur.BLUR_SHAPES, value="whole", label="Region",
                                 info="whole = everything · rectangle / ellipse = a shape "
                                 "you position · band = a straight strip (tilt-shift) · "
                                 "painted = wherever you brush · faces = every face found "
-                                "automatically, for privacy.",
+                                "automatically, for privacy · depth = a real depth of "
+                                "field, sharp at one distance and soft beyond it.",
                             )
                             with gr.Row():
                                 bl_x = gr.Slider(0, 100, value=50, step=1, label="Centre X (%)",
@@ -3518,6 +3560,27 @@ def build_demo() -> gr.Blocks:
                             )
                             bl_faces_note = gr.Markdown(visible=False, elem_classes="notes")
                             bl_faces_state = gr.State([])
+                            bl_depth_view = gr.Image(
+                                label="Depth map — click where you want it sharp",
+                                visible=False, height=220, elem_classes=["loupe"],
+                                interactive=False,
+                            )
+                            bl_depth_note = gr.Markdown(visible=False, elem_classes="notes")
+                            bl_depth_state = gr.State(None)
+                            bl_focus = gr.Slider(
+                                0, 100, value=70, step=0.1, label="Focus distance",
+                                visible=False,
+                                info="Which distance stays sharp: 100 is the nearest "
+                                "thing in the frame, 0 the farthest. Clicking the depth "
+                                "map sets this for you.",
+                            )
+                            bl_dof = gr.Slider(
+                                0, 100, value=25, step=1, label="Depth of field",
+                                visible=False,
+                                info="How deep the sharp zone runs. Small is a wide "
+                                "aperture with only your subject sharp; large keeps "
+                                "most of the scene in focus.",
+                            )
                             bl_editor = gr.ImageEditor(
                                 label="Paint where to blur", type="pil", height=360,
                                 sources=[], layers=False, transforms=(), visible=False,
@@ -3531,6 +3594,10 @@ def build_demo() -> gr.Blocks:
                                 "* **Portrait mode:** region = faces with 'blur outside' "
                                 "and lens blur — the face stays sharp, the background "
                                 "goes soft.\n"
+                                "* **A real depth of field:** region = depth, then click "
+                                "your subject on the depth map. Unlike the face trick "
+                                "this softens things by how far away they are, so a "
+                                "distant wall blurs more than a nearby one.\n"
                                 "* **Hide a plate or a sign:** pixelate + ellipse, "
                                 "strength 50+, a little feather.\n"
                                 "* **Tilt-shift / miniature look:** gaussian or lens + "
@@ -5287,7 +5354,7 @@ def build_demo() -> gr.Blocks:
         _bl_inputs = [bl_in, bl_kind, bl_strength, bl_angle, bl_cx, bl_cy, bl_highlights,
                       bl_threshold, bl_shape, bl_x, bl_y, bl_w, bl_h, bl_mangle, bl_round,
                       bl_feather, bl_outside, bl_progressive, bl_facepad, bl_faces_state,
-                      bl_editor]
+                      bl_editor, bl_depth_state, bl_focus, bl_dof]
         bl_kind.change(
             _blur_kind_vis, bl_kind,
             [bl_angle, bl_cx, bl_cy, bl_highlights, bl_threshold, bl_kind],
@@ -5298,13 +5365,21 @@ def build_demo() -> gr.Blocks:
             [bl_x, bl_y, bl_w, bl_h, bl_mangle, bl_round, bl_feather, bl_outside,
              bl_progressive, bl_facepad, bl_editor],
             show_progress="hidden",
-        ).then(detect_faces_ui, [bl_in, bl_shape], [bl_faces_state, bl_faces_note],
+        ).then(_blur_depth_vis, bl_shape, [bl_focus, bl_dof], show_progress="hidden") \
+         .then(detect_faces_ui, [bl_in, bl_shape], [bl_faces_state, bl_faces_note],
                show_progress="hidden") \
+         .then(estimate_depth_ui, [bl_in, bl_shape],
+               [bl_depth_state, bl_depth_view, bl_depth_note]) \
          .then(blur_preview_ui, _bl_inputs, bl_preview, show_progress="hidden")
         bl_in.change(blur_on_image, bl_in, bl_editor, show_progress="hidden")
         bl_in.change(detect_faces_ui, [bl_in, bl_shape], [bl_faces_state, bl_faces_note],
                      show_progress="hidden") \
+             .then(estimate_depth_ui, [bl_in, bl_shape],
+                   [bl_depth_state, bl_depth_view, bl_depth_note]) \
              .then(blur_preview_ui, _bl_inputs, bl_preview, show_progress="hidden")
+        bl_depth_view.select(depth_focus_from_click, bl_depth_state, bl_focus,
+                             show_progress="hidden") \
+            .then(blur_preview_ui, _bl_inputs, bl_preview, show_progress="hidden")
         for _c in _bl_inputs[1:]:
             if _c is bl_shape or isinstance(_c, gr.State):
                 continue   # shape is handled above; State fires no events

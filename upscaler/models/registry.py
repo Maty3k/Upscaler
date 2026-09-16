@@ -236,6 +236,43 @@ def resolve_artifact_model(model: Optional[str] = None) -> ArtifactSpec:
 # -- Face restoration (optional, via the [face] extra) -----------------------
 
 @dataclass(frozen=True)
+class DepthSpec:
+    name: str
+    url: str
+    filename: str
+    sha256: Optional[str] = None
+    size: int = 518          # the network's square input
+    notes: str = ""
+
+
+_DEPTH_ANYTHING = ("https://huggingface.co/onnx-community/depth-anything-v2-small"
+                   "/resolve/main/onnx")
+
+# Depth Anything V2 **Small** specifically: it is Apache-2.0, while the Base and
+# Large models of the same family are CC-BY-NC. Exported to ONNX by the
+# onnx-community mirror, so this runs on onnxruntime with no torch involved.
+DEPTH_MODELS: dict[str, DepthSpec] = {
+    "depth-anything-v2-small-q": DepthSpec(
+        name="depth-anything-v2-small-q",
+        url=f"{_DEPTH_ANYTHING}/model_quantized.onnx",
+        filename="depth-anything-v2-small-q.onnx",
+        sha256="fcf51f1b230362b28690bb9d1809bf0431f29cad20534e3f589bd7285547f20d",
+        notes="Depth Anything V2 Small, quantised — ~26MB, and its depth matches "
+              "the full model to within 0.02. The one to use (Apache-2.0).",
+    ),
+    "depth-anything-v2-small": DepthSpec(
+        name="depth-anything-v2-small",
+        url=f"{_DEPTH_ANYTHING}/model.onnx",
+        filename="depth-anything-v2-small.onnx",
+        sha256="afb6a5c28f3b6bf1618c6e43f02073ef9dfdc70e937502d51603e57b0a1df10c",
+        notes="Depth Anything V2 Small, full precision — ~94MB, marginally more "
+              "exact and about twice as slow (Apache-2.0).",
+    ),
+}
+DEFAULT_DEPTH_MODEL = "depth-anything-v2-small-q"
+
+
+@dataclass(frozen=True)
 class FaceSpec:
     name: str
     url: str
@@ -365,4 +402,5 @@ def iter_pinned_specs():
     yield from COLORIZE_MODELS.values()
     yield from INPAINT_MODELS.values()
     yield from FACE_MODELS.values()
+    yield from DEPTH_MODELS.values()
     yield FACE_DETECTOR

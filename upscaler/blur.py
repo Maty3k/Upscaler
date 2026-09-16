@@ -18,8 +18,9 @@ Kinds
 
 Masks
     whole, rectangle (rounded), ellipse, band (a straight strip — tilt-shift
-    when combined with "outside"), painted (a brush mask), and faces (an oval
-    over every detected face — the privacy blur). ``feather`` softens the edge,
+    when combined with "outside"), painted (a brush mask), faces (an oval over
+    every detected face — the privacy blur), and depth (how far away each pixel
+    is, for a real depth-of-field). ``feather`` softens the edge,
     ``outside`` flips which side gets blurred, ``progressive`` ramps the
     strength through the feathered zone (half → full) instead of cross-fading
     one blur, which is what makes tilt-shift look graded.
@@ -35,6 +36,11 @@ from PIL import Image, ImageDraw, ImageFilter
 
 KINDS = ["gaussian", "box", "motion", "spin", "zoom", "lens", "pixelate", "surface"]
 SHAPES = ["whole", "rectangle", "ellipse", "band", "painted", "faces"]
+DEPTH = "depth"
+# Depth is offered by the Blur tab only: a depth-of-field is what it is for,
+# and the other tabs would show a region that quietly does nothing without a
+# depth map. build_mask still understands it wherever it is used.
+BLUR_SHAPES = SHAPES + [DEPTH]
 
 MAX_RADIUS_FRAC = 0.10   # strength 100 → radius = 10% of the short side
 MAX_SPIN_DEG = 40.0      # strength 100 → ±20° of spin
@@ -71,6 +77,11 @@ class MaskParams:
     # downscaled preview and the full-size export.
     faces: list | None = None
     face_pad: float = 25.0    # grow each face box by this % (hair, chin, ears)
+    # "depth": a depth map from upscaler.depth (L, 255 = nearest), plus which
+    # distance stays sharp and how deep that sharp band runs.
+    depth: Image.Image | None = None
+    focus: float = 70.0       # 0 = the farthest thing, 100 = the nearest
+    dof: float = 25.0         # how much depth either side of it stays sharp
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -255,8 +266,8 @@ def _smoothstep(x: np.ndarray) -> np.ndarray:
 def build_mask(size: tuple[int, int], m: MaskParams) -> Image.Image:
     """The blur weight map for an image of ``size``: 255 where the blur
     applies fully, 0 where the original stays, feathered in between."""
-    if m.shape not in SHAPES:
-        raise ValueError(f"unknown mask shape {m.shape!r} — expected one of {SHAPES}")
+    if m.shape not in BLUR_SHAPES:
+        raise ValueError(f"unknown mask shape {m.shape!r} — expected one of {BLUR_SHAPES}")
     w, h = size
     short = min(w, h)
     feather_px = max(0.0, m.feather) / 100.0 * short
@@ -286,6 +297,22 @@ def build_mask(size: tuple[int, int], m: MaskParams) -> Image.Image:
         else:
             weight = (dist <= half).astype(np.float32)
         mask = Image.fromarray((weight * 255).astype(np.uint8), "L")
+    elif m.shape == "depth":
+        if m.depth is None:
+            mask = Image.new("L", size, 0)
+        else:
+            d = np.asarray(m.depth.convert("L").resize(size, Image.BILINEAR),
+                           dtype=np.float32) / 255.0
+            focus = np.clip(m.focus, 0.0, 100.0) / 100.0
+            half = np.clip(m.dof, 0.0, 100.0) / 100.0 / 2.0
+            # Everything within `half` of the focus distance stays sharp; past
+            # that the blur ramps up over a band of the same width, so a narrow
+            # depth of field also falls off quickly.
+            ramp = max(0.02, half if half > 0 else 0.15)
+            weight = _smoothstep((np.abs(d - focus) - half) / ramp)
+            mask = Image.fromarray((weight * 255).astype(np.uint8), "L")
+        if feather_px > 0.5:
+            mask = mask.filter(ImageFilter.GaussianBlur(feather_px / 2.0))
     elif m.shape == "faces":
         mask = Image.new("L", size, 0)
         d = ImageDraw.Draw(mask)
@@ -311,10 +338,42 @@ def build_mask(size: tuple[int, int], m: MaskParams) -> Image.Image:
 
 
 # ── putting it together ───────────────────────────────────────────────────────
+DEPTH_LEVELS = 5
+
+
+def _depth_composite(rgb: Image.Image, p: BlurParams, weight: np.ndarray) -> np.ndarray:
+    """Blur that varies per pixel, for a depth of field.
+
+    Cross-fading one blurred copy against the sharp one would ghost: at a
+    half-weight pixel you would get a sharp image and a blurred image
+    superimposed, which is a double exposure, not an out-of-focus photo. So
+    several increasingly blurred versions are rendered and each pixel takes a
+    weighted pick of the two nearest, which means the blur radius genuinely
+    grows with distance. Only one level is held at a time, which matters at 4K.
+    """
+    idx = np.clip(weight[..., 0], 0.0, 1.0) * (DEPTH_LEVELS - 1)
+    out = np.zeros((rgb.height, rgb.width, 3), dtype=np.float32)
+    for level in range(DEPTH_LEVELS):
+        share = np.clip(1.0 - np.abs(idx - level), 0.0, 1.0)
+        if not share.any():
+            continue
+        layer = rgb if level == 0 else blur_image(
+            rgb, replace(p, strength=p.strength * level / (DEPTH_LEVELS - 1)))
+        out += np.asarray(layer, dtype=np.float32) * share[..., None]
+    return out
+
+
 def apply(img: Image.Image, p: BlurParams, m: MaskParams) -> Image.Image:
     """Blur ``img`` through the mask. Alpha (a cut-out's edge) is kept as is."""
     alpha = img.getchannel("A") if "A" in img.getbands() else None
     rgb = img.convert("RGB")
+    if m.shape == "depth" and m.depth is not None and p.strength > 0:
+        weight = np.asarray(build_mask(rgb.size, m), dtype=np.float32)[..., None] / 255.0
+        out = _u8(_depth_composite(rgb, p, weight))
+        if alpha is not None:
+            out = out.convert("RGBA")
+            out.putalpha(alpha)
+        return out
     full = blur_image(rgb, p)
     if m.shape == "whole" and not m.outside:
         out = full
@@ -364,6 +423,9 @@ def describe(p: BlurParams, m: MaskParams, size: tuple[int, int]) -> str:
     if shape == "faces":
         n = len(m.faces or [])
         shape = f"{n} face{'s' if n != 1 else ''}"
+    if m.shape == "depth":
+        return (f"{p.kind} · strength {p.strength:g} ({amount}) · depth of field "
+                f"focused at {m.focus:g}, {m.dof:g} deep")
     where = "whole image" if m.shape == "whole" else (
         f"{'outside' if m.outside else 'inside'} the {shape}"
         + (f", {m.feather:g}% feather" if m.feather > 0 else "")

@@ -306,6 +306,7 @@ before/after.
 upscaler blur photo.jpg --strength 40                          # whole image, gaussian
 upscaler blur photo.jpg --kind pixelate --shape faces --strength 50                   # hide every face
 upscaler blur photo.jpg --kind lens --shape faces --outside --face-pad 45             # portrait mode
+upscaler blur photo.jpg --kind lens --shape depth --focus-at 50,60 --dof 20           # real depth of field
 upscaler blur photo.jpg --kind lens --highlights 60 --shape ellipse --outside          # bokeh around a subject
 upscaler blur street.jpg --kind gaussian --shape band --h 30 --feather 20 --outside    # tilt-shift
 upscaler blur car.jpg --kind motion --angle 15 --strength 50                           # speed streaks
@@ -316,7 +317,19 @@ Eight blur kinds (`gaussian`, `box`, `motion`, `spin`, `zoom`, `lens`,
 `pixelate`, `surface`) over the whole image or through a `rectangle`,
 `ellipse`, `band`, `painted` (`--mask white-is-blur.png`) or `faces` mask,
 with feathering, `--outside` to flip the region, and a graded ramp through the
-feather. **`--shape faces` finds every face for you** — pixelate them for
+feather.
+
+**`--shape depth` is a real depth of field.** A depth model works out how far
+away every pixel is, and the blur grows with distance from whatever you focus
+on, so a distant wall softens more than a nearby one. Point at your subject
+with `--focus-at X,Y` as percentages, the way you tap a phone screen, and set
+how deep the sharp zone runs with `--dof`. In the GUI you click the depth map
+itself. Several blur levels are composited rather than cross-fading one blurred
+copy against the sharp one, which would leave a double exposure at the
+half-blurred distances. It needs the `[onnx]` extra, and the model is Depth
+Anything V2 Small, Apache-2.0, a 26 MB download.
+
+**`--shape faces` finds every face for you** — pixelate them for
 privacy, or add `--outside` with lens blur for a portrait-mode look. It needs
 OpenCV from the `[face]` extra, and works on the `adjust` command too. Strength is relative to the image's short side, so a setting looks
 the same at any resolution. The GUI's **Blur** tab has the same controls with
@@ -374,7 +387,7 @@ budget fitter, a **metadata cleaner** that shows what a photo reveals and
 strips it losslessly, a
 **Blur** toolbox (gaussian,
 motion, spin, zoom, lens bokeh, pixelate, surface — whole image, a shaped or
-tilt-shift band, a painted mask, or every detected face), a **Lian Li Screen** composer for the 8.8″ case
+tilt-shift band, a painted mask, every detected face, or a real depth of field), a **Lian Li Screen** composer for the 8.8″ case
 panel, a **Steam Showcase** tile cutter for your profile's Workshop Showcase,
 and a **Library** of everything you export. Runs
 entirely on your machine — nothing is uploaded anywhere. (PDF support uses
