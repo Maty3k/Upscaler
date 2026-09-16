@@ -18,7 +18,6 @@ def test_app_convert_methods_include_the_budget_mode():
     pytest.importorskip("gradio")
     import app
 
-    assert len(app._CONVERT_METHODS) == 4
     assert "Fit a file-size budget" in app._CONVERT_METHODS
     # the switcher returns one update per method, in order
     updates = app._switch_method(app._CONVERT_METHODS[1])

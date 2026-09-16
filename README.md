@@ -175,6 +175,33 @@ stop. The same region flags as `blur` apply any of it to just a shape, a
 graduated band, a painted mask or every detected face. The GUI's **Color & Light** tab has all of it
 with a live before/after.
 
+#### See and remove metadata (no AI)
+
+```bash
+upscaler metadata photo.jpg                      # what does this file reveal?
+upscaler metadata ./folder                       # check a whole folder, writes nothing
+upscaler metadata photo.jpg --remove             # strip it, losslessly
+upscaler metadata photo.jpg --remove --mode "remove location only"
+upscaler metadata ./folder --remove --in-place
+```
+
+Your camera writes a block of data next to the pixels that travels with the
+file: **where the photo was taken** to within a few metres, when, the camera
+and lens, the body's **serial number**, and often a small embedded copy of the
+picture that a crop may not have regenerated. Large platforms strip it on
+upload; forums, email attachments, file transfers and your own site do not.
+
+**Cleaning a JPEG or PNG here is lossless.** Re-saving through an image library
+would drop the metadata but re-compress the picture and cost quality every
+time. Instead the private segments are cut out and the compressed image data is
+copied through untouched, so the pixels come out identical byte for byte, which
+the tests assert. Other formats fall back to a re-encode and say so.
+
+Inspection is the default and never writes anything. The orientation tag is
+kept by default, since phones store some photos sideways plus a tag saying to
+rotate them, and dropping it would lay the picture on its side. In the GUI it
+is **Convert → Remove metadata (privacy)**.
+
 #### Fit a file-size budget (no AI)
 
 ```bash
@@ -343,7 +370,8 @@ dither, scanlines, glitch — twelve ready-made film looks), **Sharpen** (unshar
 high-pass, edge-aware and texture, with halo control), **Crop & Frame** (any
 aspect, straighten, lean correction, exact sizes, borders and shadows),
 **Watermark** (text or logo, in a corner or tiled), a file-size
-budget fitter, a
+budget fitter, a **metadata cleaner** that shows what a photo reveals and
+strips it losslessly, a
 **Blur** toolbox (gaussian,
 motion, spin, zoom, lens bokeh, pixelate, surface — whole image, a shaped or
 tilt-shift band, a painted mask, or every detected face), a **Lian Li Screen** composer for the 8.8″ case

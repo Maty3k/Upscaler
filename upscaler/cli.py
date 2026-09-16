@@ -1408,6 +1408,81 @@ def run_optimize(argv: list[str]) -> int:
     return 1 if (failed or over) else 0
 
 
+def build_metadata_parser() -> argparse.ArgumentParser:
+    from upscaler import metadata as md
+
+    p = argparse.ArgumentParser(
+        prog="upscaler metadata",
+        description="Show what a photo is carrying — where it was taken, when, on "
+        "which camera and serial number — and remove it. Cleaning a JPEG or PNG is "
+        "lossless: the metadata is cut out and the compressed picture is copied "
+        "through untouched. No AI.",
+    )
+    p.add_argument("input", type=Path, nargs="?", help="Image file, or a directory of images.")
+    p.add_argument(
+        "-o", "--output", type=Path,
+        help="Where to write the cleaned file(s). Default: <name>_clean.<ext> next "
+        "to the input. Only used with --remove.",
+    )
+    p.add_argument("--remove", action="store_true",
+                   help="Actually strip it. Without this the file is only inspected, "
+                   "which is why inspection is the default: it never writes anything.")
+    p.add_argument("--mode", choices=md.MODES, default=md.REMOVE_ALL,
+                   help=f"What to take out (default: {md.REMOVE_ALL}).")
+    p.add_argument("--allow-rotate", action="store_true",
+                   help="Drop the orientation tag as well. Off by default, because a "
+                   "phone photo stored sideways would then display on its side.")
+    p.add_argument("--in-place", action="store_true",
+                   help="Overwrite the original instead of writing a copy.")
+    return p
+
+
+def run_metadata(argv: list[str]) -> int:
+    from upscaler import metadata as md
+
+    args = build_metadata_parser().parse_args(argv)
+    if args.input is None or not args.input.exists():
+        print(f"error: input not found: {args.input}", file=sys.stderr)
+        return 2
+    inputs = _gather_inputs(args.input) if args.input.is_dir() else [args.input]
+    if not inputs:
+        print(f"error: no images found in {args.input}", file=sys.stderr)
+        return 2
+    if len(inputs) > 1 and args.output and args.output.suffix:
+        print("error: --output must be a directory when processing a folder", file=sys.stderr)
+        return 2
+
+    failed = found = 0
+    for src in inputs:
+        try:
+            if not args.remove:
+                report = md.read(str(src))
+                print(f"{src.name}: {md.summary(report)}")
+                if report.sensitive:
+                    found += 1
+                continue
+            res = md.strip(str(src), mode=args.mode,
+                           keep_orientation=not args.allow_rotate)
+            if args.in_place:
+                dst = src
+            elif args.output and args.output.suffix:
+                dst = args.output
+                dst.parent.mkdir(parents=True, exist_ok=True)
+            else:
+                out_dir = args.output if args.output else src.parent
+                out_dir.mkdir(parents=True, exist_ok=True)
+                dst = out_dir / f"{src.stem}_clean{src.suffix}"
+            dst.write_bytes(res.data)
+            print(f"{src.name}: {md.describe(res)} → {dst}", file=sys.stderr)
+        except (Image.UnidentifiedImageError, OSError, ValueError) as e:
+            print(f"error on {src.name}: {e}", file=sys.stderr)
+            failed += 1
+    if not args.remove and found:
+        print(f"\n{found} file(s) carry something identifying. "
+              "Re-run with --remove to strip it.", file=sys.stderr)
+    return 1 if failed else 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="upscaler",
@@ -1424,7 +1499,8 @@ def build_parser() -> argparse.ArgumentParser:
         "`upscaler sharpen photo.jpg --preset Standard` (sharpening toolbox), "
         "`upscaler crop photo.jpg --aspect 1:1 --border 6` (crop and frame), "
         "`upscaler watermark ./folder --text \"© Me\"` (signature or logo), "
-        "`upscaler optimize photo.jpg -t 500KB` (fit a file-size budget). "
+        "`upscaler optimize photo.jpg -t 500KB` (fit a file-size budget), "
+        "`upscaler metadata photo.jpg` (see what it reveals; --remove strips it). "
         "Add --face to restore faces after upscaling.",
     )
     p.add_argument(
@@ -1510,6 +1586,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_watermark(argv[1:])
     if argv and argv[0] == "optimize":
         return run_optimize(argv[1:])
+    if argv and argv[0] == "metadata":
+        return run_metadata(argv[1:])
 
     args = build_parser().parse_args(argv)
 

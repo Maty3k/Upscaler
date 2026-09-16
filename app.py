@@ -42,7 +42,8 @@ from upscaler.document import images_to_pdf, pdf_to_images
 from upscaler.deblur import Deblurrer, DeblurTooLargeError
 from upscaler.engine import (CancelledError, OutputTooLargeError, Upscaler,
                              resolve_device)
-from upscaler import fit, frame as frame_tools, optimize as opt_tools
+from upscaler import fit, frame as frame_tools, metadata as md_tools
+from upscaler import optimize as opt_tools
 from upscaler import watermark as wm_tools
 from upscaler.models.registry import (
     COLORIZE_MODELS,
@@ -771,7 +772,7 @@ def upscale_video_ui(video_path, model, out_size, sharpen, smooth, trim_start,
 
 
 _CONVERT_METHODS = ["Change image format", "Fit a file-size budget",
-                    "Images → PDF", "PDF → Images"]
+                    "Remove metadata (privacy)", "Images → PDF", "PDF → Images"]
 
 # Output-size presets for upscaling: AI-upscale with the model, then fit the
 # longest edge to this many pixels (None = leave at the model's native scale).
@@ -837,6 +838,69 @@ def _crop_preview(image, out_size, custom_size, position_pct):
 def _switch_method(choice):
     """Show only the group for the selected conversion method."""
     return tuple(gr.update(visible=choice == m) for m in _CONVERT_METHODS)
+
+
+def metadata_inspect_ui(file_obj):
+    """Report what an uploaded file is carrying.
+
+    The upload has to be a File, not an Image: Gradio decodes and re-encodes
+    an Image on the way in, which would throw the metadata away before we ever
+    saw it.
+    """
+    if not file_obj:
+        return None, gr.update(value=""), gr.update(visible=False)
+    path = file_obj if isinstance(file_obj, str) else file_obj.name
+    try:
+        report = md_tools.read(path)
+        preview = Image.open(path)
+        preview.load()
+    except (OSError, ValueError) as e:
+        return None, gr.update(value=f"⚠ Couldn't read that file: {e}"), \
+            gr.update(visible=False)
+
+    if report.is_clean:
+        text = (f"**{report.fmt} {report.size[0]}×{report.size[1]}** — "
+                "no metadata found. This file is already clean.")
+    else:
+        rows = ["| | What | Value |", "|---|---|---|"]
+        for f in report.findings:
+            rows.append(f"| {'⚠' if f.sensitive else ''} | {f.label} | {f.value} |")
+        text = (f"**{report.fmt} {report.size[0]}×{report.size[1]}** — "
+                f"{len(report.findings)} item(s), {report.metadata_bytes} bytes of "
+                f"metadata.\n\n" + "\n".join(rows))
+        if report.gps:
+            text += (f"\n\n⚠ **This photo records where it was taken:** "
+                     f"{report.gps[0]}, {report.gps[1]}")
+        if not report.lossless:
+            text += ("\n\n*This format can't be cleaned without re-encoding, so "
+                     "removing the metadata will cost a little quality.*")
+    return preview, gr.update(value=text), gr.update(visible=True)
+
+
+def metadata_strip_ui(file_obj, mode, keep_orientation, progress=gr.Progress()):
+    """Write a cleaned copy and say exactly what came out of it."""
+    if not file_obj:
+        raise gr.Error("Upload a photo to check or clean.")
+    path = file_obj if isinstance(file_obj, str) else file_obj.name
+    progress(0.3, desc="Removing metadata…")
+    try:
+        res = md_tools.strip(path, mode=mode, keep_orientation=bool(keep_orientation))
+    except (OSError, ValueError) as e:
+        raise gr.Error(str(e)) from e
+
+    stem = os.path.splitext(os.path.basename(path))[0]
+    ext = os.path.splitext(path)[1] or ".jpg"
+    out = os.path.join(_ensure_export_dir(), f"{stem}_clean{ext}")
+    with open(out, "wb") as fh:
+        fh.write(res.data)
+    library.save_path(out, "clean")  # auto-add to the Library
+
+    after = md_tools.read(res.data)
+    note = f"✅ {md_tools.describe(res)}"
+    if not after.is_clean:
+        kept = ", ".join(f.label for f in after.findings)
+        note += f"\n\nStill in the file on purpose: {kept}."
+    return out, note
 
 
 def optimize_ui(image, target, fmt, min_quality, allow_resize, max_edge,
@@ -4074,17 +4138,17 @@ def build_demo() -> gr.Blocks:
                 gr.HTML(_section_head(
                     "Convert", "Convert & Documents",
                     "Change an image's format, combine several images into a PDF, "
-                    "fit a photo under a file-size limit, combine several images "
-                    "into a PDF, or split a PDF back into images. Pick a task below "
-                    "to begin.",
+                    "fit a photo under a file-size limit, strip the metadata that "
+                    "records where a photo was taken, or build and split PDFs. Pick a "
+                    "task below to begin.",
                     icon=ICON_CONVERT,
                 ))
                 method = gr.Dropdown(
                     _CONVERT_METHODS, value=_CONVERT_METHODS[0],
                     label="What do you want to do?", filterable=False,
                     info="Pick your task: change an image's format, squeeze one under "
-                    "a size limit, build a PDF from images, or split a PDF back into "
-                    "images.",
+                    "a size limit, remove metadata such as GPS location, build a PDF "
+                    "from images, or split a PDF back into images.",
                 )
                 with gr.Accordion("Tips", open=False):
                     gr.Markdown(
@@ -4098,6 +4162,56 @@ def build_demo() -> gr.Blocks:
                         "if you'll print them.",
                         elem_classes="notes",
                     )
+
+                # -- Method C: remove metadata --
+                with gr.Column(visible=False) as grp_meta:
+                    with gr.Row(equal_height=False):
+                        with gr.Column(scale=1):
+                            # A File, not an Image: Gradio re-encodes an Image on
+                            # upload, which would strip the metadata before we
+                            # could show anyone what was in it.
+                            md_in = gr.File(
+                                label="Photo to check (the original file, not a copy)",
+                                file_count="single",
+                                file_types=["image"], elem_classes="drop",
+                            )
+                            md_preview = gr.Image(label="Preview", height=220,
+                                                  buttons=["fullscreen"],
+                                                  elem_classes=["loupe"])
+                            md_mode = gr.Radio(
+                                md_tools.MODES, value=md_tools.REMOVE_ALL,
+                                label="What to remove",
+                                info="Everything, or just the location, or everything "
+                                "except your copyright and artist name.",
+                            )
+                            md_keep_rot = gr.Checkbox(
+                                value=True, label="Keep the photo upright",
+                                info="Phones store some photos sideways plus a tag "
+                                "saying to rotate them. This keeps that one tag, which "
+                                "says nothing about you, so the picture doesn't end up "
+                                "on its side.",
+                            )
+                            md_btn = gr.Button("Remove metadata", variant="primary",
+                                               size="lg", visible=False)
+                            with gr.Accordion("What is this?", open=False):
+                                gr.Markdown(
+                                    "Your camera or phone writes a block of data next "
+                                    "to the pixels, and it travels with the file: **where "
+                                    "the photo was taken**, when, the camera and its "
+                                    "serial number, and sometimes your name.\n\n"
+                                    "Big platforms strip it when you upload. Forums, "
+                                    "email attachments, file transfers and your own "
+                                    "website do not.\n\n"
+                                    "**Cleaning a JPEG or PNG here is lossless** — the "
+                                    "metadata is cut out and the compressed picture is "
+                                    "copied through untouched, so it costs no quality "
+                                    "at all.",
+                                    elem_classes="notes",
+                                )
+                        with gr.Column(scale=1):
+                            md_report = gr.Markdown()
+                            md_file = gr.File(label="Download the cleaned file")
+                            md_result = gr.Markdown()
 
                 # -- Method B: fit a file-size budget --
                 with gr.Column(visible=False) as grp_budget:
@@ -4238,8 +4352,13 @@ def build_demo() -> gr.Blocks:
                     [opt_in, opt_target, opt_fmt, opt_minq, opt_resize, opt_maxedge],
                     [opt_out, opt_file, opt_info], show_progress_on=[opt_out],
                 )
+                md_in.change(metadata_inspect_ui, md_in,
+                             [md_preview, md_report, md_btn], show_progress="hidden")
+                md_btn.click(metadata_strip_ui, [md_in, md_mode, md_keep_rot],
+                             [md_file, md_result], show_progress_on=[md_file])
                 method.change(
-                    _switch_method, method, [grp_format, grp_budget, grp_topdf, grp_frompdf],
+                    _switch_method, method,
+                    [grp_format, grp_budget, grp_meta, grp_topdf, grp_frompdf],
                     show_progress="hidden",  # instant visibility toggle, no flash
                 )
 
