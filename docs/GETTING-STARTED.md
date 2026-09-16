@@ -124,9 +124,10 @@ Each tab is a separate tool, all local:
 |---|---|
 | **Upscale & Enhance** | Make photos larger and sharper; fix blur, denoise, restore faces |
 | **Colorize** | Add color to black-and-white photos |
-| **Remove Objects** | Paint over something (a person, a sign, a wire) and it disappears |
+| **Objects** | Paint over something (a person, a sign, a wire) and it disappears |
 | **Remove BG** | Cut out the subject, transparent background |
 | **Color & Light** | Brightness, contrast, color and black & white — with a one-click Auto |
+| **Crop** | Crop to any shape, straighten a tilted photo, add a border or a drop shadow |
 | **Sharpen** | Bring out detail four different ways, with halo control so edges stay natural |
 | **Effects** | Film looks — grain, glow, light leaks, vignette, halftone, retro dithering and glitch |
 | **Blur** | Eight kinds of blur — soft, motion, bokeh, pixelate, tilt-shift — on the whole photo, a shape, where you paint, or every face it finds |

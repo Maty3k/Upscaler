@@ -11,6 +11,7 @@ from dataclasses import replace
 from PIL import Image
 from tqdm import tqdm
 
+from upscaler import fit
 from upscaler.convert import FORMATS, convert_file, extension_for
 from upscaler.document import images_to_pdf, pdf_to_images
 from upscaler.video import upscale_video
@@ -1091,6 +1092,125 @@ def run_sharpen(argv: list[str]) -> int:
     return 1 if failed else 0
 
 
+def build_frame_parser() -> argparse.ArgumentParser:
+    from upscaler import frame
+
+    p = argparse.ArgumentParser(
+        prog="upscaler crop",
+        description="Crop, straighten and frame: any aspect ratio, tilt correction, "
+        "leaning-vertical correction, an exact output size, borders, rounded corners "
+        "and a drop shadow. No AI.",
+    )
+    p.add_argument("input", type=Path, nargs="?", help="Image file, or a directory of images.")
+    p.add_argument(
+        "-o", "--output", type=Path,
+        help="Output file (format from the extension) or a directory for a folder of "
+        "images. Default: <name>_framed.png next to the input.",
+    )
+    p.add_argument("--preset", choices=list(frame.PRESETS),
+                   help="Start from a preset, then apply any flags on top.")
+    p.add_argument("--aspect", default=None,
+                   help='Shape: a named one (e.g. "Square · 1:1") or a ratio like 16:9, '
+                   "4/5, 1200x800.")
+    p.add_argument("--mode", choices=frame.CROP_MODES, default=None,
+                   help="fill crops to the shape (default); fit keeps the whole photo "
+                   "and fills the margin.")
+    p.add_argument("--position", default=None, metavar="X,Y",
+                   help="Which part survives the crop, as percentages (default 50,50).")
+    p.add_argument("--zoom", type=float, default=None, help=f"Crop in tighter, 1..{frame.MAX_ZOOM}.")
+    p.add_argument("--straighten", type=float, default=None, metavar="DEG",
+                   help=f"Level a tilted horizon, ±{frame.MAX_STRAIGHTEN}°.")
+    p.add_argument("--rotate", type=int, choices=frame.ROTATIONS, default=None,
+                   help="Quarter turns, clockwise.")
+    p.add_argument("--flip-h", action="store_true", help="Mirror left to right.")
+    p.add_argument("--flip-v", action="store_true", help="Flip top to bottom.")
+    p.add_argument("--lean-h", type=float, default=None, metavar="N",
+                   help="Correct converging horizontals, -100..100.")
+    p.add_argument("--lean-v", type=float, default=None, metavar="N",
+                   help="Correct converging verticals, -100..100.")
+    p.add_argument("--size", default=None, metavar="WxH",
+                   help="Land on an exact pixel size, e.g. 1920x1080.")
+    p.add_argument("--border", type=float, default=None, metavar="PCT",
+                   help="Margin around the photo, %% of its short side.")
+    p.add_argument("--border-style", choices=frame.BORDER_STYLES, default=None,
+                   help="solid color, or a zoomed blurred copy of the photo.")
+    p.add_argument("--border-color", default=None, metavar="HEX", help="Border color (default #ffffff).")
+    p.add_argument("--border-blur", type=float, default=None, help="How soft the blurred fill is, 0..100.")
+    p.add_argument("--radius", type=float, default=None, metavar="PCT",
+                   help="Rounded corners, %% of the short side.")
+    p.add_argument("--shadow", type=float, default=None, help="Drop shadow 0..100 (needs a border).")
+    p.add_argument("-q", "--quality", type=int, default=92,
+                   help="Quality for JPEG/WebP outputs (default 92).")
+    return p
+
+
+def run_frame(argv: list[str]) -> int:
+    from upscaler import frame
+
+    args = build_frame_parser().parse_args(argv)
+    if args.input is None or not args.input.exists():
+        print(f"error: input not found: {args.input}", file=sys.stderr)
+        return 2
+    inputs = _gather_inputs(args.input) if args.input.is_dir() else [args.input]
+    if not inputs:
+        print(f"error: no images found in {args.input}", file=sys.stderr)
+        return 2
+    if len(inputs) > 1 and args.output and args.output.suffix:
+        print("error: --output must be a directory when processing a folder", file=sys.stderr)
+        return 2
+
+    p = frame.preset(args.preset) if args.preset else frame.FrameParams()
+    if args.aspect is not None:
+        # A named shape, otherwise treat it as a custom ratio.
+        if args.aspect in frame.ASPECTS:
+            p.aspect = args.aspect
+        elif frame.parse_aspect(args.aspect):
+            p.aspect, p.custom_aspect = frame.CUSTOM_ASPECT, args.aspect
+        else:
+            print(f"error: can't read the ratio {args.aspect!r} — try 16:9 or 1200x800",
+                  file=sys.stderr)
+            return 2
+    if args.position is not None:
+        try:
+            p.position_x, p.position_y = (float(v) for v in args.position.split(","))
+        except ValueError:
+            print("error: --position must be X,Y percentages, e.g. 50,30", file=sys.stderr)
+            return 2
+    for flag, field in (("mode", "crop_mode"), ("zoom", "zoom"), ("straighten", "straighten"),
+                        ("rotate", "rotate"), ("lean_h", "keystone_h"), ("lean_v", "keystone_v"),
+                        ("size", "out_size"), ("border", "border"),
+                        ("border_style", "border_style"), ("border_color", "border_color"),
+                        ("border_blur", "border_blur"), ("radius", "corner_radius"),
+                        ("shadow", "shadow")):
+        value = getattr(args, flag)
+        if value is not None:
+            setattr(p, field, value)
+    if args.flip_h:
+        p.flip_h = True
+    if args.flip_v:
+        p.flip_v = True
+    if p.out_size and not fit.parse_target(p.out_size):
+        print(f"error: can't read the size {p.out_size!r} — try 1920x1080", file=sys.stderr)
+        return 2
+
+    failed = 0
+    for src in inputs:
+        dst = _suffixed_output_path(src, args.output, "framed")
+        try:
+            with Image.open(src) as im:
+                img = im.convert("RGBA") if "A" in im.getbands() else im.convert("RGB")
+            out = frame.apply(img, p)
+            if dst.suffix.lower() in (".jpg", ".jpeg", ".bmp"):
+                out = out.convert("RGB")
+            save_kw = {"quality": args.quality} if dst.suffix.lower() in (".jpg", ".jpeg", ".webp") else {}
+            out.save(dst, **save_kw)
+            print(f"{src.name}: {frame.describe(p, img.size)} → {dst}", file=sys.stderr)
+        except (Image.UnidentifiedImageError, OSError, ValueError) as e:
+            print(f"error on {src.name}: {e}", file=sys.stderr)
+            failed += 1
+    return 1 if failed else 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="upscaler",
@@ -1104,7 +1224,8 @@ def build_parser() -> argparse.ArgumentParser:
         "`upscaler blur photo.jpg --kind lens --shape ellipse --outside` (blur toolbox), "
         "`upscaler adjust photo.jpg --auto` (color and light), "
         "`upscaler effects photo.jpg --look \"Film grain\"` (effects and film looks), "
-        "`upscaler sharpen photo.jpg --preset Standard` (sharpening toolbox). "
+        "`upscaler sharpen photo.jpg --preset Standard` (sharpening toolbox), "
+        "`upscaler crop photo.jpg --aspect 1:1 --border 6` (crop and frame). "
         "Add --face to restore faces after upscaling.",
     )
     p.add_argument(
@@ -1184,6 +1305,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_effects(argv[1:])
     if argv and argv[0] == "sharpen":
         return run_sharpen(argv[1:])
+    if argv and argv[0] == "crop":
+        return run_frame(argv[1:])
 
     args = build_parser().parse_args(argv)
 

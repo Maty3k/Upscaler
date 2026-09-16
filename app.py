@@ -42,7 +42,7 @@ from upscaler.document import images_to_pdf, pdf_to_images
 from upscaler.deblur import Deblurrer, DeblurTooLargeError
 from upscaler.engine import (CancelledError, OutputTooLargeError, Upscaler,
                              resolve_device)
-from upscaler import fit
+from upscaler import fit, frame as frame_tools
 from upscaler.models.registry import (
     COLORIZE_MODELS,
     DEBLUR_MODELS,
@@ -1498,6 +1498,83 @@ def effects_apply_ui(image, *vals, progress=gr.Progress()):
     return (img, out), path, f"✅ {effects.describe(p, m)} · {out.width}×{out.height}px PNG"
 
 
+# ── Crop & frame ──────────────────────────────────────────────────────────────
+_FRAME_FIELDS = [
+    "rotate", "flip_h", "flip_v", "keystone_h", "keystone_v", "straighten",
+    "aspect", "custom_aspect", "crop_mode", "position_x", "position_y", "zoom",
+    "out_size", "border", "border_style", "border_color", "border_blur",
+    "corner_radius", "shadow",
+]
+_FRAME_TEXT = {"aspect", "custom_aspect", "crop_mode", "out_size", "border_style",
+               "border_color"}
+_FRAME_BOOL = {"flip_h", "flip_v"}
+
+
+def _frame_params(*vals):
+    kw = {}
+    for name, value in zip(_FRAME_FIELDS, vals):
+        if name in _FRAME_TEXT:
+            kw[name] = "" if value is None else str(value)
+        elif name in _FRAME_BOOL:
+            kw[name] = bool(value)
+        elif name == "rotate":
+            kw[name] = int(value or 0)
+        else:
+            kw[name] = float(value)
+    return frame_tools.FrameParams(**kw)
+
+
+def _frame_vis(aspect, border, border_style):
+    """Only the controls that can do anything are shown."""
+    has_ratio = aspect not in (frame_tools.DEFAULT_ASPECT,)
+    solid = border > 0 and border_style == "solid"
+    fill = (border > 0 or aspect != frame_tools.DEFAULT_ASPECT) and border_style == "blurred photo"
+    return (
+        gr.update(visible=aspect == frame_tools.CUSTOM_ASPECT),   # custom ratio box
+        gr.update(visible=has_ratio),                             # fill / fit
+        gr.update(visible=solid),                                 # border colour
+        gr.update(visible=fill),                                  # blur amount
+    )
+
+
+def frame_preview_ui(image, *vals):
+    """The framed result at preview size, plus what it will come out as."""
+    if image is None:
+        return None, gr.update(value="")
+    img = image if isinstance(image, Image.Image) else Image.fromarray(image)
+    p = _frame_params(*vals)
+    try:
+        out = frame_tools.preview(img, p)
+        w, h = frame_tools.result_size(img.size, p)
+    except (ValueError, OSError) as e:
+        return None, gr.update(value=f"⚠ {e}")
+    return out, gr.update(value=f"**{img.width}×{img.height}** → **{w}×{h}** · "
+                                f"{frame_tools.describe(p)}")
+
+
+def frame_preset_ui(name):
+    p = frame_tools.preset(name)
+    return tuple(getattr(p, f) for f in _FRAME_FIELDS)
+
+
+def frame_apply_ui(image, *vals, progress=gr.Progress()):
+    if image is None:
+        raise gr.Error("Upload a photo to crop or frame.")
+    img = image if isinstance(image, Image.Image) else Image.fromarray(image)
+    p = _frame_params(*vals)
+    progress(0.3, desc="Rendering at full size…")
+    try:
+        out = frame_tools.apply(img, p)
+    except ValueError as e:
+        raise gr.Error(str(e)) from e
+    progress(0.9, desc="Saving PNG…")
+    fd, path = tempfile.mkstemp(dir=_ensure_export_dir(), suffix=".png")
+    os.close(fd)
+    out.save(path, "PNG")
+    library.save_path(path, "frame")  # auto-add to the Library
+    return out, path, f"✅ {frame_tools.describe(p, img.size)}"
+
+
 # ── Sharpen ───────────────────────────────────────────────────────────────────
 _SHARPEN_FIELDS = [
     "kind", "amount", "radius", "threshold", "halo", "luminance_only",
@@ -2208,6 +2285,7 @@ ICON_PANEL = _svg('<rect x="2" y="8" width="20" height="8" rx="1.5"/>'
 ICON_LIGHT = _svg('<circle cx="12" cy="12" r="4.5"/><path d="M12 2v2.5M12 19.5V22'
                   'M2 12h2.5M19.5 12H22M4.9 4.9l1.8 1.8M17.3 17.3l1.8 1.8'
                   'M19.1 4.9l-1.8 1.8M6.7 17.3l-1.8 1.8"/>')
+ICON_CROP = _svg('<path d="M6.5 2v15.5H22"/><path d="M2 6.5h15.5V22"/>')
 ICON_SHARP = _svg('<path d="M12 3.5 20.5 20.5 12 16 3.5 20.5z"/>')
 ICON_FX = _svg('<rect x="2.5" y="5" width="19" height="14" rx="2"/>'
                '<path d="M2.5 9h3M2.5 15h3M18.5 9h3M18.5 15h3M9 5v14M15 5v14"/>')
@@ -2650,7 +2728,7 @@ def build_demo() -> gr.Blocks:
                         col_info = gr.Markdown()
 
             # ---- Tab: Remove objects / inpaint (LaMa) ----
-            with gr.Tab("Remove Objects"):
+            with gr.Tab("Objects"):
                 gr.HTML(_section_head(
                     "Erase", "Remove Objects",
                     "Paint over anything you want gone — a photobomber, a sign, a "
@@ -3323,6 +3401,154 @@ def build_demo() -> gr.Blocks:
                         )
                         bl_file = gr.File(label="Download PNG")
                         bl_info = gr.Markdown()
+
+            # ---- Tab: Crop & frame (no AI) ----
+            with gr.Tab("Crop"):
+                gr.HTML(_section_head(
+                    "Geometry", "Crop & Frame",
+                    "Crop to any shape, straighten a tilted horizon, fix leaning "
+                    "verticals, land on an exact pixel size, and add a border, "
+                    "rounded corners or a drop shadow. Nothing here is guesswork — "
+                    "a straighten or a lean is trimmed back to real pixels, never "
+                    "leaving empty corners.",
+                    icon=ICON_CROP,
+                ))
+                with gr.Row(equal_height=False):
+                    with gr.Column(scale=1):
+                        fr_in = gr.Image(
+                            label="Input", type="pil", image_mode=None,
+                            sources=["upload", "clipboard"], height=300,
+                            elem_classes="drop", buttons=["download", "fullscreen"],
+                        )
+                        fr_preset = gr.Dropdown(
+                            frame_tools.PRESET_NAMES, value=frame_tools.PRESET_NONE,
+                            label="Preset", filterable=False,
+                            info="Common shapes and frames. Everything stays editable "
+                            "afterwards; 'None' clears it.",
+                        )
+                        with gr.Accordion("Crop", open=True):
+                            fr_aspect = gr.Dropdown(
+                                list(frame_tools.ASPECTS), value=frame_tools.DEFAULT_ASPECT,
+                                label="Shape", filterable=False,
+                                info="The aspect ratio to crop to. 'Original' keeps the "
+                                "photo's own shape.",
+                            )
+                            fr_custom = gr.Textbox(
+                                label="Custom ratio", value="", visible=False,
+                                placeholder="16:10",
+                                info="Any ratio — 16:10, 5/4, or a size like 1200x800.",
+                            )
+                            fr_mode = gr.Radio(
+                                frame_tools.CROP_MODES, value="fill", label="How to fit",
+                                visible=False,
+                                info="fill crops the photo to the shape · fit keeps the "
+                                "whole photo and fills the margin instead, so nothing is "
+                                "cut off.",
+                            )
+                            with gr.Row():
+                                fr_px = gr.Slider(0, 100, value=50, step=1, label="Position X (%)",
+                                                  info="Which part survives a crop that "
+                                                  "trims the sides.")
+                                fr_py = gr.Slider(0, 100, value=50, step=1, label="Position Y (%)",
+                                                  info="Which part survives a crop that "
+                                                  "trims top and bottom.")
+                            fr_zoom = gr.Slider(
+                                1, frame_tools.MAX_ZOOM, value=1, step=0.05, label="Zoom",
+                                info="Crop in tighter than the largest box that fits.",
+                            )
+                        with gr.Accordion("Straighten & rotate", open=False):
+                            fr_straighten = gr.Slider(
+                                -frame_tools.MAX_STRAIGHTEN, frame_tools.MAX_STRAIGHTEN,
+                                value=0, step=0.1, label="Straighten (°)",
+                                info="Level a tilted horizon. The frame is trimmed to "
+                                "the largest rectangle with no empty corners.",
+                            )
+                            fr_rotate = gr.Radio(
+                                frame_tools.ROTATIONS, value=0, label="Rotate (°)",
+                                info="Quarter turns, clockwise.",
+                            )
+                            with gr.Row():
+                                fr_fliph = gr.Checkbox(value=False, label="Mirror left ↔ right")
+                                fr_flipv = gr.Checkbox(value=False, label="Flip top ↕ bottom")
+                            with gr.Row():
+                                fr_kh = gr.Slider(
+                                    -100, 100, value=0, step=1, label="Lean horizontally",
+                                    info="Straightens converging horizontals — a wall "
+                                    "shot from an angle.",
+                                )
+                                fr_kv = gr.Slider(
+                                    -100, 100, value=0, step=1, label="Lean vertically",
+                                    info="Straightens converging verticals — a building "
+                                    "shot from below.",
+                                )
+                        with gr.Accordion("Frame", open=False):
+                            fr_border = gr.Slider(
+                                0, 40, value=0, step=0.5, label="Border (%)",
+                                info="A margin around the photo, as a share of its short "
+                                "side.",
+                            )
+                            fr_style = gr.Radio(
+                                frame_tools.BORDER_STYLES, value="solid", label="Fill",
+                                info="A flat color, or a zoomed blurred copy of the photo "
+                                "itself.",
+                            )
+                            fr_color = gr.ColorPicker(value="#ffffff", label="Border color",
+                                                      info="The color of the margin.")
+                            fr_blur = gr.Slider(
+                                0, 100, value=60, step=1, label="Fill blur", visible=False,
+                                info="How soft the blurred-photo fill is.",
+                            )
+                            fr_radius = gr.Slider(
+                                0, 50, value=0, step=0.5, label="Rounded corners (%)",
+                                info="Rounds the photo's corners. Without a border the "
+                                "corners come out transparent.",
+                            )
+                            fr_shadow = gr.Slider(
+                                0, 100, value=0, step=1, label="Drop shadow",
+                                info="A soft shadow under the photo. It needs a border "
+                                "to fall on.",
+                            )
+                        fr_size = gr.Textbox(
+                            label="Exact output size (optional)", value="",
+                            placeholder="1920x1080",
+                            info="Land on an exact pixel size. The photo is cropped to "
+                            "that shape first, then resampled.",
+                        )
+                        with gr.Accordion("Tips", open=False):
+                            gr.Markdown(
+                                "* **'fit' instead of 'fill'** when a crop would cut "
+                                "something important — the whole photo goes in and the "
+                                "margin gets a blurred copy of it.\n"
+                                "* **Straighten before cropping**: the crop is taken "
+                                "from the levelled frame, so you don't lose it twice.\n"
+                                "* **Leaning verticals** on a building shot from below: "
+                                "pull 'lean vertically' until the edges are parallel.\n"
+                                "* **A drop shadow needs a border** — that's the space "
+                                "it falls on.\n"
+                                "* **For a wallpaper**, pick the shape and type the "
+                                "exact size; upscale first if the photo is small.\n"
+                                "* **Rounded corners with no border** give a transparent "
+                                "PNG you can drop onto anything.",
+                                elem_classes="notes",
+                            )
+                        with gr.Row():
+                            fr_btn = gr.Button("Apply (full size)", variant="primary",
+                                               size="lg", scale=3)
+                            fr_use = gr.Button("↪ Use as input", variant="secondary", scale=2)
+                            fr_clear = gr.Button("↺ Clear", variant="secondary", scale=1)
+                    with gr.Column(scale=1, elem_classes="sticky-col"):
+                        fr_preview = gr.Image(
+                            label="Preview", height=380, buttons=["fullscreen"],
+                            elem_classes=["loupe"],
+                        )
+                        fr_note = gr.Markdown(elem_classes="notes")
+                        fr_out = gr.Image(
+                            label="Result at full size", height=340,
+                            buttons=["download", "fullscreen"], elem_classes=["loupe"],
+                            type="pil", interactive=False,
+                        )
+                        fr_file = gr.File(label="Download PNG")
+                        fr_info = gr.Markdown()
 
             # ---- Tab: Sharpen (no AI) ----
             with gr.Tab("Sharpen"):
@@ -4676,6 +4902,31 @@ def build_demo() -> gr.Blocks:
         bl_use.click(lambda pair: (pair[1] if pair else None), bl_out, bl_in)
         bl_clear.click(lambda: (None, None, None, None, None), None,
                        [bl_in, bl_preview, bl_out, bl_file, bl_info])
+
+        # ---- Crop & frame wiring ----
+        _fr_controls = [fr_rotate, fr_fliph, fr_flipv, fr_kh, fr_kv, fr_straighten,
+                        fr_aspect, fr_custom, fr_mode, fr_px, fr_py, fr_zoom,
+                        fr_size, fr_border, fr_style, fr_color, fr_blur,
+                        fr_radius, fr_shadow]      # order must match _FRAME_FIELDS
+        _fr_inputs = [fr_in] + _fr_controls
+        _fr_vis_out = [fr_custom, fr_mode, fr_color, fr_blur]
+        for _c in (fr_aspect, fr_border, fr_style):
+            _c.change(_frame_vis, [fr_aspect, fr_border, fr_style], _fr_vis_out,
+                      show_progress="hidden")
+        fr_in.change(frame_preview_ui, _fr_inputs, [fr_preview, fr_note],
+                     show_progress="hidden")
+        for _c in _fr_controls:
+            _c.change(frame_preview_ui, _fr_inputs, [fr_preview, fr_note],
+                      show_progress="hidden", trigger_mode="always_last")
+        fr_preset.input(frame_preset_ui, fr_preset, _fr_controls, show_progress="hidden") \
+            .then(_frame_vis, [fr_aspect, fr_border, fr_style], _fr_vis_out,
+                  show_progress="hidden") \
+            .then(frame_preview_ui, _fr_inputs, [fr_preview, fr_note], show_progress="hidden")
+        fr_btn.click(frame_apply_ui, _fr_inputs, [fr_out, fr_file, fr_info],
+                     show_progress_on=[fr_out])
+        fr_use.click(lambda im: im, fr_out, fr_in)
+        fr_clear.click(lambda: (None, None, None, None, None), None,
+                       [fr_in, fr_preview, fr_out, fr_file, fr_info])
 
         # ---- Sharpen wiring ----
         _sh_controls = [sh_kind, sh_amount, sh_radius, sh_threshold, sh_halo, sh_lum,

@@ -175,6 +175,26 @@ stop. The same region flags as `blur` apply any of it to just a shape, a
 graduated band, a painted mask or every detected face. The GUI's **Color & Light** tab has all of it
 with a live before/after.
 
+#### Crop & frame (no AI)
+
+```bash
+upscaler crop photo.jpg --aspect 1:1                        # square, centred
+upscaler crop photo.jpg --aspect 9:16 --mode fit --border-style "blurred photo"
+upscaler crop photo.jpg --straighten 4 --lean-v 30          # level it, fix leaning walls
+upscaler crop photo.jpg --preset Polaroid                   # white mat + drop shadow
+upscaler crop photo.jpg --size 2560x1440 --aspect 16:9      # exact wallpaper
+upscaler crop ./folder -o ./out --aspect 4:5 --position 50,30
+```
+
+Crop to a named shape or any ratio, choose what survives with `--position`,
+zoom in further, straighten a tilted horizon, and correct converging verticals
+or horizontals. A straighten or a lean is **trimmed back to the largest
+rectangle of real pixels**, so it never leaves empty corners. `--mode fit`
+keeps the whole photo and fills the margin instead of cropping, with a solid
+colour or a zoomed blurred copy of the photo. Then a border, rounded corners,
+a drop shadow, and an exact output size. Ten presets cover the common posts,
+mats and wallpapers.
+
 #### Sharpen (no AI)
 
 ```bash
@@ -282,7 +302,8 @@ Documents** (formats + image ⇄ PDF), **Batch**, **Color & Light** (exposure,
 contrast, white balance, vibrance, black & white, with one-click Auto),
 **Effects** (grain, halation, light leaks, vignette, duotone, halftone,
 dither, scanlines, glitch — twelve ready-made film looks), **Sharpen** (unsharp,
-high-pass, edge-aware and texture, with halo control), a
+high-pass, edge-aware and texture, with halo control), **Crop & Frame** (any
+aspect, straighten, lean correction, exact sizes, borders and shadows), a
 **Blur** toolbox (gaussian,
 motion, spin, zoom, lens bokeh, pixelate, surface — whole image, a shaped or
 tilt-shift band, a painted mask, or every detected face), a **Lian Li Screen** composer for the 8.8″ case
