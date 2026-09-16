@@ -155,6 +155,25 @@ upscaler pdf extract in.pdf -o ./pages --dpi 200  # PDF pages → PNGs
 upscaler pdf extract in.pdf                        # → ./in_pages/ next to the PDF
 ```
 
+#### Blur (no AI)
+
+```bash
+upscaler blur photo.jpg --strength 40                          # whole image, gaussian
+upscaler blur photo.jpg --kind pixelate --shape ellipse --x 62 --y 30 --w 18 --h 28   # hide a face
+upscaler blur photo.jpg --kind lens --highlights 60 --shape ellipse --outside          # bokeh around a subject
+upscaler blur street.jpg --kind gaussian --shape band --h 30 --feather 20 --outside    # tilt-shift
+upscaler blur car.jpg --kind motion --angle 15 --strength 50                           # speed streaks
+upscaler blur ./folder -o ./out --kind surface --strength 20                           # smooth skin/noise, keep edges
+```
+
+Eight blur kinds (`gaussian`, `box`, `motion`, `spin`, `zoom`, `lens`,
+`pixelate`, `surface`) over the whole image or through a `rectangle`,
+`ellipse`, `band` or `painted` mask (`--mask white-is-blur.png`), with
+feathering, `--outside` to flip the region, and a graded ramp through the
+feather. Strength is relative to the image's short side, so a setting looks
+the same at any resolution. The GUI's **Blur** tab has the same controls with
+a live before/after preview and a brush for painted masks.
+
 #### Steam Workshop Showcase tiles
 
 ```bash
@@ -196,9 +215,11 @@ upscaler-gui             # opens the app in your browser (http://127.0.0.1:7860)
 A full local web app with a tab per tool: **Upscale & Enhance** (with deblur /
 denoise, JPEG de-blocking, face restore), **Colorize** (DDColor), **Remove
 Objects** (LaMa inpainting), **Remove BG**, **Video** upscaling, **Convert &
-Documents** (formats + image ⇄ PDF), **Batch**, a **Lian Li Screen** composer
-for the 8.8″ case panel, a **Steam Showcase** tile cutter for your profile's
-Workshop Showcase, and a **Library** of everything you export. Runs
+Documents** (formats + image ⇄ PDF), **Batch**, a **Blur** toolbox (gaussian,
+motion, spin, zoom, lens bokeh, pixelate, surface — whole image or through a
+shaped, band or painted mask), a **Lian Li Screen** composer for the 8.8″ case
+panel, a **Steam Showcase** tile cutter for your profile's Workshop Showcase,
+and a **Library** of everything you export. Runs
 entirely on your machine — nothing is uploaded anywhere. (PDF support uses
 `pypdfium2`, included in the `.[gui]` extra or installable on its own via
 `.[pdf]`.)

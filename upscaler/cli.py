@@ -626,6 +626,104 @@ def run_steam(argv: list[str]) -> int:
     return 0 if res.fits else 1
 
 
+def build_blur_parser() -> argparse.ArgumentParser:
+    from upscaler import blur
+
+    p = argparse.ArgumentParser(
+        prog="upscaler blur",
+        description="Blur a photo (no AI): gaussian, box, motion, spin, zoom, lens "
+        "bokeh, pixelate or surface blur, over the whole image or through a "
+        "rectangle / ellipse / band / painted mask with feathering.",
+    )
+    p.add_argument("input", type=Path, nargs="?", help="Image file, or a directory of images.")
+    p.add_argument(
+        "-o", "--output", type=Path,
+        help="Output file (format from the extension) or a directory for a folder "
+        "of images. Default: <name>_blur.png next to the input.",
+    )
+    p.add_argument("--kind", choices=blur.KINDS, default="gaussian", help="Blur type (default gaussian).")
+    p.add_argument(
+        "--strength", type=float, default=30.0,
+        help="0-100, relative to the image's short side (100 = a radius of 10%% of it). Default 30.",
+    )
+    p.add_argument("--angle", type=float, default=0.0, help="motion: streak direction in degrees (0 = horizontal).")
+    p.add_argument("--center", default="50,50", metavar="X,Y", help="spin/zoom: centre as %% of width,height (default 50,50).")
+    p.add_argument("--highlights", type=float, default=0.0, help="lens: bokeh highlight bloom 0-100.")
+    p.add_argument("--threshold", type=float, default=25.0, help="surface: edge protection 0-100 (default 25).")
+    p.add_argument("--shape", choices=blur.SHAPES, default="whole", help="Where to blur (default whole).")
+    p.add_argument("--x", type=float, default=50.0, help="Shape centre X, %% of width.")
+    p.add_argument("--y", type=float, default=50.0, help="Shape centre Y, %% of height.")
+    p.add_argument("--w", type=float, default=50.0, help="Rectangle/ellipse width, %% of width.")
+    p.add_argument("--h", type=float, default=50.0, help="Rectangle/ellipse height or band thickness, %% of height.")
+    p.add_argument("--mask-angle", type=float, default=0.0, help="band: tilt in degrees.")
+    p.add_argument("--roundness", type=float, default=0.0, help="rectangle: corner rounding 0-100.")
+    p.add_argument("--feather", type=float, default=10.0, help="Edge softness, %% of the short side (default 10).")
+    p.add_argument("--outside", action="store_true", help="Blur outside the shape (tilt-shift = --shape band --outside).")
+    p.add_argument("--no-progressive", action="store_true", help="Cross-fade one blur instead of ramping half → full through the feather.")
+    p.add_argument("--mask", type=Path, help="Painted mask image (white = blur) for --shape painted.")
+    p.add_argument("-q", "--quality", type=int, default=92, help="Quality for JPEG/WebP outputs (default 92).")
+    return p
+
+
+def _blur_output_path(src: Path, out: Path | None) -> Path:
+    if out and out.suffix:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        return out
+    out_dir = out if out else src.parent
+    out_dir.mkdir(parents=True, exist_ok=True)
+    return out_dir / f"{src.stem}_blur.png"
+
+
+def run_blur(argv: list[str]) -> int:
+    from upscaler import blur
+
+    args = build_blur_parser().parse_args(argv)
+    if args.input is None or not args.input.exists():
+        print(f"error: input not found: {args.input}", file=sys.stderr)
+        return 2
+    inputs = _gather_inputs(args.input) if args.input.is_dir() else [args.input]
+    if not inputs:
+        print(f"error: no images found in {args.input}", file=sys.stderr)
+        return 2
+    if len(inputs) > 1 and args.output and args.output.suffix:
+        print("error: --output must be a directory when processing a folder", file=sys.stderr)
+        return 2
+    try:
+        cx, cy = (float(v) for v in args.center.split(","))
+    except ValueError:
+        print("error: --center must be X,Y (percent), e.g. 50,50", file=sys.stderr)
+        return 2
+    painted = None
+    if args.mask:
+        if not args.mask.is_file():
+            print(f"error: mask not found: {args.mask}", file=sys.stderr)
+            return 2
+        painted = Image.open(args.mask).convert("L")
+    bp = blur.BlurParams(kind=args.kind, strength=args.strength, angle=args.angle,
+                         center_x=cx, center_y=cy, highlights=args.highlights,
+                         threshold=args.threshold)
+    mp = blur.MaskParams(shape=args.shape, x=args.x, y=args.y, w=args.w, h=args.h,
+                         angle=args.mask_angle, roundness=args.roundness, feather=args.feather,
+                         outside=args.outside, progressive=not args.no_progressive,
+                         painted=painted)
+    failed = 0
+    for src in inputs:
+        dst = _blur_output_path(src, args.output)
+        try:
+            with Image.open(src) as im:
+                img = im.convert("RGBA") if "A" in im.getbands() else im.convert("RGB")
+            out = blur.apply(img, bp, mp)
+            if dst.suffix.lower() in (".jpg", ".jpeg", ".bmp"):
+                out = out.convert("RGB")
+            save_kw = {"quality": args.quality} if dst.suffix.lower() in (".jpg", ".jpeg", ".webp") else {}
+            out.save(dst, **save_kw)
+            print(f"{src.name}: {blur.describe(bp, mp, img.size)} → {dst}", file=sys.stderr)
+        except (Image.UnidentifiedImageError, OSError, ValueError) as e:
+            print(f"error on {src.name}: {e}", file=sys.stderr)
+            failed += 1
+    return 1 if failed else 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="upscaler",
@@ -635,7 +733,8 @@ def build_parser() -> argparse.ArgumentParser:
         "`upscaler video in.mp4 -o out.mp4`, "
         "`upscaler removebg <input> -o out.png`, "
         "`upscaler batch <dir> -o <dir> --op upscale|convert|removebg`, "
-        "`upscaler steam clip.mp4 -o <dir>` (Steam Workshop Showcase tiles). "
+        "`upscaler steam clip.mp4 -o <dir>` (Steam Workshop Showcase tiles), "
+        "`upscaler blur photo.jpg --kind lens --shape ellipse --outside` (blur toolbox). "
         "Add --face to restore faces after upscaling.",
     )
     p.add_argument(
@@ -707,6 +806,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_batch(argv[1:])
     if argv and argv[0] == "steam":
         return run_steam(argv[1:])
+    if argv and argv[0] == "blur":
+        return run_blur(argv[1:])
 
     args = build_parser().parse_args(argv)
 

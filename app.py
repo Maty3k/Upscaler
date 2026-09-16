@@ -35,7 +35,7 @@ import gradio as gr
 import numpy as np
 from PIL import Image, ImageDraw, ImageEnhance
 
-from upscaler import background, config, library, manage, panel, steam
+from upscaler import background, blur, config, library, manage, panel, steam
 from upscaler.convert import FORMATS, convert, extension_for
 from upscaler.document import images_to_pdf, pdf_to_images
 from upscaler.deblur import Deblurrer, DeblurTooLargeError
@@ -1318,6 +1318,104 @@ def steam_export_ui(media, fit, zoom, off_x, off_y, bg_color, transparent, tile_
     return gallery, zpath, msg
 
 
+# ── Blur toolbox ──────────────────────────────────────────────────────────────
+_BLUR_KIND_INFO = {
+    "gaussian": "Soft, natural blur.",
+    "box": "Flat average — harsher, cheap-camera look.",
+    "motion": "Streaks along a direction, like camera shake or a moving subject.",
+    "spin": "Rotation blur around a centre point.",
+    "zoom": "Radial streaks out of a centre point.",
+    "lens": "Disc-shaped bokeh; add highlight bloom for bright discs.",
+    "pixelate": "Mosaic squares — the privacy blur.",
+    "surface": "Edge-preserving smoothing: softens skin and noise, keeps edges.",
+}
+
+
+def _blur_kind_vis(kind):
+    """Show only the controls the chosen blur kind uses."""
+    return (
+        gr.update(visible=kind == "motion"),
+        gr.update(visible=kind in ("spin", "zoom")),
+        gr.update(visible=kind in ("spin", "zoom")),
+        gr.update(visible=kind == "lens"),
+        gr.update(visible=kind == "surface"),
+        _BLUR_KIND_INFO.get(kind, ""),
+    )
+
+
+def _blur_shape_vis(shape):
+    """Show only the region controls the chosen shape uses; a band defaults
+    to blurring outside (tilt-shift), the others to inside."""
+    box = shape in ("rectangle", "ellipse")
+    return (
+        gr.update(visible=box or shape == "band"),    # centre x
+        gr.update(visible=box or shape == "band"),    # centre y
+        gr.update(visible=box),                       # width
+        gr.update(visible=box or shape == "band",
+                  label="Band thickness (%)" if shape == "band" else "Height (%)"),
+        gr.update(visible=shape == "band"),           # band tilt
+        gr.update(visible=shape == "rectangle"),      # roundness
+        gr.update(visible=shape != "whole"),          # feather
+        gr.update(visible=shape != "whole", value=(shape == "band")),   # outside
+        gr.update(visible=shape != "whole"),          # graded
+        gr.update(visible=shape == "painted"),        # editor
+    )
+
+
+def _blur_params(kind, strength, angle, cx, cy, highlights, threshold):
+    return blur.BlurParams(kind=kind, strength=float(strength), angle=float(angle),
+                           center_x=float(cx), center_y=float(cy),
+                           highlights=float(highlights), threshold=float(threshold))
+
+
+def _mask_params(shape, x, y, w, h, mangle, roundness, feather, outside, progressive, editor):
+    painted = None
+    if shape == "painted":
+        _bg, painted = _mask_from_editor(editor)
+    return blur.MaskParams(shape=shape, x=float(x), y=float(y), w=float(w), h=float(h),
+                           angle=float(mangle), roundness=float(roundness),
+                           feather=float(feather), outside=bool(outside),
+                           progressive=bool(progressive), painted=painted)
+
+
+def _blur_split(vals):
+    """The flat control list → (BlurParams, MaskParams)."""
+    return _blur_params(*vals[:7]), _mask_params(*vals[7:])
+
+
+def blur_preview_ui(image, *vals):
+    """Live before/after at preview size (cheap: strength is relative, so it
+    looks like the export)."""
+    if image is None:
+        return None
+    img = image if isinstance(image, Image.Image) else Image.fromarray(image)
+    bp, mp = _blur_split(vals)
+    before, after = blur.preview_pair(img, bp, mp)
+    return (before, after)
+
+
+def blur_apply_ui(image, *vals, progress=gr.Progress()):
+    if image is None:
+        raise gr.Error("Upload an image to blur.")
+    img = image if isinstance(image, Image.Image) else Image.fromarray(image)
+    bp, mp = _blur_split(vals)
+    if mp.shape == "painted" and mp.painted is None:
+        raise gr.Error("Paint over the area to blur first (or pick another region shape).")
+    progress(0.2, desc="Blurring at full size…")
+    out = blur.apply(img, bp, mp)
+    progress(0.9, desc="Saving PNG…")
+    fd, path = tempfile.mkstemp(dir=_ensure_export_dir(), suffix=".png")
+    os.close(fd)
+    out.save(path, "PNG")
+    library.save_path(path, "blur")  # auto-add to the Library
+    return (img, out), path, f"✅ {blur.describe(bp, mp, img.size)} · {out.width}×{out.height}px PNG"
+
+
+def blur_on_image(image):
+    """New input → load it into the paint editor (for painted masks)."""
+    return gr.update(value=image) if image is not None else gr.update(value=None)
+
+
 _MODEL_CHOICES = [(f"{s.name}  (×{s.scale}) — {s.notes}", s.name) for s in MODELS.values()]
 _DEBLUR_CHOICES = [(f"{s.name} — {s.notes}", s.name) for s in DEBLUR_MODELS.values()]
 _FACE_CHOICES = [(f"{s.name} — {s.notes}", s.name) for s in FACE_MODELS.values()]
@@ -1843,6 +1941,8 @@ ICON_PDF = _svg('<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 '
                 '2-2V8z"/><path d="M14 3v5h5"/>')
 ICON_PANEL = _svg('<rect x="2" y="8" width="20" height="8" rx="1.5"/>'
                   '<path d="M6 12h.01M9 12h.01"/>')
+ICON_BLUR = _svg('<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4.5"/>'
+                 '<path d="M12 3v2M12 19v2M3 12h2M19 12h2"/>')
 ICON_STEAM = _svg('<rect x="1.5" y="8" width="3.4" height="8" rx=".8"/>'
                   '<rect x="5.8" y="8" width="3.4" height="8" rx=".8"/>'
                   '<rect x="10.1" y="8" width="3.4" height="8" rx=".8"/>'
@@ -2375,6 +2475,136 @@ def build_demo() -> gr.Blocks:
                         )
                         bg_file = gr.File(label="Download transparent PNG")
                         bg_info = gr.Markdown()
+
+            # ---- Tab: Blur toolbox (no AI) ----
+            with gr.Tab("Blur"):
+                gr.HTML(_section_head(
+                    "Blur", "Blur toolbox",
+                    "Eight kinds of blur — soft, motion, spin, zoom, lens bokeh, "
+                    "pixelate, edge-keeping surface blur — over the whole photo or "
+                    "just a shape, a tilt-shift band or wherever you paint, with "
+                    "feathered edges and a live before / after.",
+                    icon=ICON_BLUR,
+                ))
+                with gr.Row(equal_height=False):
+                    with gr.Column(scale=1):
+                        bl_in = gr.Image(
+                            label="Input", type="pil", image_mode=None,
+                            sources=["upload", "clipboard"], height=300,
+                            elem_classes="drop", buttons=["download", "fullscreen"],
+                        )
+                        bl_kind = gr.Radio(
+                            blur.KINDS, value="gaussian", label="Blur type",
+                            info=_BLUR_KIND_INFO["gaussian"],
+                        )
+                        bl_strength = gr.Slider(
+                            0, 100, value=30, step=1, label="Strength",
+                            info="Relative to the picture: 100 = a radius of 10% of "
+                            "its short side, so it looks the same at any resolution.",
+                        )
+                        bl_angle = gr.Slider(
+                            0, 180, value=0, step=1, label="Direction (°)", visible=False,
+                            info="Which way the streaks run — 0 = horizontal, 90 = vertical.",
+                        )
+                        with gr.Row():
+                            bl_cx = gr.Slider(0, 100, value=50, step=1, label="Centre X (%)",
+                                              visible=False, info="Where the spin / zoom radiates from.")
+                            bl_cy = gr.Slider(0, 100, value=50, step=1, label="Centre Y (%)",
+                                              visible=False, info="Where the spin / zoom radiates from.")
+                        bl_highlights = gr.Slider(
+                            0, 100, value=0, step=1, label="Highlight bloom", visible=False,
+                            info="Lifts bright points into glowing discs, like a real lens.",
+                        )
+                        bl_threshold = gr.Slider(
+                            0, 100, value=25, step=1, label="Edge protection", visible=False,
+                            info="How strong an edge must be to stay sharp — lower keeps "
+                            "more detail, higher smooths more.",
+                        )
+                        with gr.Accordion("Where to blur", open=True):
+                            bl_shape = gr.Radio(
+                                blur.SHAPES, value="whole", label="Region",
+                                info="whole = everything · rectangle / ellipse = a shape "
+                                "you position · band = a straight strip (tilt-shift) · "
+                                "painted = wherever you brush.",
+                            )
+                            with gr.Row():
+                                bl_x = gr.Slider(0, 100, value=50, step=1, label="Centre X (%)",
+                                                 visible=False, info="Shape position.")
+                                bl_y = gr.Slider(0, 100, value=50, step=1, label="Centre Y (%)",
+                                                 visible=False, info="Shape position.")
+                            with gr.Row():
+                                bl_w = gr.Slider(1, 100, value=50, step=1, label="Width (%)",
+                                                 visible=False, info="Shape size.")
+                                bl_h = gr.Slider(1, 100, value=50, step=1, label="Height (%)",
+                                                 visible=False, info="Shape size, or how thick the band is.")
+                            bl_mangle = gr.Slider(
+                                -90, 90, value=0, step=1, label="Band tilt (°)", visible=False,
+                                info="Rotate the strip — 0 = horizontal.",
+                            )
+                            bl_round = gr.Slider(
+                                0, 100, value=0, step=1, label="Corner roundness (%)", visible=False,
+                                info="0 = sharp corners, 100 = a pill.",
+                            )
+                            bl_feather = gr.Slider(
+                                0, 50, value=10, step=0.5, label="Feather (%)", visible=False,
+                                info="How soft the edge of the region is, relative to the "
+                                "picture's short side.",
+                            )
+                            with gr.Row():
+                                bl_outside = gr.Checkbox(
+                                    value=False, label="Blur outside the shape", visible=False,
+                                    info="Keep the shape sharp and blur everything else "
+                                    "(tilt-shift, focus on a subject).",
+                                )
+                                bl_progressive = gr.Checkbox(
+                                    value=True, label="Graded edge", visible=False,
+                                    info="Ramp the blur up through the feather (half → full) "
+                                    "instead of cross-fading one blur — smoother tilt-shift.",
+                                )
+                            bl_editor = gr.ImageEditor(
+                                label="Paint where to blur", type="pil", height=360,
+                                sources=[], layers=False, transforms=(), visible=False,
+                                brush=gr.Brush(colors=["#ffffff"], color_mode="fixed",
+                                               default_size=40),
+                            )
+                        with gr.Accordion("Tips", open=False):
+                            gr.Markdown(
+                                "* **Hide a face or a plate:** pixelate + ellipse, "
+                                "strength 50+, a little feather.\n"
+                                "* **Tilt-shift / miniature look:** gaussian or lens + "
+                                "band, tick 'blur outside', feather 15–25, graded edge on.\n"
+                                "* **Make the subject pop:** lens with some highlight "
+                                "bloom + ellipse around the subject, 'blur outside'.\n"
+                                "* **Speed:** motion blur along the direction of travel, "
+                                "with the subject painted out (painted region + 'blur "
+                                "outside').\n"
+                                "* **Smooth skin or noise without mush:** surface blur, "
+                                "strength 15–30, then raise edge protection until edges "
+                                "come back.\n"
+                                "* **Stack effects:** apply, then 'Use result as input' "
+                                "and blur another region.",
+                                elem_classes="notes",
+                            )
+                        with gr.Row():
+                            bl_btn = gr.Button("Apply blur (full size)", variant="primary",
+                                               size="lg", scale=3)
+                            bl_use = gr.Button("↪ Use as input", variant="secondary", scale=2)
+                            bl_clear = gr.Button("↺ Clear", variant="secondary", scale=1)
+                    with gr.Column(scale=1, elem_classes="sticky-col"):
+                        bl_preview = gr.ImageSlider(
+                            # max_height, not height — see `out` slider above.
+                            label="Live preview — before / after (drag the divider)",
+                            type="pil", max_height=340, elem_classes=["loupe"],
+                        )
+                        bl_out = gr.ImageSlider(
+                            label="Result at full size — before / after", type="pil",
+                            max_height=340, elem_classes=["loupe"],
+                            # It's also read by "Use as input", which would otherwise
+                            # make Gradio render it as an upload dropzone when empty.
+                            interactive=False,
+                        )
+                        bl_file = gr.File(label="Download PNG")
+                        bl_info = gr.Markdown()
 
             # ---- Tab: Video upscaler (frame-by-frame) ----
             with gr.Tab("Video"):
@@ -3442,6 +3672,37 @@ def build_demo() -> gr.Blocks:
         pn_layout_upload.upload(
             panel_layout_upload, pn_layout_upload, _pn_preview_inputs[1:],
         ).then(panel_preview_ui, _pn_preview_inputs, pn_preview)
+
+        # ---- Blur toolbox wiring ----
+        _bl_inputs = [bl_in, bl_kind, bl_strength, bl_angle, bl_cx, bl_cy, bl_highlights,
+                      bl_threshold, bl_shape, bl_x, bl_y, bl_w, bl_h, bl_mangle, bl_round,
+                      bl_feather, bl_outside, bl_progressive, bl_editor]
+        bl_kind.change(
+            _blur_kind_vis, bl_kind,
+            [bl_angle, bl_cx, bl_cy, bl_highlights, bl_threshold, bl_kind],
+            show_progress="hidden",
+        )
+        bl_shape.change(
+            _blur_shape_vis, bl_shape,
+            [bl_x, bl_y, bl_w, bl_h, bl_mangle, bl_round, bl_feather, bl_outside,
+             bl_progressive, bl_editor],
+            show_progress="hidden",
+        ).then(blur_preview_ui, _bl_inputs, bl_preview, show_progress="hidden")
+        bl_in.change(blur_on_image, bl_in, bl_editor, show_progress="hidden")
+        bl_in.change(blur_preview_ui, _bl_inputs, bl_preview, show_progress="hidden")
+        for _c in _bl_inputs[1:]:
+            if _c is bl_shape:
+                continue   # handled above (visibility first, then preview)
+            (_c.change if _c is bl_editor else _c.input)(
+                blur_preview_ui, _bl_inputs, bl_preview,
+                show_progress="hidden", trigger_mode="always_last",
+            )
+        bl_btn.click(
+            blur_apply_ui, _bl_inputs, [bl_out, bl_file, bl_info], show_progress_on=[bl_out],
+        )
+        bl_use.click(lambda pair: (pair[1] if pair else None), bl_out, bl_in)
+        bl_clear.click(lambda: (None, None, None, None, None), None,
+                       [bl_in, bl_preview, bl_out, bl_file, bl_info])
 
         # ---- Steam showcase wiring ----
         # Order after the media file must match _steam_params.
