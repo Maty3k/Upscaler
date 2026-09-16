@@ -126,6 +126,7 @@ Each tab is a separate tool, all local:
 | **Colorize** | Add color to black-and-white photos |
 | **Remove Objects** | Paint over something (a person, a sign, a wire) and it disappears |
 | **Remove BG** | Cut out the subject, transparent background |
+| **Color & Light** | Brightness, contrast, color and black & white — with a one-click Auto |
 | **Blur** | Eight kinds of blur — soft, motion, bokeh, pixelate, tilt-shift — on the whole photo, a shape, or where you paint |
 | **Video** | Upscale whole videos frame-by-frame (slow but works) |
 | **Convert & Documents** | Convert between PNG/JPEG/WebP/HEIC/…, images ⇄ PDF |

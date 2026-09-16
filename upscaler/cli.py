@@ -6,6 +6,8 @@ import argparse
 import sys
 from pathlib import Path
 
+from dataclasses import replace
+
 from PIL import Image
 from tqdm import tqdm
 
@@ -650,28 +652,66 @@ def build_blur_parser() -> argparse.ArgumentParser:
     p.add_argument("--center", default="50,50", metavar="X,Y", help="spin/zoom: centre as %% of width,height (default 50,50).")
     p.add_argument("--highlights", type=float, default=0.0, help="lens: bokeh highlight bloom 0-100.")
     p.add_argument("--threshold", type=float, default=25.0, help="surface: edge protection 0-100 (default 25).")
-    p.add_argument("--shape", choices=blur.SHAPES, default="whole", help="Where to blur (default whole).")
-    p.add_argument("--x", type=float, default=50.0, help="Shape centre X, %% of width.")
-    p.add_argument("--y", type=float, default=50.0, help="Shape centre Y, %% of height.")
-    p.add_argument("--w", type=float, default=50.0, help="Rectangle/ellipse width, %% of width.")
-    p.add_argument("--h", type=float, default=50.0, help="Rectangle/ellipse height or band thickness, %% of height.")
-    p.add_argument("--mask-angle", type=float, default=0.0, help="band: tilt in degrees.")
-    p.add_argument("--roundness", type=float, default=0.0, help="rectangle: corner rounding 0-100.")
-    p.add_argument("--feather", type=float, default=10.0, help="Edge softness, %% of the short side (default 10).")
-    p.add_argument("--outside", action="store_true", help="Blur outside the shape (tilt-shift = --shape band --outside).")
+    _add_region_args(p, verb="blur")
     p.add_argument("--no-progressive", action="store_true", help="Cross-fade one blur instead of ramping half → full through the feather.")
-    p.add_argument("--mask", type=Path, help="Painted mask image (white = blur) for --shape painted.")
     p.add_argument("-q", "--quality", type=int, default=92, help="Quality for JPEG/WebP outputs (default 92).")
     return p
 
 
-def _blur_output_path(src: Path, out: Path | None) -> Path:
+def _add_region_args(p: argparse.ArgumentParser, verb: str, feather: float = 10.0) -> None:
+    """The region flags shared by `blur` and `adjust` — which part of the photo
+    the effect lands on."""
+    from upscaler import blur
+
+    p.add_argument("--shape", choices=blur.SHAPES, default="whole",
+                   help=f"Where to {verb} (default whole).")
+    p.add_argument("--x", type=float, default=50.0, help="Shape centre X, %% of width.")
+    p.add_argument("--y", type=float, default=50.0, help="Shape centre Y, %% of height.")
+    p.add_argument("--w", type=float, default=50.0, help="Rectangle/ellipse width, %% of width.")
+    p.add_argument("--h", type=float, default=50.0,
+                   help="Rectangle/ellipse height or band thickness, %% of height.")
+    p.add_argument("--mask-angle", type=float, default=0.0, help="band: tilt in degrees.")
+    p.add_argument("--roundness", type=float, default=0.0, help="rectangle: corner rounding 0-100.")
+    p.add_argument("--feather", type=float, default=feather,
+                   help=f"Edge softness, %% of the short side (default {feather:g}).")
+    p.add_argument("--outside", action="store_true",
+                   help=f"{verb.capitalize()} outside the shape instead of inside it.")
+    p.add_argument("--mask", type=Path,
+                   help=f"Painted mask image (white = {verb}) for --shape painted.")
+
+
+def _region_from_args(args) -> "tuple[object, int]":
+    """(MaskParams, exit code) — the code is non-zero when --mask is missing."""
+    from upscaler import blur
+
+    painted = None
+    if args.mask:
+        if not args.mask.is_file():
+            print(f"error: mask not found: {args.mask}", file=sys.stderr)
+            return None, 2
+        painted = Image.open(args.mask).convert("L")
+    return blur.MaskParams(
+        shape=args.shape, x=args.x, y=args.y, w=args.w, h=args.h, angle=args.mask_angle,
+        roundness=args.roundness, feather=args.feather, outside=args.outside,
+        progressive=not getattr(args, "no_progressive", True), painted=painted,
+    ), 0
+
+
+def _suffixed_output_path(src: Path, out: Path | None, suffix: str) -> Path:
     if out and out.suffix:
         out.parent.mkdir(parents=True, exist_ok=True)
         return out
     out_dir = out if out else src.parent
     out_dir.mkdir(parents=True, exist_ok=True)
-    return out_dir / f"{src.stem}_blur.png"
+    return out_dir / f"{src.stem}_{suffix}.png"
+
+
+def _blur_output_path(src: Path, out: Path | None) -> Path:
+    return _suffixed_output_path(src, out, "blur")
+
+
+def _adjust_output_path(src: Path, out: Path | None) -> Path:
+    return _suffixed_output_path(src, out, "adjusted")
 
 
 def run_blur(argv: list[str]) -> int:
@@ -693,19 +733,12 @@ def run_blur(argv: list[str]) -> int:
     except ValueError:
         print("error: --center must be X,Y (percent), e.g. 50,50", file=sys.stderr)
         return 2
-    painted = None
-    if args.mask:
-        if not args.mask.is_file():
-            print(f"error: mask not found: {args.mask}", file=sys.stderr)
-            return 2
-        painted = Image.open(args.mask).convert("L")
+    mp, code = _region_from_args(args)
+    if code:
+        return code
     bp = blur.BlurParams(kind=args.kind, strength=args.strength, angle=args.angle,
                          center_x=cx, center_y=cy, highlights=args.highlights,
                          threshold=args.threshold)
-    mp = blur.MaskParams(shape=args.shape, x=args.x, y=args.y, w=args.w, h=args.h,
-                         angle=args.mask_angle, roundness=args.roundness, feather=args.feather,
-                         outside=args.outside, progressive=not args.no_progressive,
-                         painted=painted)
     failed = 0
     for src in inputs:
         dst = _blur_output_path(src, args.output)
@@ -724,6 +757,111 @@ def run_blur(argv: list[str]) -> int:
     return 1 if failed else 0
 
 
+_ADJUST_OPTS = [
+    ("exposure", "Brightness, -100..100 (±2 stops)."),
+    ("contrast", "Contrast, -100..100."),
+    ("highlights", "Highlights, -100 (recover) .. 100 (lift)."),
+    ("shadows", "Shadows, -100 (deepen) .. 100 (open up)."),
+    ("black-point", "Where black starts, 0..50 (%% of range)."),
+    ("white-point", "Where white starts, 50..100 (%% of range)."),
+    ("gamma", "Midtone brightness, 0.2..3.0 (1 = unchanged)."),
+    ("clarity", "Local contrast / punch, -100..100."),
+    ("temperature", "White balance, -100 (cool) .. 100 (warm)."),
+    ("tint", "White balance, -100 (green) .. 100 (magenta)."),
+    ("hue", "Hue rotation in degrees, -180..180."),
+    ("saturation", "Saturation, -100 (grey) .. 100."),
+    ("vibrance", "Boosts muted colors only, -100..100."),
+    ("tone-strength", "How strongly --tone is mixed into a black & white, 0..100."),
+]
+
+
+def build_adjust_parser() -> argparse.ArgumentParser:
+    from upscaler import adjust
+
+    p = argparse.ArgumentParser(
+        prog="upscaler adjust",
+        description="Color and light: exposure, contrast, highlights and shadows, white "
+        "balance, vibrance, black & white — over the whole photo or through a shape, a "
+        "graduated band or a painted mask. No AI.",
+    )
+    p.add_argument("input", type=Path, nargs="?", help="Image file, or a directory of images.")
+    p.add_argument(
+        "-o", "--output", type=Path,
+        help="Output file (format from the extension) or a directory for a folder of "
+        "images. Default: <name>_adjusted.png next to the input.",
+    )
+    p.add_argument("--preset", choices=list(adjust.PRESETS),
+                   help="Start from a named look, then apply any flags on top.")
+    p.add_argument("--auto", action="store_true",
+                   help="Set levels, midtones and white balance from the photo itself.")
+    for name, help_text in _ADJUST_OPTS:
+        p.add_argument(f"--{name}", type=float, default=None, help=help_text)
+    p.add_argument("--mono", action="store_true", help="Convert to black & white.")
+    p.add_argument("--mono-mix", default=None, metavar="R,G,B",
+                   help="Black & white channel mix, e.g. 30,59,11 (defaults to 30,59,11).")
+    p.add_argument("--tone", default=None, metavar="HEX",
+                   help="Tone color for a sepia / cyanotype look, used with --tone-strength.")
+    _add_region_args(p, verb="adjust", feather=15.0)
+    p.add_argument("-q", "--quality", type=int, default=92,
+                   help="Quality for JPEG/WebP outputs (default 92).")
+    return p
+
+
+def run_adjust(argv: list[str]) -> int:
+    from upscaler import adjust
+
+    args = build_adjust_parser().parse_args(argv)
+    if args.input is None or not args.input.exists():
+        print(f"error: input not found: {args.input}", file=sys.stderr)
+        return 2
+    inputs = _gather_inputs(args.input) if args.input.is_dir() else [args.input]
+    if not inputs:
+        print(f"error: no images found in {args.input}", file=sys.stderr)
+        return 2
+    if len(inputs) > 1 and args.output and args.output.suffix:
+        print("error: --output must be a directory when processing a folder", file=sys.stderr)
+        return 2
+    mp, code = _region_from_args(args)
+    if code:
+        return code
+
+    base = adjust.preset(args.preset) if args.preset else adjust.AdjustParams()
+    if args.mono:
+        base.mono = True
+    if args.mono_mix:
+        try:
+            base.mono_red, base.mono_green, base.mono_blue = (float(v) for v in args.mono_mix.split(","))
+        except ValueError:
+            print("error: --mono-mix must be R,G,B, e.g. 30,59,11", file=sys.stderr)
+            return 2
+    if args.tone:
+        base.tone_color = args.tone
+
+    failed = 0
+    for src in inputs:
+        dst = _adjust_output_path(src, args.output)
+        try:
+            with Image.open(src) as im:
+                img = im.convert("RGBA") if "A" in im.getbands() else im.convert("RGB")
+            # Auto reads each photo, so a folder gets per-image levels; explicit
+            # flags are applied last and always win.
+            p = adjust.auto_params(img, base) if args.auto else replace(base)
+            for name, _help in _ADJUST_OPTS:
+                value = getattr(args, name.replace("-", "_"))
+                if value is not None:
+                    setattr(p, name.replace("-", "_"), value)
+            out = adjust.apply(img, p, mp)
+            if dst.suffix.lower() in (".jpg", ".jpeg", ".bmp"):
+                out = out.convert("RGB")
+            save_kw = {"quality": args.quality} if dst.suffix.lower() in (".jpg", ".jpeg", ".webp") else {}
+            out.save(dst, **save_kw)
+            print(f"{src.name}: {adjust.describe(p, mp)} → {dst}", file=sys.stderr)
+        except (Image.UnidentifiedImageError, OSError, ValueError) as e:
+            print(f"error on {src.name}: {e}", file=sys.stderr)
+            failed += 1
+    return 1 if failed else 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="upscaler",
@@ -734,7 +872,8 @@ def build_parser() -> argparse.ArgumentParser:
         "`upscaler removebg <input> -o out.png`, "
         "`upscaler batch <dir> -o <dir> --op upscale|convert|removebg`, "
         "`upscaler steam clip.mp4 -o <dir>` (Steam Workshop Showcase tiles), "
-        "`upscaler blur photo.jpg --kind lens --shape ellipse --outside` (blur toolbox). "
+        "`upscaler blur photo.jpg --kind lens --shape ellipse --outside` (blur toolbox), "
+        "`upscaler adjust photo.jpg --auto` (color and light). "
         "Add --face to restore faces after upscaling.",
     )
     p.add_argument(
@@ -808,6 +947,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_steam(argv[1:])
     if argv and argv[0] == "blur":
         return run_blur(argv[1:])
+    if argv and argv[0] == "adjust":
+        return run_adjust(argv[1:])
 
     args = build_parser().parse_args(argv)
 

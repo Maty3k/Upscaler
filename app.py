@@ -35,7 +35,7 @@ import gradio as gr
 import numpy as np
 from PIL import Image, ImageDraw, ImageEnhance
 
-from upscaler import background, blur, config, library, manage, panel, steam
+from upscaler import adjust, background, blur, config, library, manage, panel, steam
 from upscaler.convert import FORMATS, convert, extension_for
 from upscaler.document import images_to_pdf, pdf_to_images
 from upscaler.deblur import Deblurrer, DeblurTooLargeError
@@ -1318,6 +1318,86 @@ def steam_export_ui(media, fit, zoom, off_x, off_y, bg_color, transparent, tile_
     return gallery, zpath, msg
 
 
+# ── Color & light ─────────────────────────────────────────────────────────────
+# The tab's controls, in the order they're passed to the handlers. Keeping one
+# list means the params mapping, the preset fan-out and Reset can't drift apart.
+_ADJUST_FIELDS = [
+    "exposure", "contrast", "highlights", "shadows", "black_point", "white_point",
+    "gamma", "clarity", "temperature", "tint", "hue", "saturation", "vibrance",
+    "mono", "mono_red", "mono_green", "mono_blue", "tone_color", "tone_strength",
+]
+
+
+def _adjust_params(*vals):
+    kw = dict(zip(_ADJUST_FIELDS, vals))
+    kw["mono"] = bool(kw["mono"])
+    kw["tone_color"] = str(kw["tone_color"] or "#ffffff")
+    for k, v in kw.items():
+        if k not in ("mono", "tone_color"):
+            kw[k] = float(v)
+    return adjust.AdjustParams(**kw)
+
+
+def _adjust_mask(shape, x, y, w, h, mangle, roundness, feather, outside, editor):
+    painted = None
+    if shape == "painted":
+        _bg, painted = _mask_from_editor(editor)
+    return blur.MaskParams(shape=shape, x=float(x), y=float(y), w=float(w), h=float(h),
+                           angle=float(mangle), roundness=float(roundness),
+                           feather=float(feather), outside=bool(outside),
+                           progressive=False, painted=painted)
+
+
+def _adjust_split(vals):
+    n = len(_ADJUST_FIELDS)
+    return _adjust_params(*vals[:n]), _adjust_mask(*vals[n:])
+
+
+def _fan_adjust(p):
+    """An AdjustParams → one value per control, in _ADJUST_FIELDS order."""
+    return tuple(getattr(p, name) for name in _ADJUST_FIELDS)
+
+
+def adjust_preview_ui(image, *vals):
+    """Live before/after at preview size."""
+    if image is None:
+        return None
+    img = image if isinstance(image, Image.Image) else Image.fromarray(image)
+    p, m = _adjust_split(vals)
+    return adjust.preview_pair(img, p, m)
+
+
+def adjust_preset_ui(name):
+    """Load a preset into the controls (Reset uses the same path via "None")."""
+    return _fan_adjust(adjust.preset(name))
+
+
+def adjust_auto_ui(image, *vals):
+    """Read the photo and set levels, gamma and white balance from it."""
+    if image is None:
+        raise gr.Error("Upload a photo first.")
+    img = image if isinstance(image, Image.Image) else Image.fromarray(image)
+    p, _m = _adjust_split(vals)
+    return _fan_adjust(adjust.auto_params(img, p))
+
+
+def adjust_apply_ui(image, *vals, progress=gr.Progress()):
+    if image is None:
+        raise gr.Error("Upload a photo to adjust.")
+    img = image if isinstance(image, Image.Image) else Image.fromarray(image)
+    p, m = _adjust_split(vals)
+    if m.shape == "painted" and m.painted is None:
+        raise gr.Error("Paint over the area to adjust first (or set the region to whole).")
+    progress(0.2, desc="Adjusting at full size…")
+    out = adjust.apply(img, p, m)
+    progress(0.9, desc="Saving PNG…")
+    fd, path = tempfile.mkstemp(dir=_ensure_export_dir(), suffix=".png")
+    os.close(fd)
+    out.save(path, "PNG")
+    library.save_path(path, "adjust")  # auto-add to the Library
+    return (img, out), path, f"✅ {adjust.describe(p, m)} · {out.width}×{out.height}px PNG"
+
+
 # ── Blur toolbox ──────────────────────────────────────────────────────────────
 _BLUR_KIND_INFO = {
     "gaussian": "Soft, natural blur.",
@@ -1343,9 +1423,11 @@ def _blur_kind_vis(kind):
     )
 
 
-def _blur_shape_vis(shape):
-    """Show only the region controls the chosen shape uses; a band defaults
-    to blurring outside (tilt-shift), the others to inside."""
+def _region_vis(shape):
+    """Show only the region controls the chosen shape uses, in the order
+    (centre x, centre y, width, height, band tilt, roundness, feather,
+    outside, editor). A band defaults to affecting the outside — that's
+    tilt-shift for blur and a graduated filter for colour."""
     box = shape in ("rectangle", "ellipse")
     return (
         gr.update(visible=box or shape == "band"),    # centre x
@@ -1357,9 +1439,15 @@ def _blur_shape_vis(shape):
         gr.update(visible=shape == "rectangle"),      # roundness
         gr.update(visible=shape != "whole"),          # feather
         gr.update(visible=shape != "whole", value=(shape == "band")),   # outside
-        gr.update(visible=shape != "whole"),          # graded
         gr.update(visible=shape == "painted"),        # editor
     )
+
+
+def _blur_shape_vis(shape):
+    """_region_vis plus the blur-only "graded edge" toggle, which sits between
+    "outside" and the paint editor in the Blur tab's output list."""
+    v = _region_vis(shape)
+    return v[:8] + (gr.update(visible=shape != "whole"),) + v[8:]
 
 
 def _blur_params(kind, strength, angle, cx, cy, highlights, threshold):
@@ -1941,6 +2029,9 @@ ICON_PDF = _svg('<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 '
                 '2-2V8z"/><path d="M14 3v5h5"/>')
 ICON_PANEL = _svg('<rect x="2" y="8" width="20" height="8" rx="1.5"/>'
                   '<path d="M6 12h.01M9 12h.01"/>')
+ICON_LIGHT = _svg('<circle cx="12" cy="12" r="4.5"/><path d="M12 2v2.5M12 19.5V22'
+                  'M2 12h2.5M19.5 12H22M4.9 4.9l1.8 1.8M17.3 17.3l1.8 1.8'
+                  'M19.1 4.9l-1.8 1.8M6.7 17.3l-1.8 1.8"/>')
 ICON_BLUR = _svg('<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4.5"/>'
                  '<path d="M12 3v2M12 19v2M3 12h2M19 12h2"/>')
 ICON_STEAM = _svg('<rect x="1.5" y="8" width="3.4" height="8" rx=".8"/>'
@@ -2475,6 +2566,196 @@ def build_demo() -> gr.Blocks:
                         )
                         bg_file = gr.File(label="Download transparent PNG")
                         bg_info = gr.Markdown()
+
+            # ---- Tab: Color & light (no AI) ----
+            with gr.Tab("Color & Light"):
+                gr.HTML(_section_head(
+                    "Develop", "Color & Light",
+                    "Exposure, contrast, highlights and shadows, white balance, "
+                    "vibrance, black & white — the everyday photo adjustments, with "
+                    "one-click Auto, a shelf of looks, and the option to apply them "
+                    "to just a shape, a graduated band or wherever you paint.",
+                    icon=ICON_LIGHT,
+                ))
+                with gr.Row(equal_height=False):
+                    with gr.Column(scale=1):
+                        ad_in = gr.Image(
+                            label="Input", type="pil", image_mode=None,
+                            sources=["upload", "clipboard"], height=300,
+                            elem_classes="drop", buttons=["download", "fullscreen"],
+                        )
+                        with gr.Row():
+                            ad_preset = gr.Dropdown(
+                                adjust.PRESET_NAMES, value=adjust.PRESET_NONE,
+                                label="Look", filterable=False, scale=3,
+                                info="A starting point — every slider stays editable "
+                                "afterwards. 'None' resets them all.",
+                            )
+                            ad_auto = gr.Button("✨ Auto", variant="secondary", scale=1)
+                        with gr.Accordion("Light", open=True):
+                            ad_exposure = gr.Slider(
+                                -100, 100, value=0, step=1, label="Exposure",
+                                info="Overall brightness, like changing the shutter "
+                                "speed. ±100 is two stops.",
+                            )
+                            ad_contrast = gr.Slider(
+                                -100, 100, value=0, step=1, label="Contrast",
+                                info="Pushes lights and darks apart.",
+                            )
+                            with gr.Row():
+                                ad_highlights = gr.Slider(
+                                    -100, 100, value=0, step=1, label="Highlights",
+                                    info="Negative rescues blown-out brights; positive "
+                                    "lifts them.",
+                                )
+                                ad_shadows = gr.Slider(
+                                    -100, 100, value=0, step=1, label="Shadows",
+                                    info="Positive opens up dark areas; negative "
+                                    "deepens them.",
+                                )
+                            with gr.Row():
+                                ad_black = gr.Slider(
+                                    0, 50, value=0, step=0.5, label="Black point",
+                                    info="Where black starts — raise it for deeper "
+                                    "blacks, or to cut haze.",
+                                )
+                                ad_white = gr.Slider(
+                                    50, 100, value=100, step=0.5, label="White point",
+                                    info="Where white starts — lower it for a brighter, "
+                                    "punchier picture.",
+                                )
+                            with gr.Row():
+                                ad_gamma = gr.Slider(
+                                    0.2, 3, value=1, step=0.01, label="Midtones (gamma)",
+                                    info="Brightens or darkens the middle tones without "
+                                    "moving black or white.",
+                                )
+                                ad_clarity = gr.Slider(
+                                    -100, 100, value=0, step=1, label="Clarity",
+                                    info="Local contrast — positive adds punch and "
+                                    "texture, negative softens.",
+                                )
+                        with gr.Accordion("Color", open=True):
+                            with gr.Row():
+                                ad_temp = gr.Slider(
+                                    -100, 100, value=0, step=1, label="Temperature",
+                                    info="Cooler (blue) to warmer (orange).",
+                                )
+                                ad_tint = gr.Slider(
+                                    -100, 100, value=0, step=1, label="Tint",
+                                    info="Green to magenta — fixes the cast fluorescent "
+                                    "light leaves behind.",
+                                )
+                            with gr.Row():
+                                ad_vibrance = gr.Slider(
+                                    -100, 100, value=0, step=1, label="Vibrance",
+                                    info="Boosts the muted colors and leaves the already "
+                                    "vivid ones (and skin) alone.",
+                                )
+                                ad_saturation = gr.Slider(
+                                    -100, 100, value=0, step=1, label="Saturation",
+                                    info="Boosts every color equally. -100 is greyscale.",
+                                )
+                            ad_hue = gr.Slider(
+                                -180, 180, value=0, step=1, label="Hue shift (°)",
+                                info="Rotates every color around the color wheel.",
+                            )
+                        with gr.Accordion("Black & white", open=False):
+                            ad_mono = gr.Checkbox(
+                                value=False, label="Convert to black & white",
+                                info="Uses the mix below, so you can decide how bright "
+                                "each original color comes out.",
+                            )
+                            with gr.Row():
+                                ad_mr = gr.Slider(0, 100, value=30, step=1, label="Red mix",
+                                                  info="How bright reds become.")
+                                ad_mg = gr.Slider(0, 100, value=59, step=1, label="Green mix",
+                                                  info="How bright greens become.")
+                                ad_mb = gr.Slider(0, 100, value=11, step=1, label="Blue mix",
+                                                  info="How bright blues become — lower it "
+                                                  "to darken skies.")
+                            with gr.Row():
+                                ad_tone = gr.ColorPicker(
+                                    value="#d8b070", label="Tone color",
+                                    info="The tint for a sepia or cyanotype look.",
+                                )
+                                ad_tone_strength = gr.Slider(
+                                    0, 100, value=0, step=1, label="Tone strength",
+                                    info="How strongly the tone color is mixed in. "
+                                    "0 = plain black & white.",
+                                )
+                        with gr.Accordion("Where to apply", open=False):
+                            ad_shape = gr.Radio(
+                                blur.SHAPES, value="whole", label="Region",
+                                info="whole = the entire photo · rectangle / ellipse = a "
+                                "shape you position · band = a straight strip, which with "
+                                "'outside' is a graduated filter for skies · painted = "
+                                "wherever you brush.",
+                            )
+                            with gr.Row():
+                                ad_x = gr.Slider(0, 100, value=50, step=1, label="Centre X (%)",
+                                                 visible=False, info="Shape position.")
+                                ad_y = gr.Slider(0, 100, value=50, step=1, label="Centre Y (%)",
+                                                 visible=False, info="Shape position.")
+                            with gr.Row():
+                                ad_w = gr.Slider(1, 100, value=50, step=1, label="Width (%)",
+                                                 visible=False, info="Shape size.")
+                                ad_h = gr.Slider(1, 100, value=50, step=1, label="Height (%)",
+                                                 visible=False, info="Shape size, or how "
+                                                 "thick the band is.")
+                            ad_mangle = gr.Slider(-90, 90, value=0, step=1, label="Band tilt (°)",
+                                                  visible=False, info="Rotate the strip.")
+                            ad_round = gr.Slider(0, 100, value=0, step=1,
+                                                 label="Corner roundness (%)", visible=False,
+                                                 info="0 = sharp corners, 100 = a pill.")
+                            ad_feather = gr.Slider(0, 50, value=15, step=0.5, label="Feather (%)",
+                                                   visible=False,
+                                                   info="How softly the adjustment fades out "
+                                                   "at the edge of the region.")
+                            ad_outside = gr.Checkbox(value=False, label="Apply outside the shape",
+                                                     visible=False,
+                                                     info="Adjust everything except the shape.")
+                            ad_editor = gr.ImageEditor(
+                                label="Paint where to adjust", type="pil", height=360,
+                                sources=[], layers=False, transforms=(), visible=False,
+                                brush=gr.Brush(colors=["#ffffff"], color_mode="fixed",
+                                               default_size=40),
+                            )
+                        with gr.Accordion("Tips", open=False):
+                            gr.Markdown(
+                                "* **Start with Auto**, then fine-tune. It sets the "
+                                "black and white points, midtones and white balance "
+                                "from the photo itself.\n"
+                                "* **Vibrance before saturation** for people — it "
+                                "leaves skin tones alone.\n"
+                                "* **Darken a bright sky** with region = band, "
+                                "'apply outside' off, a big feather, and negative "
+                                "exposure. That's a graduated filter.\n"
+                                "* **Rescue a backlit photo** with Shadows up and "
+                                "Highlights down, rather than exposure.\n"
+                                "* **Black & white:** drop the blue mix to darken a "
+                                "sky, raise the red mix to brighten skin.\n"
+                                "* **Stack it:** apply, then 'Use as input' to adjust "
+                                "a second region differently.",
+                                elem_classes="notes",
+                            )
+                        with gr.Row():
+                            ad_btn = gr.Button("Apply (full size)", variant="primary",
+                                               size="lg", scale=3)
+                            ad_use = gr.Button("↪ Use as input", variant="secondary", scale=2)
+                            ad_clear = gr.Button("↺ Clear", variant="secondary", scale=1)
+                    with gr.Column(scale=1, elem_classes="sticky-col"):
+                        ad_preview = gr.ImageSlider(
+                            # max_height, not height — see `out` slider above.
+                            label="Live preview — before / after (drag the divider)",
+                            type="pil", max_height=340, elem_classes=["loupe"],
+                        )
+                        ad_out = gr.ImageSlider(
+                            label="Result at full size — before / after", type="pil",
+                            max_height=340, elem_classes=["loupe"], interactive=False,
+                        )
+                        ad_file = gr.File(label="Download PNG")
+                        ad_info = gr.Markdown()
 
             # ---- Tab: Blur toolbox (no AI) ----
             with gr.Tab("Blur"):
@@ -3672,6 +3953,39 @@ def build_demo() -> gr.Blocks:
         pn_layout_upload.upload(
             panel_layout_upload, pn_layout_upload, _pn_preview_inputs[1:],
         ).then(panel_preview_ui, _pn_preview_inputs, pn_preview)
+
+        # ---- Color & light wiring ----
+        _ad_controls = [ad_exposure, ad_contrast, ad_highlights, ad_shadows, ad_black,
+                        ad_white, ad_gamma, ad_clarity, ad_temp, ad_tint, ad_hue,
+                        ad_saturation, ad_vibrance, ad_mono, ad_mr, ad_mg, ad_mb,
+                        ad_tone, ad_tone_strength]      # order must match _ADJUST_FIELDS
+        _ad_region = [ad_shape, ad_x, ad_y, ad_w, ad_h, ad_mangle, ad_round, ad_feather,
+                      ad_outside, ad_editor]
+        _ad_inputs = [ad_in] + _ad_controls + _ad_region
+        ad_shape.change(
+            _region_vis, ad_shape,
+            [ad_x, ad_y, ad_w, ad_h, ad_mangle, ad_round, ad_feather, ad_outside, ad_editor],
+            show_progress="hidden",
+        ).then(adjust_preview_ui, _ad_inputs, ad_preview, show_progress="hidden")
+        ad_in.change(blur_on_image, ad_in, ad_editor, show_progress="hidden")
+        ad_in.change(adjust_preview_ui, _ad_inputs, ad_preview, show_progress="hidden")
+        for _c in _ad_controls + _ad_region[1:]:
+            (_c.change if _c is ad_editor else _c.input)(
+                adjust_preview_ui, _ad_inputs, ad_preview,
+                show_progress="hidden", trigger_mode="always_last",
+            )
+        # A preset or Auto writes every control at once, which fires .change and
+        # not .input — so the preview is refreshed explicitly afterwards.
+        ad_preset.input(adjust_preset_ui, ad_preset, _ad_controls, show_progress="hidden") \
+            .then(adjust_preview_ui, _ad_inputs, ad_preview, show_progress="hidden")
+        ad_auto.click(adjust_auto_ui, _ad_inputs, _ad_controls, show_progress="hidden") \
+            .then(adjust_preview_ui, _ad_inputs, ad_preview, show_progress="hidden")
+        ad_btn.click(
+            adjust_apply_ui, _ad_inputs, [ad_out, ad_file, ad_info], show_progress_on=[ad_out],
+        )
+        ad_use.click(lambda pair: (pair[1] if pair else None), ad_out, ad_in)
+        ad_clear.click(lambda: (None, None, None, None, None), None,
+                       [ad_in, ad_preview, ad_out, ad_file, ad_info])
 
         # ---- Blur toolbox wiring ----
         _bl_inputs = [bl_in, bl_kind, bl_strength, bl_angle, bl_cx, bl_cy, bl_highlights,

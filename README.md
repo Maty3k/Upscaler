@@ -155,6 +155,26 @@ upscaler pdf extract in.pdf -o ./pages --dpi 200  # PDF pages → PNGs
 upscaler pdf extract in.pdf                        # → ./in_pages/ next to the PDF
 ```
 
+#### Color & light (no AI)
+
+```bash
+upscaler adjust photo.jpg --auto                                   # levels, midtones, white balance
+upscaler adjust photo.jpg --preset "Warm golden" --contrast 20
+upscaler adjust photo.jpg --exposure 25 --shadows 40 --highlights -30   # rescue a backlit shot
+upscaler adjust sky.jpg --exposure -50 --shape band --h 25 --feather 30 # graduated filter
+upscaler adjust photo.jpg --mono --mono-mix 40,50,10 --tone-strength 60 # toned black & white
+upscaler adjust ./folder -o ./out --auto                           # per-image auto over a folder
+```
+
+Exposure, contrast, highlights and shadows, black and white points, midtones,
+clarity, temperature, tint, hue, vibrance, saturation, and a black-and-white
+conversion with a channel mixer and split tone. `--auto` reads the photo and
+sets its levels, midtones and white balance; `--preset` picks from eleven
+looks. Exposure and white balance are computed in linear light, so a stop is a
+stop. The same region flags as `blur` apply any of it to just a shape, a
+graduated band or a painted mask. The GUI's **Color & Light** tab has all of it
+with a live before/after.
+
 #### Blur (no AI)
 
 ```bash
@@ -215,7 +235,9 @@ upscaler-gui             # opens the app in your browser (http://127.0.0.1:7860)
 A full local web app with a tab per tool: **Upscale & Enhance** (with deblur /
 denoise, JPEG de-blocking, face restore), **Colorize** (DDColor), **Remove
 Objects** (LaMa inpainting), **Remove BG**, **Video** upscaling, **Convert &
-Documents** (formats + image ⇄ PDF), **Batch**, a **Blur** toolbox (gaussian,
+Documents** (formats + image ⇄ PDF), **Batch**, **Color & Light** (exposure,
+contrast, white balance, vibrance, black & white, with one-click Auto), a
+**Blur** toolbox (gaussian,
 motion, spin, zoom, lens bokeh, pixelate, surface — whole image or through a
 shaped, band or painted mask), a **Lian Li Screen** composer for the 8.8″ case
 panel, a **Steam Showcase** tile cutter for your profile's Workshop Showcase,
