@@ -363,8 +363,13 @@ def _depth_composite(rgb: Image.Image, p: BlurParams, weight: np.ndarray) -> np.
     return out
 
 
-def apply(img: Image.Image, p: BlurParams, m: MaskParams) -> Image.Image:
-    """Blur ``img`` through the mask. Alpha (a cut-out's edge) is kept as is."""
+def apply(img: Image.Image, p: BlurParams, m: "MaskParams | None" = None) -> Image.Image:
+    """Blur ``img`` through the mask. Alpha (a cut-out's edge) is kept as is.
+
+    ``m`` is optional and None means the whole picture, which matches the other
+    tools and lets a caller that has no region simply not pass one.
+    """
+    m = m if m is not None else MaskParams()
     alpha = img.getchannel("A") if "A" in img.getbands() else None
     rgb = img.convert("RGB")
     if m.shape == "depth" and m.depth is not None and p.strength > 0:

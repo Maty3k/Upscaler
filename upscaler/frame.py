@@ -152,10 +152,18 @@ def parse_aspect(text: str) -> "tuple[int, int] | None":
 
 
 def aspect_ratio(p: FrameParams) -> "tuple[int, int] | None":
-    """The (w, h) ratio the crop should use, or None to keep the shape."""
+    """The (w, h) ratio the crop should use, or None to keep the shape.
+
+    An ``aspect`` that isn't a known name is an error rather than a shrug: a
+    typo in a saved recipe would otherwise produce a file that looks finished
+    and was never cropped.
+    """
     if p.aspect == CUSTOM_ASPECT:
         return parse_aspect(p.custom_aspect)
-    return ASPECTS.get(p.aspect)
+    if p.aspect not in ASPECTS:
+        raise ValueError(f"unknown shape {p.aspect!r} — expected one of "
+                         f"{', '.join(ASPECTS)}")
+    return ASPECTS[p.aspect]
 
 
 def _perspective_coeffs(dst: list, src: list) -> list:

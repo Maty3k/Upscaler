@@ -175,6 +175,31 @@ stop. The same region flags as `blur` apply any of it to just a shape, a
 graduated band, a painted mask or every detected face. The GUI's **Color & Light** tab has all of it
 with a live before/after.
 
+#### Recipes — a saved chain of edits, over a whole folder
+
+```bash
+upscaler recipe --list                              # the built-in ones
+upscaler recipe "Web-ready" ./holiday -o ./out      # run one over a folder
+upscaler recipe "Film look" --save mine.json        # save it, edit it, keep it
+upscaler recipe mine.json photo.jpg
+upscaler recipe "Blur every face" ./photos -o ./safe
+```
+
+Every other tool does one thing to one photo. A recipe is the ordered list:
+*level it, warm it, sharpen it, sign it, and squeeze it under 500 KB* becomes
+one command over two hundred holiday photos. Steps name the tools you already
+know and the settings those tools already take, so anything you can do in a tab
+you can put in a recipe, including restricting a step to a shape, to every
+detected face, or to depth.
+
+Saved as plain JSON you can edit. Settings a step doesn't recognise are
+ignored, so a recipe written against another version still runs, but a step
+naming a tool that doesn't exist is refused rather than skipped — a silently
+skipped step gives you a file that looks right and isn't. What comes out at the
+end (the format, a size budget, whether the metadata goes) belongs to the
+recipe rather than to any step. Seven ready-made ones ship, and the GUI has
+them under **Batch → Recipe**, where the JSON is editable in place.
+
 #### See and remove metadata (no AI)
 
 ```bash
@@ -384,7 +409,8 @@ high-pass, edge-aware and texture, with halo control), **Crop & Frame** (any
 aspect, straighten, lean correction, exact sizes, borders and shadows),
 **Watermark** (text or logo, in a corner or tiled), a file-size
 budget fitter, a **metadata cleaner** that shows what a photo reveals and
-strips it losslessly, a
+strips it losslessly, **recipes** that run a whole saved chain of edits over a
+folder, a
 **Blur** toolbox (gaussian,
 motion, spin, zoom, lens bokeh, pixelate, surface — whole image, a shaped or
 tilt-shift band, a painted mask, every detected face, or a real depth of field), a **Lian Li Screen** composer for the 8.8″ case

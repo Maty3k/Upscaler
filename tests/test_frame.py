@@ -49,6 +49,13 @@ def test_named_aspects_land_on_their_ratio(name):
     assert out.width <= img.width and out.height <= img.height     # only ever removes
 
 
+def test_an_unknown_shape_name_is_an_error_not_a_shrug():
+    """A typo in a saved recipe must not quietly produce an uncropped file."""
+    with pytest.raises(ValueError, match="unknown shape"):
+        frame.apply(_photo(), frame.FrameParams(aspect="Landscape · 16:9"))
+    assert frame.aspect_ratio(frame.FrameParams(aspect="Original")) is None
+
+
 def test_custom_ratio_forms_and_bad_input():
     assert frame.parse_aspect("16:10") == frame.parse_aspect("16/10") == (16000, 10000)
     assert frame.parse_aspect("1200x800") == (1200000, 800000)

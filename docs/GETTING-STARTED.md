@@ -134,7 +134,7 @@ Each tab is a separate tool, all local:
 | **Blur** | Eight kinds of blur — soft, motion, bokeh, pixelate, tilt-shift — on the whole photo, a shape, where you paint, every face it finds, or a real depth of field |
 | **Video** | Upscale whole videos frame-by-frame (slow but works) |
 | **Convert & Documents** | Convert between PNG/JPEG/WebP/HEIC/…, squeeze a photo under a size limit, remove the GPS location a photo records, images ⇄ PDF |
-| **Batch** | Apply one operation to a whole folder of images |
+| **Batch** | Apply one operation — or a whole saved recipe — to a folder of images |
 | **Lian Li** | Compose media for the Lian Li 8.8″ case screen at its exact size |
 | **Steam** | Cut a picture or clip into the five tiles of a Steam profile Workshop Showcase |
 | **Library** | Everything you've exported, in one place |

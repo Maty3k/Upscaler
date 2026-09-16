@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from pathlib import Path
 
@@ -1515,6 +1516,110 @@ def run_metadata(argv: list[str]) -> int:
     return 1 if failed else 0
 
 
+def build_recipe_parser() -> argparse.ArgumentParser:
+    from upscaler import recipe as rc
+
+    p = argparse.ArgumentParser(
+        prog="upscaler recipe",
+        description="Run a saved chain of edits over a photo or a whole folder — "
+        "level it, warm it, sharpen it, sign it and squeeze it under a size limit, "
+        "in one command.",
+    )
+    p.add_argument("recipe", nargs="?",
+                   help="A built-in recipe's name, or the path to a .json one. "
+                   "See --list.")
+    p.add_argument("input", type=Path, nargs="?", help="Image file, or a directory of images.")
+    p.add_argument("-o", "--output", type=Path,
+                   help="Output directory (or a file for a single image). Default: "
+                   "next to the input, suffixed with the recipe's name.")
+    p.add_argument("--list", action="store_true", help="List the built-in recipes and exit.")
+    p.add_argument("--show", action="store_true", help="Print what the recipe does and exit.")
+    p.add_argument("--save", type=Path, metavar="FILE",
+                   help="Write the recipe to a .json file you can edit, and exit.")
+    p.add_argument("--depth-model", default=None,
+                   help="Depth network for any step using the depth region.")
+    return p
+
+
+def _resolve_recipe(name: str):
+    """A built-in by name, or a recipe loaded from a path."""
+    from upscaler import recipe as rc
+
+    if name in rc.BUILT_IN:
+        return rc.built_in(name)
+    path = Path(name)
+    if path.is_file():
+        return rc.load(path)
+    raise rc.RecipeError(
+        f"no recipe called {name!r}, and no file at that path. "
+        f"Built-ins: {', '.join(rc.BUILT_IN_NAMES)}")
+
+
+def run_recipe(argv: list[str]) -> int:
+    from upscaler import recipe as rc
+
+    args = build_recipe_parser().parse_args(argv)
+    if args.list:
+        for name in rc.BUILT_IN_NAMES:
+            print(f"{name}\n    {rc.built_in(name).describe()}")
+        return 0
+    if not args.recipe:
+        print("error: name a recipe (or --list to see the built-in ones)", file=sys.stderr)
+        return 2
+    try:
+        recipe = _resolve_recipe(args.recipe)
+    except rc.RecipeError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+
+    if args.save:
+        rc.save(recipe, args.save)
+        print(f"→ {args.save}", file=sys.stderr)
+        return 0
+    if args.show:
+        print(recipe.describe())
+        return 0
+    if args.input is None or not args.input.exists():
+        print(f"error: input not found: {args.input}", file=sys.stderr)
+        return 2
+    inputs = _gather_inputs(args.input) if args.input.is_dir() else [args.input]
+    if not inputs:
+        print(f"error: no images found in {args.input}", file=sys.stderr)
+        return 2
+    if len(inputs) > 1 and args.output and args.output.suffix:
+        print("error: --output must be a directory when processing a folder", file=sys.stderr)
+        return 2
+
+    slug = re.sub(r"[^a-z0-9]+", "-", recipe.name.lower()).strip("-") or "recipe"
+    print(f"{recipe.describe()}", file=sys.stderr)
+    failed = 0
+    for src in tqdm(inputs, desc=recipe.name, disable=len(inputs) < 2):
+        try:
+            with Image.open(src) as im:
+                img = im.convert("RGBA") if "A" in im.getbands() else im.convert("RGB")
+            res = rc.run(img, recipe, depth_model=args.depth_model)
+            if args.output and args.output.suffix:
+                dst = args.output
+                dst.parent.mkdir(parents=True, exist_ok=True)
+            else:
+                out_dir = args.output if args.output else src.parent
+                out_dir.mkdir(parents=True, exist_ok=True)
+                dst = out_dir / f"{src.stem}_{slug}.{res.extension}"
+            if res.data:
+                dst.write_bytes(res.data)
+            else:
+                out = res.image
+                if dst.suffix.lower() in (".jpg", ".jpeg", ".bmp"):
+                    out = out.convert("RGB")
+                out.save(dst)
+            print(f"{src.name} → {dst}" + (f"  ({res.note})" if res.note else ""),
+                  file=sys.stderr)
+        except (Image.UnidentifiedImageError, OSError, ValueError, RuntimeError) as e:
+            print(f"error on {src.name}: {e}", file=sys.stderr)
+            failed += 1
+    return 1 if failed else 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="upscaler",
@@ -1532,7 +1637,8 @@ def build_parser() -> argparse.ArgumentParser:
         "`upscaler crop photo.jpg --aspect 1:1 --border 6` (crop and frame), "
         "`upscaler watermark ./folder --text \"© Me\"` (signature or logo), "
         "`upscaler optimize photo.jpg -t 500KB` (fit a file-size budget), "
-        "`upscaler metadata photo.jpg` (see what it reveals; --remove strips it). "
+        "`upscaler metadata photo.jpg` (see what it reveals; --remove strips it), "
+        "`upscaler recipe --list` (saved chains of edits, run over a folder). "
         "Add --face to restore faces after upscaling.",
     )
     p.add_argument(
@@ -1620,6 +1726,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_optimize(argv[1:])
     if argv and argv[0] == "metadata":
         return run_metadata(argv[1:])
+    if argv and argv[0] == "recipe":
+        return run_recipe(argv[1:])
 
     args = build_parser().parse_args(argv)
 

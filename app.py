@@ -45,6 +45,7 @@ from upscaler.engine import (CancelledError, OutputTooLargeError, Upscaler,
 from upscaler import depth as depth_tools
 from upscaler import fit, frame as frame_tools, metadata as md_tools
 from upscaler import optimize as opt_tools
+from upscaler import recipe as recipe_tools
 from upscaler import watermark as wm_tools
 from upscaler.models.registry import (
     COLORIZE_MODELS,
@@ -936,20 +937,45 @@ def optimize_ui(image, target, fmt, min_quality, allow_resize, max_edge,
 
 # -- Batch processing (one operation over many images) -----------------------
 
-_BATCH_OPS = ["Upscale", "Convert format", "Remove background"]
+_BATCH_OPS = ["Upscale", "Convert format", "Remove background", "Recipe"]
 
 
 def _switch_batch_op(op):
     """Show only the settings group for the selected batch operation."""
-    return (
-        gr.update(visible=op == _BATCH_OPS[0]),
-        gr.update(visible=op == _BATCH_OPS[1]),
-        gr.update(visible=op == _BATCH_OPS[2]),
-    )
+    return tuple(gr.update(visible=op == name) for name in _BATCH_OPS)
+
+
+def _resolve_recipe_ui(name, text):
+    """The recipe to run: a pasted/edited one wins over the chosen built-in,
+    so editing the box is never silently ignored."""
+    if (text or "").strip():
+        return recipe_tools.from_json(text)
+    return recipe_tools.built_in(name)
+
+
+def recipe_show_ui(name, text):
+    """Describe whatever recipe is currently selected, and fill the box when a
+    built-in is picked so it can be edited."""
+    try:
+        chosen = _resolve_recipe_ui(name, text)
+    except recipe_tools.RecipeError as e:
+        return gr.update(), gr.update(value=f"⚠ {e}")
+    return gr.update(), gr.update(value=f"**{chosen.describe()}**")
+
+
+def recipe_load_built_in(name):
+    """Picking a built-in loads its JSON into the box, ready to tweak."""
+    try:
+        chosen = recipe_tools.built_in(name)
+    except recipe_tools.RecipeError as e:
+        return gr.update(), gr.update(value=f"⚠ {e}")
+    return (gr.update(value=recipe_tools.to_json(chosen)),
+            gr.update(value=f"**{chosen.describe()}**"))
 
 
 def batch_process(files, op, model, out_size, sharpen, fmt, quality,
-                  bg_model, feather, device, tile, progress=gr.Progress()):
+                  bg_model, feather, device, tile, recipe_name="", recipe_json="",
+                  progress=gr.Progress()):
     """Run one operation over many uploaded images. Returns (gallery, zip, info).
 
     Resilient: a file that can't be read or fails is skipped and counted, so one
@@ -958,6 +984,12 @@ def batch_process(files, op, model, out_size, sharpen, fmt, quality,
     """
     if not files:
         raise gr.Error("Add at least one image to process.")
+    chosen_recipe = None
+    if op == "Recipe":
+        try:
+            chosen_recipe = _resolve_recipe_ui(recipe_name, recipe_json)
+        except recipe_tools.RecipeError as e:
+            raise gr.Error(str(e)) from e
     _BATCH_CANCEL.clear()
     work = tempfile.mkdtemp()
     saved: list[str] = []
@@ -1006,6 +1038,16 @@ def batch_process(files, op, model, out_size, sharpen, fmt, quality,
                     fo.write(data)
                 gallery.append(src.convert("RGB"))  # AVIF/HEIC may not render; show source
                 library.save_path(out, "convert")
+            elif op == "Recipe":
+                res = recipe_tools.run(src, chosen_recipe)
+                out = os.path.join(work, f"{base}_recipe.{res.extension}")
+                if res.data:
+                    with open(out, "wb") as fo:
+                        fo.write(res.data)
+                else:
+                    res.image.save(out)
+                gallery.append(res.image.convert("RGB"))
+                library.save_path(out, "recipe")
             else:  # Remove background
                 cut = background.remove_background(
                     src.convert("RGB"), model=bg_model, feather=int(feather)
@@ -4447,7 +4489,8 @@ def build_demo() -> gr.Blocks:
                         )
                         batch_op = gr.Radio(
                             _BATCH_OPS, value="Upscale", label="Operation",
-                            info="What to do to every image you dropped above.",
+                            info="What to do to every image you dropped above. "
+                            "Recipe runs a whole saved chain of edits.",
                         )
                         with gr.Column(visible=True) as batch_grp_up:
                             batch_model = gr.Dropdown(
@@ -4478,6 +4521,31 @@ def build_demo() -> gr.Blocks:
                             batch_feather = gr.Slider(
                                 0, 10, value=1, step=1, label="Edge feather (px)",
                             )
+                        with gr.Column(visible=False) as batch_grp_recipe:
+                            batch_recipe = gr.Dropdown(
+                                recipe_tools.BUILT_IN_NAMES,
+                                value=recipe_tools.BUILT_IN_NAMES[0],
+                                label="Recipe", filterable=False,
+                                info="A saved chain of edits. Picking one loads it "
+                                "below, where you can change it.",
+                            )
+                            batch_recipe_note = gr.Markdown(elem_classes="notes")
+                            with gr.Accordion("The recipe itself (editable)", open=False):
+                                batch_recipe_json = gr.Code(
+                                    value=recipe_tools.to_json(
+                                        recipe_tools.built_in(recipe_tools.BUILT_IN_NAMES[0])),
+                                    language="json", label="Recipe JSON", lines=14,
+                                )
+                                gr.Markdown(
+                                    "Steps run top to bottom. Each names a tool — "
+                                    f"{', '.join(recipe_tools.TOOLS)} — and the settings "
+                                    "that tool uses, so anything you can do in a tab you "
+                                    "can put here. `region` restricts a step to a shape, "
+                                    "every detected face, or depth.\n\n"
+                                    "Save one to a file and run it over a folder from "
+                                    "the terminal with `upscaler recipe my.json ./folder`.",
+                                    elem_classes="notes",
+                                )
                         with gr.Accordion("Advanced", open=False):
                             batch_device = gr.Dropdown(
                                 _DEVICES, value=_cfg_device, label="Device",
@@ -4501,14 +4569,22 @@ def build_demo() -> gr.Blocks:
                         batch_info = gr.Markdown()
                 batch_op.change(
                     _switch_batch_op, batch_op,
-                    [batch_grp_up, batch_grp_conv, batch_grp_bg],
+                    [batch_grp_up, batch_grp_conv, batch_grp_bg, batch_grp_recipe],
                     show_progress="hidden",  # instant visibility toggle, no flash
                 )
+                batch_recipe.input(recipe_load_built_in, batch_recipe,
+                                   [batch_recipe_json, batch_recipe_note],
+                                   show_progress="hidden")
+                batch_recipe_json.change(recipe_show_ui,
+                                         [batch_recipe, batch_recipe_json],
+                                         [batch_recipe_json, batch_recipe_note],
+                                         show_progress="hidden",
+                                         trigger_mode="always_last")
                 batch_evt = batch_run.click(
                     batch_process,
                     [batch_in, batch_op, batch_model, batch_size, batch_sharpen,
                      batch_fmt, batch_quality, batch_bg_model, batch_feather,
-                     batch_device, batch_tile],
+                     batch_device, batch_tile, batch_recipe, batch_recipe_json],
                     [batch_gallery, batch_zip, batch_info],
                     show_progress_on=[batch_gallery],
                 )
