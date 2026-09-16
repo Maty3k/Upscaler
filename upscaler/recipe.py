@@ -25,7 +25,8 @@ from pathlib import Path
 
 from PIL import Image
 
-from upscaler import adjust, blur, effects, frame, metadata, optimize, sharpen, watermark
+from upscaler import (adjust, blur, effects, frame, metadata, optimize, screenshot,
+                      sharpen, watermark)
 
 SCHEMA = 1
 
@@ -37,6 +38,7 @@ _TOOLS: "dict[str, tuple]" = {
     "sharpen": (sharpen.SharpenParams, sharpen.apply, True),
     "crop": (frame.FrameParams, frame.apply, False),
     "watermark": (watermark.WatermarkParams, watermark.apply, False),
+    "screenshot": (screenshot.ShotParams, screenshot.apply, False),
 }
 TOOLS = list(_TOOLS)
 
@@ -262,6 +264,14 @@ BUILT_IN: "dict[str, Recipe]" = {
         name="Portrait depth of field",
         steps=[Step("blur", {"kind": "lens", "strength": 45, "highlights": 40},
                     {"shape": "depth", "focus": 70, "dof": 25, "feather": 2})],
+    ),
+    "Screenshots for a README": Recipe(
+        name="Screenshots for a README",
+        steps=[Step("screenshot", {"background": "solid", "color": "#ffffff",
+                                   "padding": 5, "corner_radius": 1.4, "shadow": 30,
+                                   "shadow_softness": 60, "aspect": "Widescreen · 16:9",
+                                   "out_size": "1600x900"})],
+        output_format="PNG", strip_metadata=True,
     ),
     "Sign and shrink": Recipe(
         name="Sign and shrink",

@@ -25,6 +25,7 @@ from functools import lru_cache
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
+from upscaler.frame import perspective_coeffs
 from upscaler.video import _ffmpeg
 
 # ── Canvas spec (non-negotiable) ─────────────────────────────────────────────
@@ -420,18 +421,6 @@ def preview(src_path: str | None, p: PanelParams, frame: Image.Image | None = No
 
 
 # ── 3D-style product mockup ───────────────────────────────────────────────────
-def _perspective_coeffs(dst: list, src: list) -> list:
-    """8 PIL PERSPECTIVE coefficients mapping the output `dst` quad back to the
-    input `src` quad (each a list of 4 (x, y) corners: TL, TR, BR, BL)."""
-    m = []
-    for (dx, dy), (sx, sy) in zip(dst, src):
-        m.append([dx, dy, 1, 0, 0, 0, -sx * dx, -sx * dy])
-        m.append([0, 0, 0, dx, dy, 1, -sy * dx, -sy * dy])
-    A = np.array(m, dtype=np.float64)
-    b = np.array(src, dtype=np.float64).reshape(8)
-    return np.linalg.solve(A, b).tolist()
-
-
 def mockup(src_path: str | None, p: PanelParams, width: int = 1400) -> Image.Image:
     """Render the composed panel as a 3D-style product shot of the physical
     Lian Li screen: a bezel-framed display tilted in perspective, with a screen
@@ -466,7 +455,7 @@ def mockup(src_path: str | None, p: PanelParams, width: int = 1400) -> Image.Ima
     src_q = [(0, 0), (fw, 0), (fw, fh), (0, fh)]
     dst_q = [(0, 0), (fw, fh * k * 0.5), (fw, fh * (1 - k * 0.5)), (0, fh)]
     tilted = frame.transform(
-        (fw, fh), Image.PERSPECTIVE, _perspective_coeffs(dst_q, src_q),
+        (fw, fh), Image.PERSPECTIVE, perspective_coeffs(dst_q, src_q),
         resample=Image.BICUBIC,
     )
 

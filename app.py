@@ -46,6 +46,7 @@ from upscaler import depth as depth_tools
 from upscaler import fit, frame as frame_tools, metadata as md_tools
 from upscaler import optimize as opt_tools
 from upscaler import recipe as recipe_tools
+from upscaler import screenshot as shot_tools
 from upscaler import watermark as wm_tools
 from upscaler.models.registry import (
     COLORIZE_MODELS,
@@ -1774,6 +1775,74 @@ def watermark_apply_ui(image, logo, cutout, *vals, progress=gr.Progress()):
     return out, path, f"✅ {wm_tools.describe(p)} · {out.width}×{out.height}px PNG"
 
 
+# ── Screenshot beautifier ─────────────────────────────────────────────────────
+_SHOT_FIELDS = [
+    "background", "color", "color2", "angle", "padding", "corner_radius", "rim",
+    "shadow", "shadow_softness", "chrome", "title", "tilt_y", "tilt_x", "spin",
+    "aspect", "custom_aspect", "out_size",
+]
+_SHOT_TEXT = {"background", "color", "color2", "chrome", "title", "aspect",
+            "custom_aspect", "out_size"}
+
+
+def _shot_params(*vals):
+    kw = {}
+    for name, value in zip(_SHOT_FIELDS, vals):
+        kw[name] = ("" if value is None else str(value)) if name in _SHOT_TEXT \
+            else float(value)
+    return shot_tools.ShotParams(**kw)
+
+
+def _shot_vis(bg, chrome, aspect):
+    """Show only the controls the chosen look actually uses."""
+    ramp = bg in (shot_tools.GRADIENT, shot_tools.MESH)
+    tinted = bg not in (shot_tools.BLURRED, shot_tools.TRANSPARENT)
+    return (
+        gr.update(visible=tinted),                                   # colour
+        gr.update(visible=ramp),                                     # second colour
+        gr.update(visible=ramp),                                     # gradient angle
+        gr.update(visible=str(chrome).startswith("browser")),        # address bar text
+        gr.update(visible=aspect == shot_tools.CUSTOM_ASPECT),       # custom ratio
+    )
+
+
+def screenshot_preview_ui(image, *vals):
+    if image is None:
+        return None, gr.update(value="")
+    img = image if isinstance(image, Image.Image) else Image.fromarray(image)
+    p = _shot_params(*vals)
+    try:
+        out = shot_tools.preview(img, p)
+        w, h = shot_tools.result_size(img.size, p)
+    except ValueError as e:
+        return None, gr.update(value=f"⚠ {e}")
+    return out, gr.update(
+        value=f"{shot_tools.describe(p)} · **{w}×{h}px** at full size")
+
+
+def screenshot_preset_ui(name):
+    p = shot_tools.preset(name)
+    return tuple(getattr(p, f) for f in _SHOT_FIELDS)
+
+
+def screenshot_apply_ui(image, *vals, progress=gr.Progress()):
+    if image is None:
+        raise gr.Error("Upload or paste a screenshot first.")
+    img = image if isinstance(image, Image.Image) else Image.fromarray(image)
+    p = _shot_params(*vals)
+    progress(0.3, desc="Composing at full size…")
+    try:
+        out = shot_tools.apply(img, p)
+    except ValueError as e:
+        raise gr.Error(str(e)) from e
+    progress(0.9, desc="Saving PNG…")
+    fd, path = tempfile.mkstemp(dir=_ensure_export_dir(), suffix=".png")
+    os.close(fd)
+    out.save(path, "PNG")
+    library.save_path(path, "screenshot")  # auto-add to the Library
+    return out, path, f"✅ {shot_tools.describe(p)} · {out.width}×{out.height}px PNG"
+
+
 # ── Crop & frame ──────────────────────────────────────────────────────────────
 _FRAME_FIELDS = [
     "rotate", "flip_h", "flip_v", "keystone_h", "keystone_v", "straighten",
@@ -2478,9 +2547,10 @@ ul.options::-webkit-scrollbar-track { background: transparent; }
    Gradio measures this strip and moves whatever doesn't fit into a "…" menu —
    and those tabs are NOT rendered in the bar at all, so no amount of
    flex-wrap brings them back. With a dozen-plus tools the only fix is to make
-   the buttons narrower, so the whole toolset stays one click away. */
+   the buttons narrower, so the whole toolset stays one click away. Measured:
+   0.82rem is the largest type that keeps all 17 tools inline down to 1200px. */
 .tabitem { padding-top: 28px !important; }
-.tab-container button { padding: 0 7px !important; }
+.tab-container button { padding: 0 6px !important; font-size: 0.82rem !important; }
 
 /* section heads: accent eyebrow w/ icon + underlined title */
 .sec-head { margin-bottom: 8px; }
@@ -2568,6 +2638,10 @@ ICON_LIGHT = _svg('<circle cx="12" cy="12" r="4.5"/><path d="M12 2v2.5M12 19.5V2
 ICON_WM = _svg('<rect x="3" y="4.5" width="18" height="15" rx="2"/>'
                '<path d="M8 15.5h8M8 12h5"/>')
 ICON_CROP = _svg('<path d="M6.5 2v15.5H22"/><path d="M2 6.5h15.5V22"/>')
+# a window: title bar, two dots, and the content area below it
+ICON_SHOT = _svg('<rect x="2.5" y="4" width="19" height="16" rx="2.5"/>'
+                 '<path d="M2.5 8.5h19"/><circle cx="5.8" cy="6.25" r=".85"/>'
+                 '<circle cx="8.6" cy="6.25" r=".85"/>')
 ICON_SHARP = _svg('<path d="M12 3.5 20.5 20.5 12 16 3.5 20.5z"/>')
 ICON_FX = _svg('<rect x="2.5" y="5" width="19" height="14" rx="2"/>'
                '<path d="M2.5 9h3M2.5 15h3M18.5 9h3M18.5 15h3M9 5v14M15 5v14"/>')
@@ -2736,9 +2810,9 @@ def build_demo() -> gr.Blocks:
             '<span class="brand">Upscaler</span></div>'
             '<div class="sub">Enlarge, restore and colorize photos with AI, then '
             "develop them: color and light, film effects, sharpen, blur, crop, "
-            "watermark, strip the GPS location, hit a size limit — or batch a whole "
-            "folder. Every tool runs on your own machine; nothing is ever "
-            "uploaded.</div>"
+            "watermark, beautify a screenshot, strip the GPS location, hit a size "
+            "limit — or batch a whole folder. Every tool runs on your own machine; "
+            "nothing is ever uploaded.</div>"
             f'<span class="pill"><span class="dot"></span>Running locally · {device_name}</span>'
             "</div>"
         )
@@ -3864,6 +3938,155 @@ def build_demo() -> gr.Blocks:
                         )
                         wm_file = gr.File(label="Download PNG")
                         wm_info = gr.Markdown()
+
+            # ---- Tab: Screenshot beautifier (no AI) ----
+            with gr.Tab("Screenshot"):
+                gr.HTML(_section_head(
+                    "Present", "Screenshot Beautifier",
+                    "Turn a raw screen capture into something you can put in a README, "
+                    "a landing page or a post: padding and rounded corners on a colour "
+                    "field, a soft shadow underneath, and — if you want it — a window "
+                    "or browser frame, leaned back in 3D.",
+                    icon=ICON_SHOT,
+                ))
+                with gr.Row(equal_height=False):
+                    with gr.Column(scale=1):
+                        shot_in = gr.Image(
+                            label="Screenshot (paste with ⌘V / Ctrl+V)", type="pil",
+                            image_mode=None, sources=["upload", "clipboard"], height=280,
+                            elem_classes="drop", buttons=["download", "fullscreen"],
+                        )
+                        shot_preset = gr.Dropdown(
+                            shot_tools.PRESET_NAMES, value="Indigo mesh",
+                            label="Look", filterable=False,
+                            info="A starting point — everything below stays editable.",
+                        )
+                        gr.HTML('<div class="col-label">Background</div>')
+                        shot_bg = gr.Radio(
+                            [(shot_tools.BACKGROUND_LABELS[v], v)
+                             for v in shot_tools.BACKGROUNDS],
+                            value=shot_tools.GRADIENT, label="Behind the shot",
+                            info="Mesh is the soft multi-colour wash; transparent gives "
+                            "you a PNG to drop on your own page.",
+                        )
+                        with gr.Row():
+                            shot_color = gr.ColorPicker(value="#6366f1", label="Colour")
+                            shot_color2 = gr.ColorPicker(value="#a855f7", label="Second colour")
+                        shot_angle = gr.Slider(
+                            0, 360, value=135, step=5, label="Gradient angle (°)",
+                            info="Which way the colours run.",
+                        )
+                        gr.HTML('<div class="col-label">The shot</div>')
+                        with gr.Row():
+                            shot_padding = gr.Slider(
+                                0, 40, value=9, step=0.5, label="Padding (%)",
+                                info="Space around the shot, as a share of its short "
+                                "side — so it looks the same on any capture.",
+                            )
+                            shot_radius = gr.Slider(
+                                0, 12, value=2, step=0.1, label="Corner radius (%)",
+                                info="0 keeps the square corners.",
+                            )
+                        with gr.Row():
+                            shot_shadow = gr.Slider(
+                                0, 100, value=55, step=1, label="Shadow",
+                                info="How dark the shadow under the shot is.",
+                            )
+                            shot_soft = gr.Slider(
+                                0, 100, value=50, step=1, label="Shadow softness",
+                                info="Low is a tight contact shadow, high a wide pool.",
+                            )
+                        shot_rim = gr.Slider(
+                            0, 100, value=0, step=1, label="Edge highlight",
+                            info="A hairline around the shot. A shadow shows nothing "
+                            "when a dark screenshot sits on a dark background — this "
+                            "is what separates them.",
+                        )
+                        gr.HTML('<div class="col-label">Window frame</div>')
+                        shot_chrome = gr.Dropdown(
+                            [(shot_tools.CHROME_LABELS[v], v) for v in shot_tools.CHROMES],
+                            value=shot_tools.NO_CHROME, label="Chrome", filterable=False,
+                            info="Wraps the shot in a title bar, so it reads as an app "
+                            "rather than a crop.",
+                        )
+                        shot_title = gr.Textbox(
+                            value="", label="Address bar", visible=False,
+                            placeholder="example.com",
+                            info="What the browser frame's address bar reads.",
+                        )
+                        gr.HTML('<div class="col-label">In space</div>')
+                        with gr.Row():
+                            shot_tilt = gr.Slider(
+                                -shot_tools.MAX_TILT, shot_tools.MAX_TILT, value=0, step=1,
+                                label="Tilt (°)",
+                                info="Leans the right edge away from you; negative "
+                                "leans the left.",
+                            )
+                            shot_pitch = gr.Slider(
+                                -shot_tools.MAX_TILT, shot_tools.MAX_TILT, value=0, step=1,
+                                label="Pitch (°)",
+                                info="Leans the top edge away; negative the bottom.",
+                            )
+                        shot_spin = gr.Slider(
+                            -shot_tools.MAX_SPIN, shot_tools.MAX_SPIN, value=0, step=0.5,
+                            label="Spin (°)", info="Rotates it flat on the page. A "
+                            "degree or two with a tilt sells the 3D.",
+                        )
+                        gr.HTML('<div class="col-label">Canvas</div>')
+                        with gr.Row():
+                            shot_aspect = gr.Dropdown(
+                                shot_tools.ASPECT_NAMES, value=shot_tools.AUTO_ASPECT,
+                                label="Shape", filterable=False,
+                                info="Auto follows the shot. A fixed shape grows the "
+                                "background to fit — it never crops the shot.",
+                            )
+                            shot_custom = gr.Textbox(
+                                value="", label="Custom ratio", visible=False,
+                                placeholder="16:10", info="Like 16:10 or 1200x800.",
+                            )
+                        shot_size = gr.Textbox(
+                            value="", label="Exact size (optional)",
+                            placeholder="1600x900",
+                            info="Land on exact pixels, e.g. 1600x900 for a GitHub "
+                            "social card.",
+                        )
+                        with gr.Accordion("Tips", open=False):
+                            gr.Markdown(
+                                "* **Paste straight in.** ⌘⇧4 on a Mac or Win+Shift+S "
+                                "on Windows puts the capture on the clipboard; click "
+                                "the box above and press ⌘V / Ctrl+V.\n"
+                                "* **Dark screenshot on a dark background?** Turn up "
+                                "*Edge highlight* — a black shadow on near-black shows "
+                                "nothing, and a lit edge is what a real window has.\n"
+                                "* **Tilt plus a degree or two of spin** reads as a "
+                                "product shot; tilt alone can look like a mistake.\n"
+                                "* **Transparent** gives you a PNG with the shadow "
+                                "still attached, to drop on your own background.\n"
+                                "* **1600×900** is the size GitHub and most social "
+                                "cards want — 'README hero' sets it for you.\n"
+                                "* **Batch a folder** from the command line with "
+                                "`upscaler screenshot ./shots --preset \"Indigo mesh\"`.",
+                                elem_classes="notes",
+                            )
+                        with gr.Row():
+                            shot_btn = gr.Button("Apply (full size)", variant="primary",
+                                               size="lg", scale=3)
+                            shot_use = gr.Button("↪ Use as input", variant="secondary",
+                                               scale=2)
+                            shot_clear = gr.Button("↺ Clear", variant="secondary", scale=1)
+                    with gr.Column(scale=1, elem_classes="sticky-col"):
+                        shot_preview = gr.Image(
+                            label="Preview", height=380, buttons=["fullscreen"],
+                            elem_classes=["loupe"],
+                        )
+                        shot_note = gr.Markdown(elem_classes="notes")
+                        shot_out = gr.Image(
+                            label="Result at full size", height=340, type="pil",
+                            buttons=["download", "fullscreen"], elem_classes=["loupe"],
+                            interactive=False,
+                        )
+                        shot_file = gr.File(label="Download PNG")
+                        shot_info = gr.Markdown()
 
             # ---- Tab: Crop & frame (no AI) ----
             with gr.Tab("Crop"):
@@ -5574,6 +5797,33 @@ def build_demo() -> gr.Blocks:
         wm_use.click(lambda im: im, wm_out, wm_in)
         wm_clear.click(lambda: (None, None, None, None, None), None,
                        [wm_in, wm_preview, wm_out, wm_file, wm_info])
+
+        # ---- Screenshot wiring ----
+        _shot_controls = [shot_bg, shot_color, shot_color2, shot_angle, shot_padding, shot_radius,
+                        shot_rim, shot_shadow, shot_soft, shot_chrome, shot_title, shot_tilt,
+                        shot_pitch, shot_spin, shot_aspect, shot_custom,
+                        shot_size]              # order must match _SHOT_FIELDS
+        _shot_inputs = [shot_in] + _shot_controls
+        _shot_vis_out = [shot_color, shot_color2, shot_angle, shot_title, shot_custom]
+        for _c in (shot_bg, shot_chrome, shot_aspect):
+            _c.change(_shot_vis, [shot_bg, shot_chrome, shot_aspect], _shot_vis_out,
+                      show_progress="hidden")
+        shot_in.change(screenshot_preview_ui, _shot_inputs, [shot_preview, shot_note],
+                     show_progress="hidden")
+        for _c in _shot_controls:
+            _c.change(screenshot_preview_ui, _shot_inputs, [shot_preview, shot_note],
+                      show_progress="hidden", trigger_mode="always_last")
+        shot_preset.input(screenshot_preset_ui, shot_preset, _shot_controls,
+                        show_progress="hidden") \
+            .then(_shot_vis, [shot_bg, shot_chrome, shot_aspect], _shot_vis_out,
+                  show_progress="hidden") \
+            .then(screenshot_preview_ui, _shot_inputs, [shot_preview, shot_note],
+                  show_progress="hidden")
+        shot_btn.click(screenshot_apply_ui, _shot_inputs, [shot_out, shot_file, shot_info],
+                     show_progress_on=[shot_out])
+        shot_use.click(lambda im: im, shot_out, shot_in)
+        shot_clear.click(lambda: (None, None, None, None, None), None,
+                       [shot_in, shot_preview, shot_out, shot_file, shot_info])
 
         # ---- Crop & frame wiring ----
         _fr_controls = [fr_rotate, fr_fliph, fr_flipv, fr_kh, fr_kv, fr_straighten,

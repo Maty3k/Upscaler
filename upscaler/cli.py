@@ -1368,6 +1368,130 @@ def run_watermark(argv: list[str]) -> int:
     return 1 if failed else 0
 
 
+def build_screenshot_parser() -> argparse.ArgumentParser:
+    from upscaler import screenshot as sh
+
+    p = argparse.ArgumentParser(
+        prog="upscaler screenshot",
+        description="Make a screen capture presentable: padding, rounded corners and a "
+        "soft shadow on a colour field, optionally inside a window or browser frame and "
+        "leaned back in 3D. Sizes are a share of the shot, so one setting suits a phone "
+        "capture and a 5K grab. No AI.",
+    )
+    p.add_argument("input", type=Path, nargs="?", help="Image file, or a directory of images.")
+    p.add_argument(
+        "-o", "--output", type=Path,
+        help="Output file (format from the extension) or a directory for a folder of "
+        "images. Default: <name>_shot.png next to the input.",
+    )
+    p.add_argument("--preset", choices=list(sh.PRESETS),
+                   help="Start from a preset, then apply any flags on top.")
+    p.add_argument("--list-presets", action="store_true",
+                   help="List the presets and what each one does, then exit.")
+    p.add_argument("--background", choices=sh.BACKGROUNDS, default=None,
+                   help=f"What sits behind the shot (default {sh.GRADIENT}). "
+                   f"'{sh.BLURRED}' uses a blurred copy of the shot itself.")
+    p.add_argument("--color", default=None, metavar="HEX",
+                   help="The background colour, or the first stop of a gradient.")
+    p.add_argument("--color2", default=None, metavar="HEX",
+                   help="The other end of the gradient.")
+    p.add_argument("--angle", type=float, default=None, metavar="DEG",
+                   help="Gradient direction in degrees (default 135).")
+    p.add_argument("--padding", type=float, default=None,
+                   help="Space around the shot, %% of its short side (default 9).")
+    p.add_argument("--radius", type=float, default=None,
+                   help="Corner rounding, %% of the short side (default 2; 0 = square).")
+    p.add_argument("--rim", type=float, default=None,
+                   help="Hairline edge highlight 0..100 — what separates a dark "
+                   "screenshot from a dark background (default 0).")
+    p.add_argument("--shadow", type=float, default=None,
+                   help="Drop shadow 0..100 (default 55).")
+    p.add_argument("--shadow-softness", type=float, default=None,
+                   help="0 a tight contact shadow, 100 a wide ambient pool (default 50).")
+    p.add_argument("--chrome", choices=sh.CHROMES, default=None,
+                   help="Draw a window or browser frame around the shot (default none).")
+    p.add_argument("--title", default=None,
+                   help="What the browser frame's address bar reads.")
+    p.add_argument("--tilt", type=float, default=None, metavar="DEG",
+                   help="Lean the right edge away from you, ±60 (negative: the left).")
+    p.add_argument("--pitch", type=float, default=None, metavar="DEG",
+                   help="Lean the top edge away from you, ±60 (negative: the bottom).")
+    p.add_argument("--spin", type=float, default=None, metavar="DEG",
+                   help="Rotate in the plane of the page, ±30.")
+    p.add_argument("--aspect", default=None,
+                   help="Canvas shape: a name from the app, a ratio like 16:9, or "
+                   "auto to follow the shot (default auto).")
+    p.add_argument("--size", default=None, metavar="WxH",
+                   help="Land on exact pixels, e.g. 1600x900.")
+    p.add_argument("-q", "--quality", type=int, default=92,
+                   help="Quality for JPEG/WebP outputs (default 92).")
+    return p
+
+
+def run_screenshot(argv: list[str]) -> int:
+    from upscaler import frame, screenshot as sh
+
+    args = build_screenshot_parser().parse_args(argv)
+    if args.list_presets:
+        for name in sh.PRESETS:
+            print(f"{name}\n    {sh.describe(sh.preset(name))}")
+        return 0
+    if args.input is None or not args.input.exists():
+        print(f"error: input not found: {args.input}", file=sys.stderr)
+        return 2
+    inputs = _gather_inputs(args.input) if args.input.is_dir() else [args.input]
+    if not inputs:
+        print(f"error: no images found in {args.input}", file=sys.stderr)
+        return 2
+    if len(inputs) > 1 and args.output and args.output.suffix:
+        print("error: --output must be a directory when processing a folder", file=sys.stderr)
+        return 2
+
+    p = sh.preset(args.preset) if args.preset else sh.ShotParams()
+    for flag, field in (("background", "background"), ("color", "color"),
+                        ("color2", "color2"), ("angle", "angle"),
+                        ("padding", "padding"), ("radius", "corner_radius"),
+                        ("rim", "rim"), ("shadow", "shadow"),
+                        ("shadow_softness", "shadow_softness"), ("chrome", "chrome"),
+                        ("title", "title"), ("tilt", "tilt_y"), ("pitch", "tilt_x"),
+                        ("spin", "spin"), ("size", "out_size")):
+        value = getattr(args, flag)
+        if value is not None:
+            setattr(p, field, value)
+    if args.title is not None and args.chrome is None and p.chrome == sh.NO_CHROME:
+        p.chrome = "browser"          # asking for an address bar means you want one
+    if args.aspect is not None:
+        if args.aspect.lower() == "auto" or args.aspect == sh.AUTO_ASPECT:
+            p.aspect = sh.AUTO_ASPECT
+        elif args.aspect in sh.ASPECTS:
+            p.aspect = args.aspect
+        elif frame.parse_aspect(args.aspect):
+            p.aspect, p.custom_aspect = sh.CUSTOM_ASPECT, args.aspect
+        else:
+            print(f"error: can't read the ratio {args.aspect!r} — try 16:9 or 1200x800",
+                  file=sys.stderr)
+            return 2
+
+    failed = 0
+    for src in inputs:
+        dst = _suffixed_output_path(src, args.output, "shot")
+        try:
+            with Image.open(src) as im:
+                img = im.convert("RGBA") if "A" in im.getbands() else im.convert("RGB")
+            out = sh.apply(img, p)
+            if dst.suffix.lower() in (".jpg", ".jpeg", ".bmp"):
+                out = out.convert("RGB")
+            save_kw = ({"quality": args.quality}
+                       if dst.suffix.lower() in (".jpg", ".jpeg", ".webp") else {})
+            out.save(dst, **save_kw)
+            print(f"{src.name}: {sh.describe(p)} → {dst} ({out.width}×{out.height})",
+                  file=sys.stderr)
+        except (Image.UnidentifiedImageError, OSError, ValueError) as e:
+            print(f"error on {src.name}: {e}", file=sys.stderr)
+            failed += 1
+    return 1 if failed else 0
+
+
 def build_optimize_parser() -> argparse.ArgumentParser:
     from upscaler import optimize as op
 
@@ -1648,6 +1772,7 @@ def build_parser() -> argparse.ArgumentParser:
         "`upscaler sharpen photo.jpg --preset Standard` (sharpening toolbox), "
         "`upscaler crop photo.jpg --aspect 1:1 --border 6` (crop and frame), "
         "`upscaler watermark ./folder --text \"© Me\"` (signature or logo), "
+        "`upscaler screenshot grab.png --preset \"Indigo mesh\"` (beautify a capture), "
         "`upscaler optimize photo.jpg -t 500KB` (fit a file-size budget), "
         "`upscaler metadata photo.jpg` (see what it reveals; --remove strips it), "
         "`upscaler recipe --list` (saved chains of edits, run over a folder). "
@@ -1734,6 +1859,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_frame(argv[1:])
     if argv and argv[0] == "watermark":
         return run_watermark(argv[1:])
+    if argv and argv[0] == "screenshot":
+        return run_screenshot(argv[1:])
     if argv and argv[0] == "optimize":
         return run_optimize(argv[1:])
     if argv and argv[0] == "metadata":

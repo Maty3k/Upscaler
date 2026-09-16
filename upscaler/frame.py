@@ -166,7 +166,7 @@ def aspect_ratio(p: FrameParams) -> "tuple[int, int] | None":
     return ASPECTS[p.aspect]
 
 
-def _perspective_coeffs(dst: list, src: list) -> list:
+def perspective_coeffs(dst: list, src: list) -> list:
     """The 8 PIL PERSPECTIVE coefficients mapping output ``dst`` back to
     input ``src`` (each 4 (x, y) corners: TL, TR, BR, BL)."""
     m = []
@@ -235,7 +235,7 @@ def keystone(img: Image.Image, p: FrameParams) -> Image.Image:
     src = [(0, 0), (w, 0), (w, h), (0, h)]
     dst = [(top_dx, left_dy), (w - top_dx, right_dy),
            (w - bot_dx, h - right_dy), (bot_dx, h - left_dy)]
-    out = img.transform((w, h), Image.PERSPECTIVE, _perspective_coeffs(dst, src),
+    out = img.transform((w, h), Image.PERSPECTIVE, perspective_coeffs(dst, src),
                         resample=Image.BICUBIC)
     # Trim by the deepest inset on each axis, so nothing empty survives.
     cut_x, cut_y = int(math.ceil(max(top_dx, bot_dx))), int(math.ceil(max(left_dy, right_dy)))

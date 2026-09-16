@@ -14,9 +14,9 @@ passes behind the person in the photo
 
 **Without AI, and instantly:** color and light with one-click Auto · film
 effects and looks · sharpen · blur · crop, straighten and frame · watermark ·
-convert formats · fit a file-size budget · see and strip the GPS location a
-photo records · images ⇄ PDF · Steam showcase tiles · a composer for the
-Lian Li 8.8″ case screen
+**make a screenshot presentable** · convert formats · fit a file-size budget ·
+see and strip the GPS location a photo records · images ⇄ PDF · Steam showcase
+tiles · a composer for the Lian Li 8.8″ case screen
 
 **Over a whole folder:** batch any one of them, or save a chain of edits as a
 recipe and run the lot in one command.
@@ -212,7 +212,7 @@ ignored, so a recipe written against another version still runs, but a step
 naming a tool that doesn't exist is refused rather than skipped — a silently
 skipped step gives you a file that looks right and isn't. What comes out at the
 end (the format, a size budget, whether the metadata goes) belongs to the
-recipe rather than to any step. Seven ready-made ones ship, and the GUI has
+recipe rather than to any step. Eight ready-made ones ship, and the GUI has
 them under **Batch → Recipe**, where the JSON is editable in place.
 
 #### See and remove metadata (no AI)
@@ -308,6 +308,34 @@ keeps the whole photo and fills the margin instead of cropping, with a solid
 colour or a zoomed blurred copy of the photo. Then a border, rounded corners,
 a drop shadow, and an exact output size. Ten presets cover the common posts,
 mats and wallpapers.
+
+#### Screenshot beautifier (no AI)
+
+```bash
+upscaler screenshot grab.png --preset "Indigo mesh"
+upscaler screenshot grab.png --chrome browser --title example.com     # a browser frame
+upscaler screenshot grab.png --tilt 22 --spin -3 --preset "Tilted 3D" # a product shot
+upscaler screenshot grab.png --preset "README hero"                   # 1600×900, white
+upscaler screenshot grab.png --background transparent -o card.png     # a PNG to drop in
+upscaler screenshot ./shots -o ./out --preset Sunset
+```
+
+A raw screen capture is a rectangle of UI with hard edges, usually ending in a
+band of white. This is the pass that makes it presentable: **padding, rounded
+corners and a soft shadow on a colour field** — solid, a gradient, the soft
+multi-blob **mesh** wash, or a blurred copy of the shot itself.
+
+Optionally the shot goes inside a **window or browser frame**, light or dark,
+with text in the address bar, so it reads as an application rather than a crop.
+Then **tilt, pitch and spin** lean it back in 3D; a couple of degrees of spin
+with a tilt is what makes it read as a product shot rather than a mistake.
+
+Two details worth knowing. **Edge highlight** draws a hairline around the shot:
+a black shadow shows nothing against a dark background, and a lit edge is what
+actually separates a dark screenshot from a dark page. And a **fixed canvas
+shape** (or an exact `--size`, e.g. 1600x900 for a social card) only ever grows
+the background — it never crops the shot. Thirteen presets cover the usual
+posts, cards and README heroes.
 
 #### Sharpen (no AI)
 
