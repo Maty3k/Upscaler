@@ -2269,43 +2269,43 @@ def _dml_available() -> bool:
 # + sharpen for a use-case; restoration always uses SIDD (denoise) since GoPro
 # garbages noisy photos. Users can tweak anything after applying a preset.
 UPSCALE_PRESETS: dict[str, dict] = {
-    "📷 Photo": dict(
+    "Photo": dict(
         model="realesrgan-x2plus", sharpen=0.3, restore=False, strength=1.0,
         hint="Balanced general-purpose. ×2 keeps already-good photos natural.",
     ),
-    "🙂 Faces": dict(
+    "Faces": dict(
         model="realesrgan-x2plus", sharpen=0.5, restore=True, strength=0.5,
         hint="Gentle ×2 + light denoise so skin stays natural (no plastic look).",
     ),
-    "💧 Soft skin": dict(
+    "Soft skin": dict(
         model="realesrgan-x2plus", sharpen=0.0, restore=True, strength=0.7,
         hint="Smoother, softer look — more denoise, no sharpening. Good for portraits.",
     ),
-    "🖼️ Portrait": dict(
+    "Portrait": dict(
         model="4x-remacri", sharpen=0.2, restore=True, strength=0.4,
         hint="Remacri ×4 for natural skin & hair, with light denoise — great for people.",
     ),
-    "📱 Phone snap": dict(
+    "Phone snap": dict(
         model="realesrgan-x2plus", sharpen=0.4, restore=True, strength=0.4,
         hint="Cleans the mild noise/compression in everyday phone photos, then ×2.",
     ),
-    "🕰️ Old / vintage": dict(
+    "Old / vintage": dict(
         model="realesrgan-x2plus", sharpen=0.4, restore=True, strength=0.8,
         hint="Strong denoise to clean grain in old/faded photos, gentle ×2.",
     ),
-    "🌙 Low-light / noisy": dict(
+    "Low-light / noisy": dict(
         model="realesrgan-x2plus", sharpen=0.2, restore=True, strength=1.0,
         hint="Strong denoise first, gentle ×2, low sharpen so grain isn't amplified.",
     ),
-    "🎨 Anime / art": dict(
+    "Anime / art": dict(
         model="realesrgan-x4plus-anime", sharpen=0.0, restore=False, strength=1.0,
         hint="Anime model at ×4, no sharpen (line art needs none).",
     ),
-    "🌿 Nature": dict(
+    "Nature": dict(
         model="realesrgan-x4plus", sharpen=0.7, restore=False, strength=1.0,
         hint="×4 for maximum texture/detail in foliage & landscapes, crisper edges.",
     ),
-    "🏙️ Max detail": dict(
+    "Max detail": dict(
         model="realesrgan-x4plus", sharpen=1.1, restore=False, strength=1.0,
         hint="×4 + strong sharpening for hard edges (architecture, products). Clean sources only.",
     ),
@@ -2378,75 +2378,204 @@ def open_library_folder():
         pass
 
 
-THEME = gr.themes.Base(
-    primary_hue=gr.themes.colors.teal,
-    secondary_hue=gr.themes.colors.teal,
-    neutral_hue=gr.themes.colors.stone,
-    font=[gr.themes.GoogleFont("Manrope"), "system-ui", "sans-serif"],
-    font_mono=[gr.themes.GoogleFont("JetBrains Mono"), "ui-monospace", "monospace"],
-    radius_size=gr.themes.sizes.radius_lg,
-    spacing_size=gr.themes.sizes.spacing_lg,
-    text_size=gr.themes.sizes.text_md,
-).set(
-    body_background_fill="#E7E3DB",
-    background_fill_primary="#FFFFFF",
-    background_fill_secondary="#F1EEE8",
-    body_text_color="#1A1714",
-    body_text_color_subdued="#6E675E",
-    block_background_fill="#FFFFFF",
-    block_border_color="#D5CEC2",
-    block_border_width="1px",
-    block_radius="16px",
-    block_shadow="0 1px 2px rgba(28,25,23,0.05), 0 8px 24px rgba(28,25,23,0.06)",
-    block_label_text_weight="600",
-    block_label_text_color="#57534E",
-    block_label_background_fill="#FFFFFF",
-    block_label_border_color="#E2DED7",
-    block_title_text_color="#3F3B37",
-    block_info_text_color="#78716C",
-    panel_background_fill="#FFFFFF",
-    input_background_fill="#FFFFFF",
-    input_border_color="#DED9D1",
-    input_border_color_focus="#0D9488",
-    button_primary_background_fill="#0D9488",
-    button_primary_background_fill_hover="#0F766E",
-    button_primary_text_color="#FFFFFF",
-    button_primary_border_color="#0D9488",
-    button_secondary_background_fill="#FFFFFF",
-    button_secondary_border_color="#E7E5E4",
-    button_large_radius="12px",
-    button_small_radius="10px",
-    # Warm, softer dark palette with layered surfaces (not near-black), so the
-    # dark toggle has depth instead of feeling like a void.
-    body_background_fill_dark="#161311",
-    background_fill_primary_dark="#322C27",
-    background_fill_secondary_dark="#211D1A",
-    body_text_color_dark="#FAF7F3",
-    body_text_color_subdued_dark="#BCB2A7",
-    block_background_fill_dark="#322C27",
-    block_border_color_dark="#473F37",
-    block_label_text_color_dark="#EFE9E2",
-    block_label_background_fill_dark="#3A332D",
-    block_label_border_color_dark="#473F37",
-    block_title_text_color_dark="#F1ECE6",
-    block_info_text_color_dark="#BCB2A7",
-    panel_background_fill_dark="#322C27",
-    input_background_fill_dark="#262119",
-    input_border_color_dark="#473F37",
-    input_border_color_focus_dark="#2DD4BF",
-    button_primary_background_fill_dark="#14B8A6",
-    button_primary_background_fill_hover_dark="#2DD4BF",
-    button_primary_text_color_dark="#06231F",
-    button_secondary_background_fill_dark="#2E2A26",
-    button_secondary_border_color_dark="#3B342D",
+# The neutral ramp behind every surface: a cool graphite instead of a stock
+# grey, so pictures sit on a page with no color cast of its own.
+_GRAPHITE = gr.themes.Color(
+    c50="#F6F7F9", c100="#EEF0F3", c200="#E2E5EA", c300="#CDD2DA",
+    c400="#9BA3B2", c500="#6C7586", c600="#4A5262", c700="#333A47",
+    c800="#20252E", c900="#15181E", c950="#0D0F13",
 )
 
-# Apply the saved light/dark preference on load (default light), and a toggle
-# that flips it. Both go through Gradio's own ?__theme mechanism (one reload).
+THEME = gr.themes.Base(
+    primary_hue=gr.themes.colors.indigo,
+    secondary_hue=gr.themes.colors.indigo,
+    neutral_hue=_GRAPHITE,
+    # GoogleFont loads only 400 and 600 unless told otherwise; the UI also uses
+    # 500 (labels, rail) and 700 (brand).
+    font=[gr.themes.GoogleFont("Inter", weights=(400, 500, 600, 700)),
+          "system-ui", "sans-serif"],
+    font_mono=[gr.themes.GoogleFont("JetBrains Mono"), "ui-monospace", "monospace"],
+    radius_size=gr.themes.sizes.radius_md,
+    spacing_size=gr.themes.sizes.spacing_md,
+    text_size=gr.themes.sizes.text_md,
+).set(
+    # Page, surfaces and accent.
+    body_background_fill="#F3F4F7",
+    background_fill_primary="#FFFFFF",
+    background_fill_secondary="#F6F7F9",
+    border_color_primary="#E2E5EA",
+    border_color_accent="*primary_300",
+    color_accent="*primary_600",
+    color_accent_soft="*primary_50",
+    # Text.
+    body_text_color="#161A22",
+    body_text_color_subdued="#5F6878",
+    link_text_color="*primary_600",
+    link_text_color_hover="*primary_700",
+    code_background_fill="#F1F3F6",
+    # Elevation, gaps and radii.
+    shadow_drop="0 1px 2px rgba(16,24,40,0.05)",
+    shadow_drop_lg="0 12px 32px rgba(16,24,40,0.12), 0 2px 6px rgba(16,24,40,0.06)",
+    layout_gap="16px",
+    container_radius="10px",
+    # Cards.
+    block_background_fill="#FFFFFF",
+    block_border_color="#E2E5EA",
+    block_border_width="1px",
+    block_radius="12px",
+    block_shadow="0 1px 2px rgba(16,24,40,0.04)",
+    block_padding="12px 14px",
+    # Floating labels on media, field titles, help text.
+    block_label_background_fill="#FFFFFF",
+    block_label_border_color="#E2E5EA",
+    block_label_text_color="#4A5262",
+    block_label_text_size="12px",
+    block_label_text_weight="500",
+    block_label_shadow="none",
+    block_title_text_color="#252B36",
+    block_title_text_size="13px",
+    block_title_text_weight="500",
+    block_info_text_color="#6C7586",
+    block_info_text_size="12px",
+    section_header_text_size="13.5px",
+    section_header_text_weight="500",
+    # Fields. Gradio's border widths default to 0px: without input_border_width
+    # the border colors below do nothing (buttons and radio pills inherit it).
+    panel_background_fill="#FFFFFF",
+    input_background_fill="#FFFFFF",
+    input_border_color="#D5D9E0",
+    input_border_color_focus="*primary_500",
+    input_border_width="1px",
+    input_radius="8px",
+    input_padding="9px 11px",
+    input_placeholder_color="#6C7586",
+    input_shadow="none",
+    input_shadow_focus="0 0 0 3px rgba(99,102,241,0.18)",
+    # Checkboxes and radio pills.
+    checkbox_border_color="#8A93A3",
+    checkbox_border_color_hover="#9BA3B2",
+    checkbox_border_radius="5px",
+    checkbox_label_background_fill="#FFFFFF",
+    checkbox_label_background_fill_hover="#F6F7F9",
+    checkbox_label_background_fill_selected="*primary_50",
+    checkbox_label_border_color="#D5D9E0",
+    checkbox_label_border_color_selected="*primary_300",
+    checkbox_label_text_color_selected="*primary_700",
+    checkbox_label_padding="7px 12px",
+    checkbox_label_text_size="13px",
+    # Tables.
+    table_border_color="#E2E5EA",
+    table_even_background_fill="#FFFFFF",
+    table_odd_background_fill="#F8F9FB",
+    table_radius="8px",
+    # Buttons: one filled primary per screen, quiet secondaries, a red-tinted stop.
+    button_transition="background-color .15s ease, border-color .15s ease, color .15s ease, box-shadow .15s ease",
+    button_large_padding="10px 18px",
+    button_large_radius="10px",
+    button_large_text_size="14.5px",
+    button_large_text_weight="600",
+    button_medium_padding="8px 14px",
+    button_medium_radius="8px",
+    button_medium_text_size="13.5px",
+    button_medium_text_weight="500",
+    button_small_padding="6px 11px",
+    button_small_radius="8px",
+    button_small_text_size="12.5px",
+    button_small_text_weight="500",
+    button_primary_background_fill="*primary_600",
+    button_primary_background_fill_hover="*primary_700",
+    button_primary_border_color="*primary_600",
+    button_primary_border_color_hover="*primary_700",
+    button_primary_text_color="#FFFFFF",
+    button_primary_shadow="0 1px 2px rgba(49,46,129,0.28), inset 0 1px 0 rgba(255,255,255,0.14)",
+    button_primary_shadow_hover="0 4px 14px rgba(79,70,229,0.32), inset 0 1px 0 rgba(255,255,255,0.14)",
+    button_primary_shadow_active="inset 0 1px 2px rgba(0,0,0,0.2)",
+    button_secondary_background_fill="#FFFFFF",
+    button_secondary_background_fill_hover="#F6F7F9",
+    button_secondary_border_color="#D5D9E0",
+    button_secondary_border_color_hover="#BFC5CF",
+    button_secondary_text_color="#252B36",
+    button_secondary_shadow="0 1px 2px rgba(16,24,40,0.04)",
+    button_secondary_shadow_hover="0 1px 2px rgba(16,24,40,0.04)",
+    button_secondary_shadow_active="none",
+    button_cancel_background_fill="#FFFFFF",
+    button_cancel_background_fill_hover="#FEF3F2",
+    button_cancel_border_color="#F3C5C0",
+    button_cancel_border_color_hover="#E9A29B",
+    button_cancel_text_color="#B42318",
+    # Dark: stepped near-black surfaces (page < card < raised). The steps and
+    # hairlines carry the depth; shadows don't read on dark.
+    body_background_fill_dark="#0C0E12",
+    background_fill_primary_dark="#171A21",
+    background_fill_secondary_dark="#1C2028",
+    border_color_primary_dark="#272C36",
+    border_color_accent_dark="*primary_500",
+    color_accent_soft_dark="rgba(129,140,248,0.16)",
+    body_text_color_dark="#E7EAF0",
+    body_text_color_subdued_dark="#939CAD",
+    link_text_color_dark="*primary_300",
+    link_text_color_hover_dark="*primary_200",
+    code_background_fill_dark="#1C2028",
+    block_background_fill_dark="#14171D",
+    block_border_color_dark="#242933",
+    block_shadow_dark="none",
+    block_label_background_fill_dark="#1C2028",
+    block_label_border_color_dark="#2A303B",
+    block_label_text_color_dark="#C3C9D4",
+    block_title_text_color_dark="#D5DAE3",
+    block_info_text_color_dark="#8792A4",
+    panel_background_fill_dark="#14171D",
+    input_background_fill_dark="#0F1216",
+    input_border_color_dark="#2A303B",
+    input_border_color_focus_dark="*primary_400",
+    input_placeholder_color_dark="#8792A4",
+    input_shadow_focus_dark="0 0 0 3px rgba(129,140,248,0.24)",
+    checkbox_background_color_dark="#0F1216",
+    checkbox_border_color_dark="#6B7588",
+    checkbox_border_color_hover_dark="#566072",
+    checkbox_background_color_selected_dark="*primary_500",
+    checkbox_border_color_selected_dark="*primary_500",
+    checkbox_border_color_focus_dark="*primary_400",
+    slider_color_dark="*primary_400",
+    loader_color_dark="*primary_400",
+    checkbox_label_background_fill_dark="#1C2028",
+    checkbox_label_background_fill_hover_dark="#232833",
+    checkbox_label_background_fill_selected_dark="rgba(129,140,248,0.16)",
+    checkbox_label_border_color_dark="#2E3440",
+    checkbox_label_border_color_selected_dark="*primary_500",
+    checkbox_label_text_color_selected_dark="*primary_200",
+    table_border_color_dark="#272C36",
+    table_even_background_fill_dark="#14171D",
+    table_odd_background_fill_dark="#181B22",
+    button_primary_background_fill_dark="*primary_600",
+    button_primary_background_fill_hover_dark="*primary_500",
+    button_primary_border_color_dark="*primary_500",
+    button_primary_border_color_hover_dark="*primary_400",
+    button_primary_text_color_dark="#FFFFFF",
+    button_primary_shadow_dark="0 1px 2px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.14)",
+    button_primary_shadow_hover_dark="0 6px 18px rgba(79,70,229,0.42), inset 0 1px 0 rgba(255,255,255,0.14)",
+    button_secondary_background_fill_dark="#1C2028",
+    button_secondary_background_fill_hover_dark="#242934",
+    button_secondary_border_color_dark="#2E3440",
+    button_secondary_border_color_hover_dark="#3D4555",
+    button_secondary_text_color_dark="#E7EAF0",
+    button_secondary_shadow_dark="none",
+    button_secondary_shadow_hover_dark="none",
+    button_cancel_background_fill_dark="#1C2028",
+    button_cancel_background_fill_hover_dark="#2B1B1E",
+    button_cancel_border_color_dark="#4D2A2D",
+    button_cancel_border_color_hover_dark="#6E3539",
+    button_cancel_text_color_dark="#FCA5A5",
+)
+
+# Apply the saved light/dark preference on load, and a toggle that flips it.
+# Until the user has picked one, follow the OS. Both go through Gradio's own
+# ?__theme mechanism (one reload).
 _APPLY_THEME_JS = """
 () => {
   const u = new URL(window.location.href);
-  const saved = localStorage.getItem('upscaler-theme') || 'light';
+  const saved = localStorage.getItem('upscaler-theme')
+                || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
   if (u.searchParams.get('__theme') !== saved) {
     u.searchParams.set('__theme', saved);
     window.location.replace(u.toString());
@@ -2458,7 +2587,8 @@ _TOGGLE_THEME_JS = """
 () => {
   const u = new URL(window.location.href);
   const cur = u.searchParams.get('__theme')
-              || localStorage.getItem('upscaler-theme') || 'light';
+              || localStorage.getItem('upscaler-theme')
+              || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
   const next = cur === 'dark' ? 'light' : 'dark';
   localStorage.setItem('upscaler-theme', next);
   u.searchParams.set('__theme', next);
@@ -2468,7 +2598,8 @@ _TOGGLE_THEME_JS = """
 
 # Hover-magnifier (loupe) over result images. A document-level mousemove draws a
 # zoomed circular lens; only active while body has `loupe-on` (toggled by the
-# 🔍 button) and only over images inside a `.loupe` block. Injected in <head>.
+# Magnifier button) and only over images inside a `.loupe` block. Injected in
+# <head>.
 _MAGNIFIER_HEAD = """
 <script>
 (function(){
@@ -2519,200 +2650,375 @@ _MAGNIFIER_HEAD = """
 """
 
 _CSS = """
-/* (No font @import here — THEME's GoogleFont already loads Manrope, and it
-   falls back to system-ui when offline.) */
+/* (No font @import here — THEME's GoogleFont already loads Inter, and it
+   falls back to system-ui when offline.)
 
-/* Hover magnifier (loupe) */
-.mag-lens { position: fixed; pointer-events: none; display: none;
-    width: 220px; height: 220px; border-radius: 50%;
-    /* the lens is appended to <body>, outside the .gradio-container scope that
-       defines --ac — so give the accent a literal fallback */
-    border: 3px solid var(--ac, #0F766E); background-color: #000; background-repeat: no-repeat;
-    box-shadow: 0 6px 24px rgba(0,0,0,.45); transform: translate(-50%,-50%);
-    z-index: 99999; }
-body.loupe-on .loupe img { cursor: crosshair; }
-body.loupe-on #mag-btn { background: var(--ac) !important; color: #fff !important;
-    border-color: var(--ac) !important; }
+   How Gradio treats this string (worth knowing before editing):
+   - every top-level rule is emitted twice: as written, and again prefixed with
+     ".gradio-container… .contain" — so app rules beat component rules, and a
+     selector for something outside the app (html, body, the loupe) only ever
+     matches through its unprefixed copy;
+   - rules inside @media survive only in the prefixed form, so a media query
+     can't style html/body/.gradio-container;
+   - @supports / @container / @layer are dropped silently.
+   Colors come from the theme variables, so light and dark stay in step. */
 
-/* Custom CSS uses Gradio theme vars (--body-text-color etc.) so it adapts to
-   both light and dark automatically. --ac is the accent (teal), brighter in dark. */
-.gradio-container { --ac: #0F766E; --ac-weak: rgba(13,148,136,.10); }
-.dark .gradio-container, .dark { --ac: #2DD4BF; --ac-weak: rgba(45,212,191,.13); }
+/* ---- 1. Tokens ---------------------------------------------------------- */
+:root { --ac: #4F46E5; --ac-weak: rgba(79,70,229,.09); --ac-line: rgba(79,70,229,.28);
+    --bar-bg: #FFFFFF; --rail-bg: #FFFFFF; --track: #E2E5EA; --well: #ECEEF2;
+    --bar-h: 56px; --rail-w: 232px; }
+/* Dark: --ac is the accent as ink (text, icons), so it is lighter than the
+   fills. Gradio has no dark variant of --color-accent; lift it here, or icon
+   hovers and the selected tab would be indigo-600 on near-black. */
+.dark { --ac: #A5B4FC; --ac-weak: rgba(129,140,248,.15); --ac-line: rgba(129,140,248,.34);
+    --bar-bg: #111419; --rail-bg: #0F1216; --track: #2A303B; --well: #0F1216;
+    --color-accent: #818CF8; }
 
-/* gradio-app carries the .dark scope, so fill the viewport with IT (html/body
-   sit outside the scope and would otherwise show a strip behind the app). The
-   html/body fallback covers light mode; gradio-app (100vh) covers dark. */
+/* ---- 2. Page frame ------------------------------------------------------ */
 html, body { background: var(--body-background-fill) !important; }
+html { scroll-padding-top: calc(var(--bar-h) + 12px); scroll-padding-bottom: 96px; }
 gradio-app { display: block; min-height: 100vh;
     background: var(--body-background-fill) !important; }
-/* Flat, calm surface — no decorative glow or dot texture (matches Upscayl /
-   Krea / upscale.media). Just the theme's neutral background. */
-.gradio-container { max-width: 100% !important; padding: 6px 44px 64px !important;
-    position: relative;
-    background: var(--body-background-fill) !important; }
+/* overflow: visible — Gradio's own "overflow: hidden" here is what stops
+   position: sticky from working anywhere in the page. */
+.gradio-container { max-width: 100% !important; padding: 0 !important;
+    position: relative; overflow: visible !important;
+    background: var(--body-background-fill) !important;
+    -webkit-font-smoothing: antialiased; }
+.gradio-container > .main { padding: 0 !important; gap: 0 !important; }
+.contain > .column { gap: 0 !important; }
+footer { display: none !important; }
+/* gr.HTML insets its content by the block padding; our headers should line up
+   with the cards instead. */
+.html-container { padding: 0 !important; }
 
-/* Cheap transitions on interactive controls ONLY — color/border, no box-shadow
-   or transform on every .block (that caused heavy repaints / ~20fps jank). */
-button, .drop, .item, .dropdown-arrow {
-    transition: background-color .18s ease, border-color .18s ease, color .18s ease; }
-/* transform/box-shadow only on the single button being hovered (cheap). */
-.gradio-container button.primary {
-    transition: background-color .18s ease, transform .12s ease, box-shadow .2s ease; }
-.gradio-container button.primary:hover { transform: translateY(-1px);
-    box-shadow: 0 6px 18px rgba(13,148,136,.28); }
-.gradio-container button.primary:active { transform: translateY(0); box-shadow: none; }
+/* ---- 3. App bar --------------------------------------------------------- */
+/* Layers. Gradio's own: field titles 40, gallery preview 999, fullscreen 1000,
+   dropdown lists and toasts far above. The bar sits at 1000 so a scrolling
+   gallery preview can't cover it, while a fullscreen picture (same level,
+   later in the DOM) still does. */
+#appbar { position: sticky; top: 0; z-index: 1000; height: var(--bar-h);
+    margin: 0 !important; padding: 0 !important; border: 0 !important;
+    border-bottom: 1px solid var(--border-color-primary) !important;
+    border-radius: 0 !important; box-shadow: none !important;
+    background: var(--bar-bg) !important; overflow: visible !important; }
+/* right padding keeps the tagline clear of the fixed button cluster */
+#hero { display: flex; align-items: center; gap: 14px; height: var(--bar-h);
+    padding: 0 250px 0 18px; margin: 0; min-width: 0; }
+#hero .brandrow { display: flex; align-items: center; gap: 10px; flex: 0 0 auto; }
+#hero .logo { display: inline-flex; align-items: center; justify-content: center;
+    width: 30px; height: 30px; border-radius: 9px;
+    background: linear-gradient(140deg, #6366F1 0%, #4F46E5 55%, #7C3AED 100%);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.28), 0 1px 2px rgba(49,46,129,.4); }
+#hero .logo svg { width: 17px; height: 17px; color: #FFFFFF !important; }
+#hero .brand { font-size: 16px; font-weight: 700; letter-spacing: -0.02em;
+    color: var(--body-text-color); }
+#hero .tagline { flex: 0 1 auto; min-width: 0; padding-left: 14px;
+    border-left: 1px solid var(--border-color-primary);
+    color: var(--body-text-color-subdued) !important; font-size: 13px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pill { display: inline-flex; align-items: center; gap: 7px; flex: 0 0 auto;
+    padding: 4px 10px 4px 9px; border-radius: 999px;
+    border: 1px solid var(--border-color-primary);
+    background: var(--background-fill-secondary);
+    color: var(--body-text-color-subdued) !important;
+    font-size: 12px; font-weight: 500; white-space: nowrap; }
+.pill .dot { width: 7px; height: 7px; border-radius: 999px; background: #22C55E;
+    box-shadow: 0 0 0 3px rgba(34,197,94,.18); }
 
-/* Entrance motion kept to a single subtle hero fade (opacity only). Sections,
-   tab bodies and accordion bodies render statically — no movement on every tab
-   switch or accordion open. */
-@keyframes fadeUp { from { opacity: 0; } to { opacity: 1; } }
-#hero { will-change: opacity; animation: fadeUp .4s ease both; }
-.label-wrap .icon { transition: transform .25s cubic-bezier(.22,.61,.36,1) !important; }
+/* Theme / Magnifier / Settings: fixed, so they sit in the sticky bar at any
+   scroll position. Labels stay in the DOM (accessible name); two are icon-only. */
+#topbar { position: fixed; top: 0; right: 14px; z-index: 1000; height: var(--bar-h);
+    display: flex; flex-wrap: nowrap; align-items: center; gap: 4px;
+    width: auto !important; min-width: 0 !important; flex: none !important;
+    margin: 0 !important; }
+#topbar button { flex: 0 0 auto !important; width: auto !important;
+    min-width: 0 !important; height: 34px; padding: 0 11px; gap: 7px;
+    border: 1px solid transparent; border-radius: 9px; box-shadow: none;
+    background: transparent; color: var(--body-text-color-subdued);
+    font-size: 13px; font-weight: 500; white-space: nowrap; }
+#topbar button:hover { background: var(--background-fill-secondary);
+    color: var(--body-text-color); box-shadow: none; }
+#topbar button::before { content: ""; flex: 0 0 17px; width: 17px; height: 17px;
+    background: currentColor; -webkit-mask: var(--ico) center / contain no-repeat;
+    mask: var(--ico) center / contain no-repeat; }
+#topbar #theme-toggle, #topbar #settings-btn { position: relative;
+    width: 34px !important; padding: 0 !important; font-size: 0 !important;
+    gap: 0 !important; justify-content: center; }
+/* icon-only, so say what they do on hover and on keyboard focus (the empty
+   alt text keeps the tooltip out of the accessible name: that is the label) */
+#topbar #theme-toggle::after, #topbar #settings-btn::after { position: absolute;
+    top: calc(100% + 6px); right: 0; padding: 4px 8px; border-radius: 6px;
+    background: var(--body-text-color); color: var(--body-background-fill);
+    font-size: 12px; font-weight: 500; white-space: nowrap; opacity: 0;
+    pointer-events: none; transition: opacity .12s ease; }
+#topbar #theme-toggle:hover::after, #topbar #theme-toggle:focus-visible::after,
+#topbar #settings-btn:hover::after, #topbar #settings-btn:focus-visible::after {
+    opacity: 1; }
+#topbar #theme-toggle::after { content: "Light / dark"; content: "Light / dark" / ""; }
+#topbar #settings-btn::after { content: "Settings"; content: "Settings" / ""; }
+body.loupe-on .loupe img { cursor: crosshair; }
+body.loupe-on #mag-btn { background: var(--ac-weak) !important;
+    border-color: var(--ac-line) !important; color: var(--ac) !important; }
 
-/* Dropdown popover: opacity-only fade so it never animates its POSITION while
-   Gradio is still deciding to place it above/below the box (that transform was
-   the "jump up then drop down" flicker). Keep z-index/shadow/solid-bg so it
-   still reads as a floating layer. */
-@keyframes ddOpen { from { opacity: 0; } to { opacity: 1; } }
-ul.options, .options { animation: ddOpen .12s ease-out; z-index: 200 !important;
-    box-shadow: 0 8px 28px rgba(28,25,23,.16) !important;
-    background: var(--block-background-fill) !important;
-    border: 1px solid var(--border-color-primary) !important;
-    border-radius: 12px !important; padding: 5px !important;
-    max-height: 340px !important; }
-/* Roomy, rounded option rows with a clear hover / keyboard-active state and an
-   accent tint + weight on the currently-selected value. */
-ul.options .item, .options .item { transition: background-color .12s ease;
-    padding: 9px 12px !important; border-radius: 8px !important;
-    line-height: 1.4; margin: 1px 0; }
-ul.options .item:hover, .options .item:hover,
-ul.options .item.active, .options .item.active {
-    background: var(--ac-weak) !important; }
-ul.options .item.selected, .options .item.selected {
-    color: var(--ac) !important; font-weight: 600; }
-ul.options::-webkit-scrollbar { width: 8px; }
-ul.options::-webkit-scrollbar-thumb { background: var(--border-color-primary);
-    border-radius: 8px; }
-ul.options::-webkit-scrollbar-track { background: transparent; }
-.dropdown-arrow { transition: transform .25s cubic-bezier(.22,.61,.36,1); }
+/* Hover magnifier (loupe). The lens is appended to <body>, outside the app, so
+   the accent needs a literal fallback for light mode. */
+.mag-lens { position: fixed; pointer-events: none; display: none;
+    width: 220px; height: 220px; border-radius: 50%;
+    border: 2px solid var(--ac, #4F46E5); background-color: #000;
+    background-repeat: no-repeat;
+    box-shadow: 0 0 0 1px rgba(255,255,255,.35), 0 10px 32px rgba(0,0,0,.5);
+    transform: translate(-50%,-50%); z-index: 99999; }
 
-/* --- Smooth, purposeful micro-interactions (opacity / tiny transform only,
-   nothing that loops) — content eases in on transitions, controls give quiet
-   hover + focus feedback. --- */
-@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
-/* Tab content and accordion bodies ease in instead of snapping. */
-.tabitem { animation: fadeIn .28s ease; }
-[data-testid="accordion-content"] { animation: fadeIn .22s ease; }
-/* Gentle hover lift on secondary + preset buttons (primary already lifts). */
-.gradio-container button.secondary { transition: background-color .18s ease,
-    border-color .18s ease, color .18s ease, transform .12s ease, box-shadow .18s ease; }
-.gradio-container button.secondary:hover { transform: translateY(-1px);
-    box-shadow: 0 4px 12px rgba(28,25,23,.08); }
-.gradio-container button.secondary:active { transform: translateY(0); box-shadow: none; }
-/* Calm accent focus halo on text / number / color inputs. */
-.gradio-container input:focus, .gradio-container textarea:focus {
-    box-shadow: 0 0 0 3px var(--ac-weak) !important; outline: none !important; }
+/* ---- 4. Tool rail (the tab bar, laid out as a sidebar) -------------------
+   Gradio measures a hidden copy of the tab strip and moves whatever doesn't
+   fit into a "…" menu — those tabs are then not in the bar at all. Hiding the
+   measuring copy's buttons makes them measure 0, so all 18 tools always stay
+   in the bar and it can be laid out freely. (Depends on Gradio 6.27's
+   "tab-container visually-hidden" strip: re-check after a Gradio upgrade.) */
+.tab-wrapper > .tab-container.visually-hidden > button { display: none !important; }
+#main-tabs:not(.hide):not(.hidden) { display: grid;
+    grid-template-columns: var(--rail-w) minmax(0, 1fr); align-items: start; }
+#main-tabs > .tab-wrapper { grid-column: 1; grid-row: 1; display: block;
+    position: sticky; top: var(--bar-h); height: calc(100vh - var(--bar-h));
+    margin: 0; padding: 4px 10px 20px; overflow-y: auto;
+    background: var(--rail-bg);
+    border-right: 1px solid var(--border-color-primary); }
+#main-tabs > .tab-wrapper > .tab-container[role="tablist"] { flex-direction: column;
+    align-items: stretch; gap: 1px; height: auto; overflow: visible; }
+#main-tabs > .tab-wrapper > .tab-container[role="tablist"]::after { display: none; }
+#main-tabs > .tab-wrapper > .tab-container[role="tablist"] > button {
+    flex: 0 0 auto; width: 100%; height: 34px; padding: 0 10px; gap: 10px;
+    justify-content: flex-start; border-radius: 8px;
+    color: var(--body-text-color-subdued); font-size: 13.5px; font-weight: 500;
+    transition: background-color .15s ease, color .15s ease; }
+#main-tabs > .tab-wrapper > .tab-container[role="tablist"] > button::before {
+    content: ""; flex: 0 0 16px; width: 16px; height: 16px;
+    background: currentColor; -webkit-mask: var(--ico) center / contain no-repeat;
+    mask: var(--ico) center / contain no-repeat; }
+#main-tabs > .tab-wrapper > .tab-container[role="tablist"] > button:hover:not(.selected) {
+    background: var(--background-fill-secondary); color: var(--body-text-color); }
+#main-tabs > .tab-wrapper > .tab-container[role="tablist"] > button.selected {
+    background: var(--ac-weak); color: var(--ac); font-weight: 600; }
+/* ::after is Gradio's selected-tab underline. Not wanted in a rail — but the
+   first tool of each group reuses it as the group heading. */
+#main-tabs > .tab-wrapper > .tab-container[role="tablist"] > button::after {
+    display: none; }
+#main-tabs > .tab-wrapper > .tab-container[role="tablist"] > button[data-tab-id="upscale"],
+#main-tabs > .tab-wrapper > .tab-container[role="tablist"] > button[data-tab-id="color-light"],
+#main-tabs > .tab-wrapper > .tab-container[role="tablist"] > button[data-tab-id="video"] {
+    margin-top: 34px; }
+#main-tabs > .tab-wrapper > .tab-container[role="tablist"] > button[data-tab-id="upscale"]::after,
+#main-tabs > .tab-wrapper > .tab-container[role="tablist"] > button[data-tab-id="color-light"]::after,
+#main-tabs > .tab-wrapper > .tab-container[role="tablist"] > button[data-tab-id="video"]::after {
+    display: block; position: absolute; left: 10px; top: -23px; bottom: auto;
+    width: auto; height: auto; background: none; animation: none;
+    color: var(--body-text-color-subdued);
+    font-size: 10.5px; font-weight: 600; letter-spacing: .09em;
+    text-transform: uppercase; pointer-events: none; }
+#main-tabs > .tab-wrapper > .tab-container[role="tablist"] > button[data-tab-id="upscale"]::after {
+    content: "AI tools"; content: "AI tools" / ""; }
+#main-tabs > .tab-wrapper > .tab-container[role="tablist"] > button[data-tab-id="color-light"]::after {
+    content: "Edit"; content: "Edit" / ""; }
+#main-tabs > .tab-wrapper > .tab-container[role="tablist"] > button[data-tab-id="video"]::after {
+    content: "Export"; content: "Export" / ""; }
+/* Library stands apart from the tools: a hairline instead of a heading. */
+#main-tabs > .tab-wrapper > .tab-container[role="tablist"] > button[data-tab-id="library"] {
+    margin-top: 21px; }
+#main-tabs > .tab-wrapper > .tab-container[role="tablist"] > button[data-tab-id="library"]::after {
+    content: ""; display: block; position: absolute; left: 2px; right: 2px;
+    top: -11px; bottom: auto; width: auto; height: 1px; animation: none;
+    background: var(--border-color-primary); pointer-events: none; }
+#main-tabs .overflow-menu { align-self: flex-start; }
 
-@media (prefers-reduced-motion: reduce) {
-    #hero, .tabitem, [data-testid="accordion-content"],
-    ul.options, .options { animation: none; }
-    .gradio-container button.secondary:hover { transform: none; box-shadow: none; } }
+/* ---- 5. Tool pages ------------------------------------------------------ */
+#main-tabs > .tabitem { grid-column: 2; grid-row: 1; min-width: 0;
+    padding: 22px 28px 72px !important; border: 0 !important; }
+.tabitem > .column { gap: 18px; }
 
-#hero { padding: 32px 2px 18px; margin-bottom: 8px;
-    border-bottom: 1px solid var(--border-color-primary); }
-#hero .brandrow { display: flex; align-items: center; gap: 11px; }
-#hero .logo { color: var(--ac); display: inline-flex; }
-#hero .brand { font-size: 2.05rem; font-weight: 800; letter-spacing: -0.03em;
-    margin: 0; color: var(--body-text-color); }
-#hero .sub { color: var(--body-text-color-subdued); margin: 9px 0 14px;
-    font-size: 1.02rem; max-width: 64ch; }
-.pill { display: inline-flex; align-items: center; gap: 7px; padding: 5px 12px;
-    border: 1px solid var(--border-color-primary); border-radius: 999px;
-    font-size: 0.8rem; color: var(--body-text-color-subdued);
-    background: var(--block-background-fill); font-weight: 500; }
-.pill .dot { width: 7px; height: 7px; border-radius: 999px; background: #22C55E; }
+.sec-head { display: grid; grid-template-columns: auto minmax(0, 1fr);
+    column-gap: 14px; align-items: start; }
+.sec-head .sec-ic { display: inline-flex; align-items: center;
+    justify-content: center; width: 40px; height: 40px; border-radius: 11px;
+    background: var(--ac-weak); border: 1px solid var(--ac-line); }
+.sec-head .sec-ic svg { width: 19px; height: 19px; color: var(--ac) !important; }
+.sec-head .eyebrow { color: var(--ac) !important; font-size: 10.5px;
+    font-weight: 600; letter-spacing: .09em; text-transform: uppercase;
+    line-height: 1.3; }
+.sec-head h2 { margin: 2px 0 4px !important; font-size: 20px !important;
+    font-weight: 600 !important; letter-spacing: -0.02em; line-height: 1.25;
+    color: var(--body-text-color); }
+.sec-head p strong { color: inherit !important; font-weight: 600; }
+.sec-head p { margin: 0 !important; padding: 0 !important; max-width: 92ch;
+    font-size: 13.5px; line-height: 1.5;
+    color: var(--body-text-color-subdued) !important; }
 
-/* top-right utility cluster: Light/Dark + Magnifier toggles, side by side, no
-   overlap. The whole row floats (not just one button), so both stay together. */
-#topbar { position: absolute; top: 18px; right: 40px; z-index: 50;
-    display: flex; flex-wrap: nowrap; gap: 8px; align-items: center;
-    width: auto !important; min-width: 0 !important; flex: none !important; }
-#topbar button { width: auto !important; min-width: 0 !important;
-    flex: 0 0 auto !important; white-space: nowrap; }
-/* the gear is icon-only — keep it a tidy square with a slightly larger glyph */
-#settings-btn { font-size: 1.05rem !important; line-height: 1;
-    padding-left: 11px !important; padding-right: 11px !important; }
+/* Result column: wider than the controls, and pinned while they scroll. It
+   never grows taller than the window (it scrolls inside instead), because a
+   pinned column taller than the window can't be scrolled to its end.
+   position: sticky makes it a stacking context, which would trap a fullscreen
+   picture underneath the app bar — hence the :has() lift. */
+.sticky-col { position: sticky; top: calc(var(--bar-h) + 16px);
+    align-self: flex-start; flex-grow: 1.5 !important;
+    max-height: calc(100vh - var(--bar-h) - 32px); overflow-y: auto;
+    scrollbar-width: thin; }
+.sticky-col > * { flex-shrink: 0; }
+.sticky-col:has(.fullscreen) { z-index: 1001; }
+
+/* The tab's action row stays in reach: pinned to the bottom of the window
+   while the (often long) control column scrolls past it. The primary button
+   takes most of the spare width; no label is ever clipped — in a narrow column
+   the secondary buttons drop to a second line instead. */
+.actions { position: sticky; bottom: 12px; z-index: 60; flex-wrap: wrap !important;
+    gap: 8px; padding: 10px; border-radius: 14px;
+    border: 1px solid var(--border-color-primary);
+    background: var(--block-background-fill);
+    /* page-colored shadows, not a drop shadow: one hides whatever scrolls
+       through the gap under the bar, one fades the fields sliding in above */
+    box-shadow: 0 13px 0 4px var(--body-background-fill),
+        0 -8px 10px 2px var(--body-background-fill); }
+.actions button { min-width: max-content !important; white-space: nowrap; }
+.actions button.primary { flex: 4 1 auto !important; }
+.actions button:not(.primary) { flex: 1 0 auto !important; }
+
+/* sub-headings inside a control column */
+.col-label { margin-top: 4px; color: var(--body-text-color-subdued) !important;
+    font-size: 11px; font-weight: 600; letter-spacing: .08em;
+    text-transform: uppercase; }
+.col-label * { color: inherit !important; }
 
 /* compact, left-aligned button row (e.g. the Library toolbar) */
 .toolbar { gap: 8px; }
 .toolbar button { flex: 0 0 auto !important; width: auto !important;
     min-width: 0 !important; }
 
-/* quick-preset chips: content-sized buttons that wrap onto as many lines as
+/* quick-preset chips: content-sized pills that wrap onto as many lines as
    they need, instead of stretching to fill fixed-count rows */
-.preset-row { flex-wrap: wrap; gap: 8px; row-gap: 8px; }
+.preset-row { flex-wrap: wrap; gap: 6px; row-gap: 6px; }
 .preset-row button { flex: 0 0 auto !important; width: auto !important;
-    min-width: 0 !important; white-space: nowrap; }
+    min-width: 0 !important; white-space: nowrap; border-radius: 999px !important;
+    padding: 5px 12px !important; }
+/* active quick-preset: an accent outline, NOT a second filled button — so the
+   real Enhance button stays the only primary action on screen. */
+button.preset-active, .preset-active > button {
+    background: var(--ac-weak) !important; border-color: var(--ac-line) !important;
+    color: var(--ac) !important; font-weight: 600 !important; }
 
-/* On long tabs the output column sticks while the settings column scrolls, so
-   the result/preview is always in view. */
-.sticky-col { position: sticky; top: 16px; align-self: flex-start; }
+/* ---- 6. Cards & fields -------------------------------------------------- */
+.info-text { margin-top: 2px; line-height: 1.45; }
 
-/* Active magnifier chip: white text fails contrast on the bright dark-mode
-   accent — use the same dark ink as primary buttons there. */
-.dark body.loupe-on #mag-btn, body.loupe-on .dark #mag-btn {
-    color: #06231F !important; }
+/* the dropdown caret is drawn over the field: keep the value clear of it */
+.secondary-wrap > input { padding-right: 30px !important; text-overflow: ellipsis; }
 
-/* Narrow viewports: the absolute top-right cluster would overlap the hero —
-   let it flow in the layout instead. */
-@media (max-width: 720px) {
-    #topbar { position: static; justify-content: flex-end; margin-top: 4px; } }
+/* Slider: Gradio hard-codes an 8px track, the same light grey in both modes,
+   and a flat white thumb. */
+.slider_input_container input[type=range] { height: 20px !important; }
+input[type=range]::-webkit-slider-runnable-track { height: 4px !important;
+    border-radius: 999px !important;
+    background: linear-gradient(to right, var(--slider-color) var(--range_progress),
+        var(--track) var(--range_progress)) !important; }
+input[type=range]::-webkit-slider-thumb { width: 14px !important;
+    height: 14px !important; margin-top: -5px !important;
+    background-color: #FFFFFF !important;
+    box-shadow: 0 0 0 1px rgba(16,24,40,.16), 0 1px 3px rgba(16,24,40,.3) !important; }
+input[type=range]:focus-visible::-webkit-slider-thumb {
+    box-shadow: 0 0 0 1px var(--color-accent), 0 0 0 5px var(--ac-weak) !important; }
+input[type=range]::-moz-range-track { height: 4px !important;
+    border-radius: 999px !important; background: var(--track) !important; }
+input[type=range]::-moz-range-progress { height: 4px !important; }
+input[type=range]::-moz-range-thumb { width: 14px !important; height: 14px !important;
+    box-shadow: 0 0 0 1px rgba(16,24,40,.16), 0 1px 3px rgba(16,24,40,.3) !important; }
+/* Slider header: Gradio puts the help text in the label, beside the number
+   box, so in a two-up row it wraps into a 90px column. Lift the label's
+   children into the row and give the help text a line of its own. */
+.head:has(> .tab-like-container) > label { display: contents; }
+.head:has(> .tab-like-container) > label > [data-testid="block-info"] {
+    flex: 1 1 0; min-width: 0; order: 0; }
+.head:has(> .tab-like-container) > .tab-like-container { order: 1; }
+.head:has(> .tab-like-container) .info-text { order: 2; flex: 0 0 100%; }
+.tab-like-container { border-radius: 7px !important; height: 26px !important; }
+.min_value, .max_value { font-size: 11px !important; font-variant-numeric: tabular-nums; }
 
-/* tab bar: accent the selected tab.
-   Gradio measures this strip and moves whatever doesn't fit into a "…" menu —
-   and those tabs are NOT rendered in the bar at all, so no amount of
-   flex-wrap brings them back. With a dozen-plus tools the only fix is to make
-   the buttons narrower, so the whole toolset stays one click away. Measured:
-   0.78rem is the largest type that keeps all 18 tools inline down to 1200px. */
-.tabitem { padding-top: 28px !important; }
-.tab-container button { padding: 0 6px !important; font-size: 0.78rem !important; }
-
-/* section heads: accent eyebrow w/ icon + underlined title */
-.sec-head { margin-bottom: 8px; }
-.sec-head .eyebrow { display: flex; align-items: center; gap: 6px;
-    font-size: 0.72rem; font-weight: 700; letter-spacing: 0.13em;
-    text-transform: uppercase; color: var(--ac); }
-.sec-head .eyebrow .ic { display: inline-flex; align-items: center; }
-.sec-head h2 { position: relative; display: inline-block; font-size: 1.32rem;
-    font-weight: 700; letter-spacing: -0.02em; margin: 5px 0 9px;
-    padding-bottom: 8px; color: var(--body-text-color); }
-.sec-head h2::after { content: ""; position: absolute; left: 0; bottom: 0;
-    width: 40px; height: 2px; border-radius: 2px; background: var(--ac); }
-.sec-head p { color: var(--body-text-color-subdued); margin: 0; font-size: 0.92rem;
-    max-width: 72ch; line-height: 1.55; }
-.col-label { font-weight: 600; color: var(--body-text-color); font-size: 0.92rem;
-    border-left: 3px solid var(--ac); padding-left: 9px; }
-.spacer { height: 22px; }
-
-/* clean, friendly drop zones for image/file inputs */
-.drop { border: 1.5px dashed var(--border-color-primary) !important;
-    background: var(--block-background-fill) !important;
-    border-radius: 14px !important; box-shadow: none !important;
-    transition: border-color .15s ease, background .15s ease; }
-.drop:hover { border-color: var(--ac) !important; background: var(--ac-weak) !important; }
+/* Accordion: a quiet disclosure row. The fields inside drop their own card,
+   so an open section reads as one surface, not boxes in a box. */
+.gr-accordion > .label-wrap { font-weight: 500; }
+.gr-accordion > .label-wrap.open { margin-bottom: 10px; }
+/* Gradio's toggle is the text glyph "▼", turned by an inline transform; draw a
+   chevron instead: right when closed, down when open. */
+.label-wrap .icon { font-size: 0 !important; width: 16px; height: 16px;
+    margin: 0 !important; background: var(--body-text-color-subdued);
+    -webkit-mask: var(--ico-chevron) center / contain no-repeat;
+    mask: var(--ico-chevron) center / contain no-repeat;
+    transform: rotate(-90deg) !important;
+    transition: transform .2s cubic-bezier(.22,.61,.36,1) !important; }
+.label-wrap.open .icon { transform: rotate(0deg) !important; }
+.gr-accordion .form { border: 0 !important; border-radius: 0 !important;
+    box-shadow: none !important; background: transparent !important;
+    gap: 2px 20px !important; }
+.gr-accordion .form > .block { padding-left: 0 !important;
+    padding-right: 0 !important; }
+/* gr.Group: the same single surface (stock Gradio shows it as a grey slab
+   with hairline cells) */
+.gr-group { background: var(--block-background-fill) !important; }
+.gr-group .form { border: 0 !important; border-radius: 0 !important;
+    box-shadow: none !important; background: transparent !important;
+    gap: 2px 20px !important; }
+.gr-group .styler > .block.hide-container { padding: 12px 14px 0 !important; }
+.gr-accordion .gr-accordion { background: var(--background-fill-secondary);
+    box-shadow: none; }
 
 /* "Tips" lists inside the collapsed Tips accordions — quiet text, no nested box. */
-.notes ul { margin: 2px 0 0; padding-left: 20px; }
-.notes li { margin: 3px 0; font-size: 0.88rem; line-height: 1.5;
+.notes ul { margin: 2px 0 0; padding-left: 18px; }
+.notes li { margin: 3px 0; font-size: 12.5px; line-height: 1.5;
     color: var(--body-text-color-subdued); }
 .notes li strong { color: var(--body-text-color); font-weight: 600; }
 
-/* active quick-preset: a calm accent outline, NOT a second filled button — so
-   the real Enhance button stays the only primary action on screen. */
-button.preset-active, .preset-active > button {
-    border-color: var(--ac) !important; color: var(--ac) !important;
-    box-shadow: inset 0 0 0 1px var(--ac) !important; font-weight: 700 !important; }
+/* ---- 7. Buttons --------------------------------------------------------- */
+.gradio-container button:focus-visible { outline: 2px solid var(--color-accent);
+    outline-offset: 2px; }
+.gradio-container input:not([type=range]):not([type=checkbox]):not([type=radio]):focus,
+.gradio-container textarea:focus { outline: none !important; }
+.gradio-container input[type=range]:focus-visible {
+    outline: 2px solid var(--color-accent) !important; outline-offset: 4px;
+    border-radius: 999px; }
+.gradio-container input[type=checkbox]:focus-visible,
+.gradio-container input[type=radio]:focus-visible {
+    outline: 2px solid var(--color-accent) !important; outline-offset: 2px; }
 
+/* ---- 8. Media ----------------------------------------------------------- */
+/* pictures sit in a recessed well, not on a white card */
+.block:has(> .image-container) { background: var(--well) !important; }
+/* the before/after slider gives its top layer an opaque backdrop (it has to
+   cover the layer below); make that backdrop the well, not a white slab */
+.block:has(> .image-container) img.fixed { background: var(--well) !important; }
+/* drop zones for image/file inputs */
+.drop { border: 1.5px dashed var(--border-color-primary) !important;
+    box-shadow: none !important;
+    transition: border-color .15s ease, background-color .15s ease; }
+.drop:hover { border-color: var(--ac-line) !important;
+    background: var(--ac-weak) !important; }
+
+/* ---- 9. Popovers -------------------------------------------------------- */
+/* Dropdown list: opacity-only fade, so it never animates its POSITION while
+   Gradio is still deciding to place it above or below the field. */
+@keyframes ddOpen { from { opacity: 0; } to { opacity: 1; } }
+.options { animation: ddOpen .12s ease-out;
+    border: 1px solid var(--border-color-primary) !important;
+    border-radius: 10px !important; padding: 4px !important;
+    background: var(--background-fill-primary) !important;
+    box-shadow: var(--shadow-drop-lg) !important; max-height: 340px !important; }
+.options .item { padding: 7px 10px !important; margin: 1px 0;
+    border-radius: 7px !important; font-size: 13px; line-height: 1.4;
+    transition: background-color .12s ease; }
+.options .item:hover, .options .item.active {
+    background: var(--background-fill-secondary) !important; }
+.options .item.selected { color: var(--ac) !important; font-weight: 600; }
+.options .option-list::-webkit-scrollbar { width: 8px; }
+.options .option-list::-webkit-scrollbar-thumb {
+    background: var(--border-color-primary); border-radius: 8px; }
+.options .option-list::-webkit-scrollbar-track { background: transparent; }
+
+/* ---- 10. Text ----------------------------------------------------------- */
 /* Long file paths in `code` spans must wrap, not get clipped at the block edge
    (e.g. the Settings "Where your files live" paths in a half-width column).
    Gradio's own `.md :not(pre)>code` uses word-break:normal + display:inline-flex
@@ -2730,12 +3036,77 @@ button.preset-active, .preset-active > button {
 /* Markdown prose must wrap and not be clipped at the block edge — this was
    shaving the first letter off wrapped lines (e.g. the About text). overflow
    visible + a hair of side padding keeps glyphs fully inside. */
-.gradio-container .md, .gradio-container .prose { overflow: visible; }
+.gradio-container .md, .gradio-container .prose { overflow: visible;
+    font-size: 13.5px; line-height: 1.55; }
 .gradio-container .md p, .gradio-container .prose p,
 .gradio-container .md li, .gradio-container .prose li {
     overflow-wrap: break-word; word-break: break-word; padding-inline: 2px; }
 
-footer { display: none !important; }
+/* ---- 11. Settings page -------------------------------------------------- */
+#settings-view { padding: 22px 28px 72px; gap: 18px; }
+
+/* ---- 12. Motion --------------------------------------------------------- */
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+.tabitem { animation: fadeIn .22s ease; }
+[data-testid="accordion-content"] { animation: fadeIn .18s ease; }
+@media (prefers-reduced-motion: reduce) {
+    .tabitem { animation: none; }
+    [data-testid="accordion-content"] { animation: none; }
+    .options { animation: none; }
+    .label-wrap .icon { transition: none !important; } }
+
+/* ---- 13. Small screens: the rail becomes a scrolling strip ---------------- */
+@media (max-width: 900px) {
+    #main-tabs:not(.hide):not(.hidden) { display: block; }
+    #main-tabs > .tab-wrapper { position: static; height: auto; padding: 8px 10px;
+        overflow: visible; border-right: 0;
+        border-bottom: 1px solid var(--border-color-primary); }
+    #main-tabs > .tab-wrapper > .tab-container[role="tablist"] { flex-direction: row;
+        gap: 2px; overflow-x: auto; scrollbar-width: none;
+        -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 44px), transparent);
+        mask-image: linear-gradient(to right, #000 calc(100% - 44px), transparent); }
+    #main-tabs > .tab-wrapper > .tab-container[role="tablist"] > button {
+        width: auto; margin-top: 0 !important; }
+    #main-tabs > .tab-wrapper > .tab-container[role="tablist"] > button::after {
+        display: none !important; }
+    #main-tabs > .tabitem { padding: 16px 14px 56px !important; }
+    #settings-view { padding: 16px 14px 56px; }
+    #hero { padding-right: 150px; }
+    #hero .tagline { display: none; }
+    #topbar #mag-btn { width: 34px !important; padding: 0 !important;
+        font-size: 0 !important; gap: 0 !important; justify-content: center; } }
+@media (max-width: 720px) {
+    .sticky-col { position: static; max-height: none; overflow: visible; } }
+@media (max-width: 520px) {
+    #hero .pill { display: none; } }
+
+/* ---- 14. Icons ----------------------------------------------------------
+   Stroke glyphs as CSS masks, so they take the color of the text beside them.
+   Tab labels and button labels are plain text in Gradio — an inline <svg>
+   is not possible there. One glyph per gr.Tab(id=...). */
+:root { --ico: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='3' fill='%23000'/%3E%3C/svg%3E");
+    --ico-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E"); }
+#main-tabs [data-tab-id="upscale"] { --ico: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M15 3h6v6'/%3E%3Cpath d='M9 21H3v-6'/%3E%3Cpath d='m21 3-7 7'/%3E%3Cpath d='m3 21 7-7'/%3E%3C/svg%3E"); }
+#main-tabs [data-tab-id="colorize"] { --ico: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 22C6.5 22 2 17.5 2 12S6.5 2 12 2s10 4 10 9a5 5 0 0 1-5 5h-2.2a1.8 1.8 0 0 0-1.4 2.8l.3.4a1.8 1.8 0 0 1-1.4 2.8z'/%3E%3Cpath d='M13.5 6.5h.01M17.5 10.5h.01M6.5 12.5h.01M8.5 7.5h.01'/%3E%3C/svg%3E"); }
+#main-tabs [data-tab-id="objects"] { --ico: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21'/%3E%3Cpath d='M22 21H7'/%3E%3Cpath d='m5 11 9 9'/%3E%3C/svg%3E"); }
+#main-tabs [data-tab-id="remove-bg"] { --ico: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='6' cy='6' r='3'/%3E%3Cpath d='M8.12 8.12 12 12'/%3E%3Cpath d='M20 4 8.12 15.88'/%3E%3Ccircle cx='6' cy='18' r='3'/%3E%3Cpath d='M14.8 14.8 20 20'/%3E%3C/svg%3E"); }
+#main-tabs [data-tab-id="color-light"] { --ico: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='4.5'/%3E%3Cpath d='M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22M4.9 4.9l1.8 1.8M17.3 17.3l1.8 1.8M19.1 4.9l-1.8 1.8M6.7 17.3l-1.8 1.8'/%3E%3C/svg%3E"); }
+#main-tabs [data-tab-id="effects"] { --ico: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='2.5' y='5' width='19' height='14' rx='2'/%3E%3Cpath d='M2.5 9h3M2.5 15h3M18.5 9h3M18.5 15h3M9 5v14M15 5v14'/%3E%3C/svg%3E"); }
+#main-tabs [data-tab-id="blur"] { --ico: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='9'/%3E%3Ccircle cx='12' cy='12' r='4.5'/%3E%3Cpath d='M12 3v2M12 19v2M3 12h2M19 12h2'/%3E%3C/svg%3E"); }
+#main-tabs [data-tab-id="watermark"] { --ico: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='3' y='4.5' width='18' height='15' rx='2'/%3E%3Cpath d='M8 15.5h8M8 12h5'/%3E%3C/svg%3E"); }
+#main-tabs [data-tab-id="design"] { --ico: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='3.5' y='2.5' width='17' height='19' rx='2'/%3E%3Cpath d='M7 7h10'/%3E%3Cpath d='M7 10.5h6'/%3E%3Crect x='7' y='14' width='10' height='4.5' rx='1'/%3E%3C/svg%3E"); }
+#main-tabs [data-tab-id="screenshot"] { --ico: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='2.5' y='4' width='19' height='16' rx='2.5'/%3E%3Cpath d='M2.5 8.5h19'/%3E%3Cpath d='M5.8 6.25h.01M8.6 6.25h.01'/%3E%3C/svg%3E"); }
+#main-tabs [data-tab-id="crop"] { --ico: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6.5 2v15.5H22'/%3E%3Cpath d='M2 6.5h15.5V22'/%3E%3C/svg%3E"); }
+#main-tabs [data-tab-id="sharpen"] { --ico: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 3.5 20.5 20.5 12 16 3.5 20.5z'/%3E%3C/svg%3E"); }
+#main-tabs [data-tab-id="video"] { --ico: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='2' y='5' width='20' height='14' rx='2.5'/%3E%3Cpath d='m10 9 5 3-5 3z'/%3E%3C/svg%3E"); }
+#main-tabs [data-tab-id="convert"] { --ico: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M7 4 3 8l4 4'/%3E%3Cpath d='M3 8h14'/%3E%3Cpath d='m17 20 4-4-4-4'/%3E%3Cpath d='M21 16H7'/%3E%3C/svg%3E"); }
+#main-tabs [data-tab-id="batch"] { --ico: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='8' y='8' width='12' height='12' rx='2'/%3E%3Cpath d='M4 16V6a2 2 0 0 1 2-2h10'/%3E%3C/svg%3E"); }
+#main-tabs [data-tab-id="lian-li"] { --ico: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='2' y='8' width='20' height='8' rx='1.5'/%3E%3Cpath d='M6 12h.01M9 12h.01'/%3E%3C/svg%3E"); }
+#main-tabs [data-tab-id="steam"] { --ico: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='1.5' y='8' width='3.4' height='8' rx='.8'/%3E%3Crect x='5.8' y='8' width='3.4' height='8' rx='.8'/%3E%3Crect x='10.1' y='8' width='3.4' height='8' rx='.8'/%3E%3Crect x='14.4' y='8' width='3.4' height='8' rx='.8'/%3E%3Crect x='18.7' y='8' width='3.4' height='8' rx='.8'/%3E%3C/svg%3E"); }
+#main-tabs [data-tab-id="library"] { --ico: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='3' y='3' width='7' height='7' rx='1.5'/%3E%3Crect x='14' y='3' width='7' height='7' rx='1.5'/%3E%3Crect x='3' y='14' width='7' height='7' rx='1.5'/%3E%3Crect x='14' y='14' width='7' height='7' rx='1.5'/%3E%3C/svg%3E"); }
+#theme-toggle { --ico: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='9'/%3E%3Cpath d='M12 3a9 9 0 0 1 0 18z' fill='%23000'/%3E%3C/svg%3E"); }
+#mag-btn { --ico: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='11' cy='11' r='7'/%3E%3Cpath d='m21 21-4.3-4.3'/%3E%3Cpath d='M11 8v6M8 11h6'/%3E%3C/svg%3E"); }
+#settings-btn { --ico: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='3'/%3E%3Cpath d='M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z'/%3E%3C/svg%3E"); }
 """
 
 
@@ -2917,8 +3288,9 @@ ICON_LOGO = (
 def _section_head(eyebrow: str, title: str, desc: str, icon: str = "") -> str:
     return (
         '<div class="sec-head">'
-        f'<div class="eyebrow"><span class="ic">{icon}</span>{eyebrow}</div>'
-        f"<h2>{title}</h2><p>{desc}</p></div>"
+        f'<span class="sec-ic">{icon}</span>'
+        f'<div class="sec-tx"><div class="eyebrow">{eyebrow}</div>'
+        f"<h2>{title}</h2><p>{desc}</p></div></div>"
     )
 
 
@@ -2930,38 +3302,40 @@ def build_demo() -> gr.Blocks:
     _cfg_model = cfg["model"] if cfg["model"] in MODELS else "realesrgan-x2plus"
     _cfg_device = cfg["device"] if cfg["device"] in _DEVICES else "auto"
     # fill_width: Gradio otherwise centres the whole app inside a fixed max
-    # width, which left ~130px of dead gutter on each side at 1200px and was
-    # the real reason the tab bar ran out of room.
+    # width; the app bar and the tool rail are meant to run edge to edge.
     with gr.Blocks(title="Upscaler", fill_width=True) as demo:
+        # The app bar (sticky, see _CSS): brand, one line on what this is, and
+        # where the work runs. What each tool does is said on its own page.
         gr.HTML(
             '<div id="hero">'
             f'<div class="brandrow"><span class="logo">{ICON_LOGO}</span>'
             '<span class="brand">Upscaler</span></div>'
-            '<div class="sub">Enlarge, restore and colorize photos with AI, then '
-            "develop them: color and light, film effects, sharpen, blur, crop, "
-            "watermark, beautify a screenshot, drop it into a design template, "
-            "strip the GPS location, hit a size limit — or batch a whole folder. "
-            "Every tool runs on your own machine; nothing is ever uploaded.</div>"
+            '<span class="tagline">Private AI image tools. Every tool runs on '
+            "your own machine; nothing is ever uploaded.</span>"
             f'<span class="pill"><span class="dot"></span>Running locally · {device_name}</span>'
-            "</div>"
+            "</div>",
+            elem_id="appbar",
         )
+        # Button labels are plain text in Gradio, so the icons are CSS masks
+        # keyed on these ids (see _CSS). Theme and Settings render icon-only;
+        # their text stays in the DOM as the accessible name.
         with gr.Row(elem_id="topbar"):
             theme_btn = gr.Button(
-                "◐ Light / Dark", elem_id="theme-toggle", size="sm", variant="secondary"
+                "Theme", elem_id="theme-toggle", size="sm", variant="secondary"
             )
             mag_btn = gr.Button(
-                "🔍 Magnifier", elem_id="mag-btn", size="sm", variant="secondary",
+                "Magnifier", elem_id="mag-btn", size="sm", variant="secondary",
             )
             settings_btn = gr.Button(
-                "⚙", elem_id="settings-btn", size="sm", variant="secondary",
+                "Settings", elem_id="settings-btn", size="sm", variant="secondary",
             )
         theme_btn.click(None, js=_TOGGLE_THEME_JS)
         # JS-only toggle: enables the hover loupe over result images
         mag_btn.click(None, js="() => document.body.classList.toggle('loupe-on')")
 
-        with gr.Tabs() as main_tabs:
+        with gr.Tabs(elem_id="main-tabs") as main_tabs:
             # ---- Tab: Upscale & Enhance ----
-            with gr.Tab("Upscale"):
+            with gr.Tab("Upscale", id="upscale"):
                 gr.HTML(_section_head(
                     "Enhance", "Upscale & Enhance",
                     "Enlarge and sharpen any image with AI, plus optional cleanup "
@@ -2974,7 +3348,7 @@ def build_demo() -> gr.Blocks:
                     with gr.Column(scale=1):
                         inp = gr.Image(
                             label="Input", type="pil",
-                            sources=["upload", "clipboard"], height=300,
+                            sources=["upload", "clipboard"], height=240,
                             elem_classes="drop", buttons=["download", "fullscreen"],
                         )
                         gr.Markdown("**Quick presets** — a starting point; tweak anything after.")
@@ -3081,7 +3455,7 @@ def build_demo() -> gr.Blocks:
                                 "both, or neither. Needs the optional \"face\" packages.",
                             )
                             restore_btn = gr.Button(
-                                "✨ Clean up only (deblur / denoise · no upscale)",
+                                "Clean up only (no upscale)",
                                 variant="secondary",
                             )
                         with gr.Accordion("Restore faces", open=False):
@@ -3147,12 +3521,12 @@ def build_demo() -> gr.Blocks:
                                 "(under Advanced) first.",
                                 elem_classes="notes",
                             )
-                        with gr.Row():
+                        with gr.Row(elem_classes="actions"):
                             run = gr.Button(
                                 "Enhance", variant="primary", size="lg", scale=3
                             )
-                            enh_cancel = gr.Button("✕ Cancel", variant="stop", scale=1)
-                            clear = gr.Button("↺ Clear", variant="secondary", scale=1)
+                            enh_cancel = gr.Button("Cancel", variant="stop", scale=1)
+                            clear = gr.Button("Clear", variant="secondary", scale=1)
                     with gr.Column(scale=1, elem_classes="sticky-col"):
                         out = gr.ImageSlider(
                             label="Before / after — drag the divider to compare",
@@ -3163,14 +3537,14 @@ def build_demo() -> gr.Blocks:
                             # layer is absolutely centered), tearing the seam
                             # vertically. max_height scales the image instead,
                             # keeping both layers in identical boxes.
-                            type="pil", max_height=300,
+                            type="pil", max_height=520,
                             buttons=["download", "fullscreen"],
                             elem_classes=["loupe"],
                         )
                         info = gr.Markdown()
 
             # ---- Tab: Colorize (DDColor) ----
-            with gr.Tab("Colorize"):
+            with gr.Tab("Colorize", id="colorize"):
                 gr.HTML(_section_head(
                     "Color", "Colorize Photos",
                     "Bring black-and-white or faded photos to life. DDColor predicts "
@@ -3181,7 +3555,7 @@ def build_demo() -> gr.Blocks:
                     with gr.Column(scale=1):
                         col_in = gr.Image(
                             label="Input", type="pil",
-                            sources=["upload", "clipboard"], height=300,
+                            sources=["upload", "clipboard"], height=240,
                             elem_classes="drop", buttons=["download", "fullscreen"],
                         )
                         col_model = gr.Dropdown(
@@ -3204,20 +3578,20 @@ def build_demo() -> gr.Blocks:
                                 "* **First run downloads ~870MB**, then it's cached.",
                                 elem_classes="notes",
                             )
-                        with gr.Row():
+                        with gr.Row(elem_classes="actions"):
                             col_btn = gr.Button("Colorize", variant="primary",
                                                 size="lg", scale=3)
-                            col_clear = gr.Button("↺ Clear", variant="secondary", scale=1)
-                    with gr.Column(scale=1):
+                            col_clear = gr.Button("Clear", variant="secondary", scale=1)
+                    with gr.Column(scale=1, elem_classes="sticky-col"):
                         col_out = gr.ImageSlider(
                             # max_height, not height — see `out` slider above.
-                            label="Before / after", type="pil", max_height=300,
+                            label="Before / after", type="pil", max_height=520,
                             elem_classes=["loupe"],
                         )
                         col_info = gr.Markdown()
 
             # ---- Tab: Remove objects / inpaint (LaMa) ----
-            with gr.Tab("Objects"):
+            with gr.Tab("Objects", id="objects"):
                 gr.HTML(_section_head(
                     "Erase", "Remove Objects",
                     "Paint over anything you want gone — a photobomber, a sign, a "
@@ -3228,7 +3602,7 @@ def build_demo() -> gr.Blocks:
                     with gr.Column(scale=1):
                         ip_editor = gr.ImageEditor(
                             label="Paint over the object to remove", type="pil",
-                            height=360, sources=["upload", "clipboard"],
+                            height=420, sources=["upload", "clipboard"],
                             layers=False, transforms=(),
                             brush=gr.Brush(
                                 colors=["#ffffff"], color_mode="fixed", default_size=24
@@ -3249,20 +3623,20 @@ def build_demo() -> gr.Blocks:
                                 "* **First run downloads ~196MB**, then it's cached.",
                                 elem_classes="notes",
                             )
-                        with gr.Row():
+                        with gr.Row(elem_classes="actions"):
                             ip_btn = gr.Button("Remove object", variant="primary",
                                                size="lg", scale=3)
-                            ip_clear = gr.Button("↺ Clear", variant="secondary", scale=1)
-                    with gr.Column(scale=1):
+                            ip_clear = gr.Button("Clear", variant="secondary", scale=1)
+                    with gr.Column(scale=1, elem_classes="sticky-col"):
                         ip_out = gr.ImageSlider(
                             # max_height, not height — see `out` slider above.
-                            label="Before / after", type="pil", max_height=360,
+                            label="Before / after", type="pil", max_height=520,
                             elem_classes=["loupe"],
                         )
                         ip_info = gr.Markdown()
 
             # ---- Tab: Remove background ----
-            with gr.Tab("Remove BG"):
+            with gr.Tab("Remove BG", id="remove-bg"):
                 gr.HTML(_section_head(
                     "Cut-out", "Remove Background",
                     "Lift the subject cleanly off its background with AI and save a "
@@ -3274,7 +3648,7 @@ def build_demo() -> gr.Blocks:
                     with gr.Column(scale=1):
                         bg_in = gr.Image(
                             label="Input", type="pil",
-                            sources=["upload", "clipboard"], height=300,
+                            sources=["upload", "clipboard"], height=240,
                             elem_classes="drop", buttons=["download", "fullscreen"],
                         )
                         bg_model = gr.Dropdown(
@@ -3301,20 +3675,20 @@ def build_demo() -> gr.Blocks:
                                 "in as a sticker.",
                                 elem_classes="notes",
                             )
-                        with gr.Row():
+                        with gr.Row(elem_classes="actions"):
                             bg_btn = gr.Button("Remove background", variant="primary",
                                                size="lg", scale=3)
-                            bg_clear = gr.Button("↺ Clear", variant="secondary", scale=1)
-                    with gr.Column(scale=1):
+                            bg_clear = gr.Button("Clear", variant="secondary", scale=1)
+                    with gr.Column(scale=1, elem_classes="sticky-col"):
                         bg_preview = gr.Image(
                             label="Cut-out (checkerboard = transparent)",
-                            height=300, buttons=["fullscreen"], elem_classes=["loupe"],
+                            height=520, buttons=["fullscreen"], elem_classes=["loupe"],
                         )
                         bg_file = gr.File(label="Download transparent PNG")
                         bg_info = gr.Markdown()
 
             # ---- Tab: Color & light (no AI) ----
-            with gr.Tab("Color & Light"):
+            with gr.Tab("Color & Light", id="color-light"):
                 gr.HTML(_section_head(
                     "Develop", "Color & Light",
                     "Exposure, contrast, highlights and shadows, white balance, "
@@ -3327,7 +3701,7 @@ def build_demo() -> gr.Blocks:
                     with gr.Column(scale=1):
                         ad_in = gr.Image(
                             label="Input", type="pil", image_mode=None,
-                            sources=["upload", "clipboard"], height=300,
+                            sources=["upload", "clipboard"], height=240,
                             elem_classes="drop", buttons=["download", "fullscreen"],
                         )
                         with gr.Row():
@@ -3337,7 +3711,7 @@ def build_demo() -> gr.Blocks:
                                 info="A starting point — every slider stays editable "
                                 "afterwards. 'None' resets them all.",
                             )
-                            ad_auto = gr.Button("✨ Auto", variant="secondary", scale=1)
+                            ad_auto = gr.Button("Auto", variant="secondary", scale=1)
                         with gr.Accordion("Light", open=True):
                             ad_exposure = gr.Slider(
                                 -100, 100, value=0, step=1, label="Exposure",
@@ -3496,26 +3870,26 @@ def build_demo() -> gr.Blocks:
                                 "a second region differently.",
                                 elem_classes="notes",
                             )
-                        with gr.Row():
+                        with gr.Row(elem_classes="actions"):
                             ad_btn = gr.Button("Apply (full size)", variant="primary",
                                                size="lg", scale=3)
-                            ad_use = gr.Button("↪ Use as input", variant="secondary", scale=2)
-                            ad_clear = gr.Button("↺ Clear", variant="secondary", scale=1)
+                            ad_use = gr.Button("Use as input", variant="secondary", scale=2)
+                            ad_clear = gr.Button("Clear", variant="secondary", scale=1)
                     with gr.Column(scale=1, elem_classes="sticky-col"):
                         ad_preview = gr.ImageSlider(
                             # max_height, not height — see `out` slider above.
                             label="Live preview — before / after (drag the divider)",
-                            type="pil", max_height=340, elem_classes=["loupe"],
+                            type="pil", max_height=400, elem_classes=["loupe"],
                         )
                         ad_out = gr.ImageSlider(
                             label="Result at full size — before / after", type="pil",
-                            max_height=340, elem_classes=["loupe"], interactive=False,
+                            max_height=220, elem_classes=["loupe"], interactive=False,
                         )
                         ad_file = gr.File(label="Download PNG")
                         ad_info = gr.Markdown()
 
             # ---- Tab: Effects & film looks (no AI) ----
-            with gr.Tab("Effects"):
+            with gr.Tab("Effects", id="effects"):
                 gr.HTML(_section_head(
                     "Looks", "Effects & film looks",
                     "Grain, halation, light leaks, vignettes, duotone, halftone, "
@@ -3528,7 +3902,7 @@ def build_demo() -> gr.Blocks:
                     with gr.Column(scale=1):
                         fx_in = gr.Image(
                             label="Input", type="pil", image_mode=None,
-                            sources=["upload", "clipboard"], height=300,
+                            sources=["upload", "clipboard"], height=240,
                             elem_classes="drop", buttons=["download", "fullscreen"],
                         )
                         fx_preset = gr.Dropdown(
@@ -3729,26 +4103,26 @@ def build_demo() -> gr.Blocks:
                                 "painted area, or grain everywhere except the faces.",
                                 elem_classes="notes",
                             )
-                        with gr.Row():
+                        with gr.Row(elem_classes="actions"):
                             fx_btn = gr.Button("Apply (full size)", variant="primary",
                                                size="lg", scale=3)
-                            fx_use = gr.Button("↪ Use as input", variant="secondary", scale=2)
-                            fx_clear = gr.Button("↺ Clear", variant="secondary", scale=1)
+                            fx_use = gr.Button("Use as input", variant="secondary", scale=2)
+                            fx_clear = gr.Button("Clear", variant="secondary", scale=1)
                     with gr.Column(scale=1, elem_classes="sticky-col"):
                         fx_preview = gr.ImageSlider(
                             # max_height, not height — see `out` slider above.
                             label="Live preview — before / after (drag the divider)",
-                            type="pil", max_height=340, elem_classes=["loupe"],
+                            type="pil", max_height=400, elem_classes=["loupe"],
                         )
                         fx_out = gr.ImageSlider(
                             label="Result at full size — before / after", type="pil",
-                            max_height=340, elem_classes=["loupe"], interactive=False,
+                            max_height=220, elem_classes=["loupe"], interactive=False,
                         )
                         fx_file = gr.File(label="Download PNG")
                         fx_info = gr.Markdown()
 
             # ---- Tab: Blur toolbox (no AI) ----
-            with gr.Tab("Blur"):
+            with gr.Tab("Blur", id="blur"):
                 gr.HTML(_section_head(
                     "Blur", "Blur toolbox",
                     "Eight kinds of blur — soft, motion, spin, zoom, lens bokeh, "
@@ -3761,7 +4135,7 @@ def build_demo() -> gr.Blocks:
                     with gr.Column(scale=1):
                         bl_in = gr.Image(
                             label="Input", type="pil", image_mode=None,
-                            sources=["upload", "clipboard"], height=300,
+                            sources=["upload", "clipboard"], height=240,
                             elem_classes="drop", buttons=["download", "fullscreen"],
                         )
                         bl_kind = gr.Radio(
@@ -3896,20 +4270,20 @@ def build_demo() -> gr.Blocks:
                                 "and blur another region.",
                                 elem_classes="notes",
                             )
-                        with gr.Row():
+                        with gr.Row(elem_classes="actions"):
                             bl_btn = gr.Button("Apply blur (full size)", variant="primary",
                                                size="lg", scale=3)
-                            bl_use = gr.Button("↪ Use as input", variant="secondary", scale=2)
-                            bl_clear = gr.Button("↺ Clear", variant="secondary", scale=1)
+                            bl_use = gr.Button("Use as input", variant="secondary", scale=2)
+                            bl_clear = gr.Button("Clear", variant="secondary", scale=1)
                     with gr.Column(scale=1, elem_classes="sticky-col"):
                         bl_preview = gr.ImageSlider(
                             # max_height, not height — see `out` slider above.
                             label="Live preview — before / after (drag the divider)",
-                            type="pil", max_height=340, elem_classes=["loupe"],
+                            type="pil", max_height=400, elem_classes=["loupe"],
                         )
                         bl_out = gr.ImageSlider(
                             label="Result at full size — before / after", type="pil",
-                            max_height=340, elem_classes=["loupe"],
+                            max_height=220, elem_classes=["loupe"],
                             # It's also read by "Use as input", which would otherwise
                             # make Gradio render it as an upload dropzone when empty.
                             interactive=False,
@@ -3918,11 +4292,11 @@ def build_demo() -> gr.Blocks:
                         bl_info = gr.Markdown()
 
             # ---- Tab: Watermark (no AI) ----
-            with gr.Tab("Watermark"):
+            with gr.Tab("Watermark", id="watermark"):
                 gr.HTML(_section_head(
                     "Credit", "Watermark",
                     "Sign your work with text or a logo — in a corner, tiled across the "
-                    "whole frame for a proof copy, or **behind the subject**, so a "
+                    "whole frame for a proof copy, or <strong>behind the subject</strong>, so a "
                     "headline passes behind the person in the photo.",
                     icon=ICON_WM,
                 ))
@@ -3930,7 +4304,7 @@ def build_demo() -> gr.Blocks:
                     with gr.Column(scale=1):
                         wm_in = gr.Image(
                             label="Input", type="pil", image_mode=None,
-                            sources=["upload", "clipboard"], height=280,
+                            sources=["upload", "clipboard"], height=240,
                             elem_classes="drop", buttons=["download", "fullscreen"],
                         )
                         wm_preset = gr.Dropdown(
@@ -4049,19 +4423,19 @@ def build_demo() -> gr.Blocks:
                                 "which the `[onnx]` extra installs.",
                                 elem_classes="notes",
                             )
-                        with gr.Row():
+                        with gr.Row(elem_classes="actions"):
                             wm_btn = gr.Button("Apply (full size)", variant="primary",
                                                size="lg", scale=3)
-                            wm_use = gr.Button("↪ Use as input", variant="secondary", scale=2)
-                            wm_clear = gr.Button("↺ Clear", variant="secondary", scale=1)
+                            wm_use = gr.Button("Use as input", variant="secondary", scale=2)
+                            wm_clear = gr.Button("Clear", variant="secondary", scale=1)
                     with gr.Column(scale=1, elem_classes="sticky-col"):
                         wm_preview = gr.Image(
-                            label="Preview", height=380, buttons=["fullscreen"],
+                            label="Preview", height=400, buttons=["fullscreen"],
                             elem_classes=["loupe"],
                         )
                         wm_note = gr.Markdown(elem_classes="notes")
                         wm_out = gr.Image(
-                            label="Result at full size", height=340, type="pil",
+                            label="Result at full size", height=220, type="pil",
                             buttons=["download", "fullscreen"], elem_classes=["loupe"],
                             interactive=False,
                         )
@@ -4069,7 +4443,7 @@ def build_demo() -> gr.Blocks:
                         wm_info = gr.Markdown()
 
             # ---- Tab: Design templates (no AI, except the cut-out one) ----
-            with gr.Tab("Design"):
+            with gr.Tab("Design", id="design"):
                 # The first template, resolved here so every control below opens
                 # already showing it — a load event would leave the tab blank
                 # until the browser had been round-tripped.
@@ -4169,19 +4543,19 @@ def build_demo() -> gr.Blocks:
                                 "`upscaler design \"Quote card\" --save mine.json`.",
                                 elem_classes="notes",
                             )
-                        with gr.Row():
+                        with gr.Row(elem_classes="actions"):
                             dz_btn = gr.Button("Render (full size)", variant="primary",
                                                size="lg", scale=3)
-                            dz_clear = gr.Button("↺ Clear", variant="secondary",
+                            dz_clear = gr.Button("Clear", variant="secondary",
                                                  scale=1)
                     with gr.Column(scale=1, elem_classes="sticky-col"):
                         dz_preview = gr.Image(
-                            label="Preview", height=420, buttons=["fullscreen"],
+                            label="Preview", height=440, buttons=["fullscreen"],
                             elem_classes=["loupe"],
                         )
                         dz_desc = gr.Markdown(elem_classes="notes")
                         dz_out = gr.Image(
-                            label="Result at full size", height=340, type="pil",
+                            label="Result at full size", height=220, type="pil",
                             buttons=["download", "fullscreen"], elem_classes=["loupe"],
                             interactive=False,
                         )
@@ -4189,7 +4563,7 @@ def build_demo() -> gr.Blocks:
                         dz_info = gr.Markdown()
 
             # ---- Tab: Screenshot beautifier (no AI) ----
-            with gr.Tab("Screenshot"):
+            with gr.Tab("Screenshot", id="screenshot"):
                 gr.HTML(_section_head(
                     "Present", "Screenshot Beautifier",
                     "Turn a raw screen capture into something you can put in a README, "
@@ -4202,7 +4576,7 @@ def build_demo() -> gr.Blocks:
                     with gr.Column(scale=1):
                         shot_in = gr.Image(
                             label="Screenshot (paste with ⌘V / Ctrl+V)", type="pil",
-                            image_mode=None, sources=["upload", "clipboard"], height=280,
+                            image_mode=None, sources=["upload", "clipboard"], height=240,
                             elem_classes="drop", buttons=["download", "fullscreen"],
                         )
                         shot_preset = gr.Dropdown(
@@ -4317,20 +4691,20 @@ def build_demo() -> gr.Blocks:
                                 "`upscaler screenshot ./shots --preset \"Indigo mesh\"`.",
                                 elem_classes="notes",
                             )
-                        with gr.Row():
+                        with gr.Row(elem_classes="actions"):
                             shot_btn = gr.Button("Apply (full size)", variant="primary",
                                                size="lg", scale=3)
-                            shot_use = gr.Button("↪ Use as input", variant="secondary",
+                            shot_use = gr.Button("Use as input", variant="secondary",
                                                scale=2)
-                            shot_clear = gr.Button("↺ Clear", variant="secondary", scale=1)
+                            shot_clear = gr.Button("Clear", variant="secondary", scale=1)
                     with gr.Column(scale=1, elem_classes="sticky-col"):
                         shot_preview = gr.Image(
-                            label="Preview", height=380, buttons=["fullscreen"],
+                            label="Preview", height=400, buttons=["fullscreen"],
                             elem_classes=["loupe"],
                         )
                         shot_note = gr.Markdown(elem_classes="notes")
                         shot_out = gr.Image(
-                            label="Result at full size", height=340, type="pil",
+                            label="Result at full size", height=220, type="pil",
                             buttons=["download", "fullscreen"], elem_classes=["loupe"],
                             interactive=False,
                         )
@@ -4338,7 +4712,7 @@ def build_demo() -> gr.Blocks:
                         shot_info = gr.Markdown()
 
             # ---- Tab: Crop & frame (no AI) ----
-            with gr.Tab("Crop"):
+            with gr.Tab("Crop", id="crop"):
                 gr.HTML(_section_head(
                     "Geometry", "Crop & Frame",
                     "Crop to any shape, straighten a tilted horizon, fix leaning "
@@ -4352,7 +4726,7 @@ def build_demo() -> gr.Blocks:
                     with gr.Column(scale=1):
                         fr_in = gr.Image(
                             label="Input", type="pil", image_mode=None,
-                            sources=["upload", "clipboard"], height=300,
+                            sources=["upload", "clipboard"], height=240,
                             elem_classes="drop", buttons=["download", "fullscreen"],
                         )
                         fr_preset = gr.Dropdown(
@@ -4466,19 +4840,19 @@ def build_demo() -> gr.Blocks:
                                 "PNG you can drop onto anything.",
                                 elem_classes="notes",
                             )
-                        with gr.Row():
+                        with gr.Row(elem_classes="actions"):
                             fr_btn = gr.Button("Apply (full size)", variant="primary",
                                                size="lg", scale=3)
-                            fr_use = gr.Button("↪ Use as input", variant="secondary", scale=2)
-                            fr_clear = gr.Button("↺ Clear", variant="secondary", scale=1)
+                            fr_use = gr.Button("Use as input", variant="secondary", scale=2)
+                            fr_clear = gr.Button("Clear", variant="secondary", scale=1)
                     with gr.Column(scale=1, elem_classes="sticky-col"):
                         fr_preview = gr.Image(
-                            label="Preview", height=380, buttons=["fullscreen"],
+                            label="Preview", height=400, buttons=["fullscreen"],
                             elem_classes=["loupe"],
                         )
                         fr_note = gr.Markdown(elem_classes="notes")
                         fr_out = gr.Image(
-                            label="Result at full size", height=340,
+                            label="Result at full size", height=220,
                             buttons=["download", "fullscreen"], elem_classes=["loupe"],
                             type="pil", interactive=False,
                         )
@@ -4486,7 +4860,7 @@ def build_demo() -> gr.Blocks:
                         fr_info = gr.Markdown()
 
             # ---- Tab: Sharpen (no AI) ----
-            with gr.Tab("Sharpen"):
+            with gr.Tab("Sharpen", id="sharpen"):
                 gr.HTML(_section_head(
                     "Detail", "Sharpen",
                     "Four ways to bring out detail — the classic unsharp mask, a "
@@ -4499,7 +4873,7 @@ def build_demo() -> gr.Blocks:
                     with gr.Column(scale=1):
                         sh_in = gr.Image(
                             label="Input", type="pil", image_mode=None,
-                            sources=["upload", "clipboard"], height=300,
+                            sources=["upload", "clipboard"], height=240,
                             elem_classes="drop", buttons=["download", "fullscreen"],
                         )
                         sh_preset = gr.Dropdown(
@@ -4629,11 +5003,11 @@ def build_demo() -> gr.Blocks:
                                 "come up.",
                                 elem_classes="notes",
                             )
-                        with gr.Row():
+                        with gr.Row(elem_classes="actions"):
                             sh_btn = gr.Button("Apply (full size)", variant="primary",
                                                size="lg", scale=3)
-                            sh_use = gr.Button("↪ Use as input", variant="secondary", scale=2)
-                            sh_clear = gr.Button("↺ Clear", variant="secondary", scale=1)
+                            sh_use = gr.Button("Use as input", variant="secondary", scale=2)
+                            sh_clear = gr.Button("Clear", variant="secondary", scale=1)
                     with gr.Column(scale=1, elem_classes="sticky-col"):
                         with gr.Row():
                             sh_cx = gr.Slider(0, 100, value=50, step=1, label="Preview X (%)",
@@ -4645,18 +5019,18 @@ def build_demo() -> gr.Blocks:
                         sh_preview = gr.ImageSlider(
                             # max_height, not height — see `out` slider above.
                             label="Live preview at 1:1 — before / after (drag the divider)",
-                            type="pil", max_height=340, elem_classes=["loupe"],
+                            type="pil", max_height=400, elem_classes=["loupe"],
                         )
                         sh_crop_note = gr.Markdown(elem_classes="notes")
                         sh_out = gr.ImageSlider(
                             label="Result at full size — before / after", type="pil",
-                            max_height=340, elem_classes=["loupe"], interactive=False,
+                            max_height=220, elem_classes=["loupe"], interactive=False,
                         )
                         sh_file = gr.File(label="Download PNG")
                         sh_info = gr.Markdown()
 
             # ---- Tab: Video upscaler (frame-by-frame) ----
-            with gr.Tab("Video"):
+            with gr.Tab("Video", id="video"):
                 gr.HTML(_section_head(
                     "Video", "Video Upscaler",
                     "Upscale a clip frame by frame on your own machine, keeping the "
@@ -4753,12 +5127,12 @@ def build_demo() -> gr.Blocks:
                                 "automatically.",
                                 elem_classes="notes",
                             )
-                        with gr.Row():
+                        with gr.Row(elem_classes="actions"):
                             vid_btn = gr.Button(
                                 "Upscale video", variant="primary", size="lg", scale=3
                             )
-                            vid_cancel = gr.Button("✕ Cancel", variant="stop", scale=1)
-                            vid_clear = gr.Button("↺ Clear", variant="secondary", scale=1)
+                            vid_cancel = gr.Button("Cancel", variant="stop", scale=1)
+                            vid_clear = gr.Button("Clear", variant="secondary", scale=1)
                     with gr.Column(scale=1, elem_classes="sticky-col"):
                         vid_out = gr.Video(label="Result", buttons=["download"])
                         vid_compare = gr.ImageSlider(
@@ -4777,7 +5151,7 @@ def build_demo() -> gr.Blocks:
                         vid_info = gr.Markdown()
 
             # ---- Tab: Convert & documents (format / PDF) ----
-            with gr.Tab("Convert"):
+            with gr.Tab("Convert", id="convert"):
                 gr.HTML(_section_head(
                     "Convert", "Convert & Documents",
                     "Change an image's format, combine several images into a PDF, "
@@ -4862,7 +5236,7 @@ def build_demo() -> gr.Blocks:
                         with gr.Column(scale=1):
                             opt_in = gr.Image(
                                 label="Image", type="pil", image_mode=None,
-                                sources=["upload", "clipboard"], height=300,
+                                sources=["upload", "clipboard"], height=240,
                                 elem_classes="drop", buttons=["download", "fullscreen"],
                             )
                             opt_target = gr.Textbox(
@@ -4923,7 +5297,7 @@ def build_demo() -> gr.Blocks:
                         with gr.Column(scale=1):
                             conv_in = gr.Image(
                                 label="Image", type="pil", image_mode=None,
-                                sources=["upload", "clipboard"], height=300,
+                                sources=["upload", "clipboard"], height=240,
                                 elem_classes="drop", buttons=["download", "fullscreen"],
                             )
                             conv_fmt = gr.Dropdown(
@@ -5006,7 +5380,7 @@ def build_demo() -> gr.Blocks:
                 )
 
             # ---- Tab: Batch (one operation over many images) ----
-            with gr.Tab("Batch"):
+            with gr.Tab("Batch", id="batch"):
                 gr.HTML(_section_head(
                     "Batch", "Batch Processing",
                     "Drop a whole stack of images, pick one operation, and run it "
@@ -5089,13 +5463,13 @@ def build_demo() -> gr.Blocks:
                                 0, 1024, value=512, step=64,
                                 label="Tile size (0 = off)",
                             )
-                        with gr.Row():
+                        with gr.Row(elem_classes="actions"):
                             batch_run = gr.Button("Process all", variant="primary",
                                                   size="lg", scale=3)
-                            batch_cancel = gr.Button("✕ Cancel", variant="stop", scale=1)
+                            batch_cancel = gr.Button("Cancel", variant="stop", scale=1)
                     with gr.Column(scale=1, elem_classes="sticky-col"):
                         batch_gallery = gr.Gallery(
-                            label="Results", columns=3, height=420,
+                            label="Results", columns=3, height=480,
                             object_fit="cover", buttons=["download", "fullscreen"],
                             elem_classes=["loupe"],
                         )
@@ -5126,7 +5500,7 @@ def build_demo() -> gr.Blocks:
                                    cancels=[batch_evt])
 
             # ---- Tab: Lian Li 8.8" Screen builder ----
-            with gr.Tab("Lian Li"):
+            with gr.Tab("Lian Li", id="lian-li"):
                 gr.HTML(_section_head(
                     "Panel", "Lian Li 8.8″ Screen",
                     "Compose media at the panel's exact size (1920×480 or 480×1920, "
@@ -5158,7 +5532,7 @@ def build_demo() -> gr.Blocks:
                                 "fitted. ×2 is plenty for 1920×480; use ×4 for very "
                                 "small sources, or the anime model for line art.",
                             )
-                            pn_enhance = gr.Button("✨ Enhance source", variant="secondary")
+                            pn_enhance = gr.Button("Enhance source", variant="secondary")
                         pn_orient = gr.Radio(
                             list(panel.ORIENTATIONS), value="Landscape · 1920×480",
                             label="Orientation",
@@ -5347,7 +5721,7 @@ def build_demo() -> gr.Blocks:
                                 "source media. Re-upload your image/video after "
                                 "loading a layout.*", elem_classes="notes",
                             )
-                            pn_layout_save = gr.Button("💾 Save layout (.json)",
+                            pn_layout_save = gr.Button("Save layout (.json)",
                                                        variant="secondary", size="sm")
                             pn_layout_file = gr.File(label="Download layout")
                             pn_layout_upload = gr.File(label="Load a layout (.json)",
@@ -5407,16 +5781,16 @@ def build_demo() -> gr.Blocks:
                                 "size** so L-Connect 3 never resamples it.",
                                 elem_classes="notes",
                             )
-                        with gr.Row():
+                        with gr.Row(elem_classes="actions"):
                             pn_export = gr.Button("Export", variant="primary", size="lg", scale=3)
-                            pn_clear = gr.Button("↺ Clear", variant="secondary", scale=1)
+                            pn_clear = gr.Button("Clear", variant="secondary", scale=1)
                     with gr.Column(scale=1, elem_classes="sticky-col"):
                         pn_preview = gr.Image(
                             label="Preview — bright = kept, dim = cropped out",
                             height=300, buttons=["fullscreen"], elem_classes=["loupe"],
                         )
                         pn_mockup_btn = gr.Button(
-                            "🖥️ See it on the screen (3D)", variant="secondary",
+                            "See it on the screen (3D)", variant="secondary",
                             size="sm",
                         )
                         pn_mockup = gr.Image(
@@ -5428,7 +5802,7 @@ def build_demo() -> gr.Blocks:
                         pn_info = gr.Markdown()
 
             # ---- Tab: Steam Workshop Showcase (five tiles from one picture/clip) ----
-            with gr.Tab("Steam"):
+            with gr.Tab("Steam", id="steam"):
                 gr.HTML(_section_head(
                     "Steam", "Workshop Showcase tiles",
                     "Turn a photo, GIF or video into the five tiles Steam shows side by "
@@ -5579,15 +5953,15 @@ def build_demo() -> gr.Blocks:
                                 "them for you.",
                                 elem_classes="notes",
                             )
-                        with gr.Row():
+                        with gr.Row(elem_classes="actions"):
                             st_export = gr.Button("Export tiles", variant="primary", size="lg", scale=3)
-                            st_cancel = gr.Button("✕ Cancel", variant="stop", scale=1)
-                            st_clear = gr.Button("↺ Clear", variant="secondary", scale=1)
+                            st_cancel = gr.Button("Cancel", variant="stop", scale=1)
+                            st_clear = gr.Button("Clear", variant="secondary", scale=1)
                     with gr.Column(scale=1, elem_classes="sticky-col"):
                         st_preview = gr.Image(
                             label="Preview — framing (bright = kept, black bars = Steam's "
                             "gaps) and how it sits on your profile",
-                            height=380, buttons=["fullscreen"], elem_classes=["loupe"],
+                            height=400, buttons=["fullscreen"], elem_classes=["loupe"],
                         )
                         st_gallery = gr.Gallery(
                             label="Tiles 1 → 5 (animated tiles play here)", columns=5,
@@ -5598,7 +5972,7 @@ def build_demo() -> gr.Blocks:
                         st_info = gr.Markdown()
 
             # ---- Tab: Library (everything you export, saved automatically) ----
-            with gr.Tab("Library") as lib_tab:
+            with gr.Tab("Library", id="library") as lib_tab:
                 gr.HTML(_section_head(
                     "Library", "Your Library",
                     "Everything you export is saved here automatically, so your "
@@ -5607,13 +5981,13 @@ def build_demo() -> gr.Blocks:
                     icon=ICON_LIBRARY,
                 ))
                 with gr.Row(elem_classes="toolbar"):
-                    lib_refresh = gr.Button("🔄 Refresh", variant="secondary", size="sm")
-                    lib_open = gr.Button("📂 Open folder", variant="secondary", size="sm")
+                    lib_refresh = gr.Button("Refresh", variant="secondary", size="sm")
+                    lib_open = gr.Button("Open folder", variant="secondary", size="sm")
                 lib_count = gr.Markdown()
                 with gr.Row(equal_height=False):
                     with gr.Column(scale=3):
                         lib_gallery = gr.Gallery(
-                            label="Images & GIFs", columns=4, height=560,
+                            label="Images & GIFs", columns=4, height=640,
                             object_fit="cover", buttons=["download", "fullscreen"],
                             elem_classes=["loupe"],
                         )
@@ -5623,8 +5997,8 @@ def build_demo() -> gr.Blocks:
                         )
                         lib_video = gr.Video(label="Preview", buttons=["download"])
 
-        # ---- Settings: its own page, opened by the ⚙ gear (hidden by default) ----
-        with gr.Column(visible=False) as settings_view:
+        # ---- Settings: its own page, opened by the gear button (hidden by default) ----
+        with gr.Column(visible=False, elem_id="settings-view") as settings_view:
             with gr.Row(elem_classes="toolbar"):
                 set_back = gr.Button("← Back to the app", variant="secondary", size="sm")
             gr.HTML(_section_head(
@@ -5667,7 +6041,7 @@ def build_demo() -> gr.Blocks:
                             "automatically — browse it in the **Library** tab."
                         )
                         set_open_lib = gr.Button(
-                            "📂 Open library folder", variant="secondary", size="sm"
+                            "Open library folder", variant="secondary", size="sm"
                         )
                     with gr.Accordion("Models & downloads", open=False):
                         _mm_init_rows, _mm_init_total = _mm_rows()
@@ -5685,9 +6059,9 @@ def build_demo() -> gr.Blocks:
                             "use).",
                         )
                         with gr.Row():
-                            mm_dl = gr.Button("⬇ Download", variant="primary", scale=2)
-                            mm_rm = gr.Button("🗑 Remove", variant="secondary", scale=2)
-                            mm_refresh = gr.Button("↻ Refresh", variant="secondary",
+                            mm_dl = gr.Button("Download", variant="primary", scale=2)
+                            mm_rm = gr.Button("Remove", variant="secondary", scale=2)
+                            mm_refresh = gr.Button("Refresh", variant="secondary",
                                                    scale=1)
                         mm_status = gr.Markdown()
                     with gr.Accordion("Diagnostics", open=False):
@@ -5699,7 +6073,7 @@ def build_demo() -> gr.Blocks:
                             value=manage.system_report(), label="System report",
                             interactive=False,
                         )
-                        diag_refresh = gr.Button("↻ Refresh report",
+                        diag_refresh = gr.Button("Refresh report",
                                                  variant="secondary", size="sm")
                     with gr.Accordion("About", open=False):
                         gr.Markdown(
@@ -6232,7 +6606,7 @@ def build_demo() -> gr.Blocks:
                               show_progress="hidden")
         lib_open.click(open_library_folder, None, None)
 
-        # ---- Settings page (opened by the ⚙ gear, closed by Back) ----
+        # ---- Settings page (opened by the gear button, closed by Back) ----
         settings_btn.click(
             lambda: (gr.update(visible=False), gr.update(visible=True)),
             None, [main_tabs, settings_view],
